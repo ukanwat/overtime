@@ -13,9 +13,7 @@
 </p>
 
 <p align="center">
-  <video src="https://github.com/ukanwat/aaabench/raw/main/docs/media/film.mp4"
-         poster="https://github.com/ukanwat/aaabench/raw/main/docs/media/poster.jpg"
-         autoplay loop muted playsinline controls width="100%"></video>
+  <img src="docs/media/film.gif" alt="Eight shots from one run: arrival over open water, the entry screen and its menu, walking, driving, the map, the city from the air" width="100%">
 </p>
 
 One agent. One Unreal Engine editor, driven live over MCP. A fierce brief, a shelf of production
