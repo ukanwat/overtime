@@ -13,7 +13,9 @@
 </p>
 
 <p align="center">
-  <img src="docs/media/film.gif" alt="Eight shots from one run: arrival over open water, the entry screen and its menu, walking, driving, the map, the city from the air" width="100%">
+  <video src="https://github.com/ukanwat/aaabench/raw/main/docs/media/film.mp4"
+         poster="https://github.com/ukanwat/aaabench/raw/main/docs/media/poster.jpg"
+         autoplay loop muted playsinline controls width="100%"></video>
 </p>
 
 One agent. One Unreal Engine editor, driven live over MCP. A fierce brief, a shelf of production
@@ -94,7 +96,22 @@ These are from one run, and they are here to show what the demand asks for. They
 output in the repository — everything an agent produces belongs to the run that produced it, not
 here.
 
-This repository is **the harness**: everything needed to run the benchmark yourself.
+This repository is **the harness**: everything needed to run it yourself.
+
+## What this is not yet
+
+Being straight about it, because the name promises more than currently exists:
+
+- **There is no score.** Nothing here reduces a run to a number, and the interesting failures are
+  ones no current metric catches — a crowd measured as fixed while every face in it is identical.
+- **There is no leaderboard, and one subject has been run.** A benchmark needs other people's
+  results in it. Right now it has one operator's.
+- **Reproducing it is expensive.** Unreal Engine, tens of gigabytes, a pinned Xcode and a real GPU.
+  Plenty of people can read this; few can run it.
+
+What exists is the demand, the harness, the operating rules, and the finding that most of the
+difficulty is not building a world — it is that a check written by whoever wrote the fix cannot see
+what the fix did not think of. That part generalises well beyond games.
 
 ## What's in here
 
