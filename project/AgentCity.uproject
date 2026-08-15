@@ -1,0 +1,213 @@
+{
+ "FileVersion": 3,
+ "EngineAssociation": "5.8",
+ "Category": "",
+ "Description": "AAABench counterpart \u2014 can an agent drive Unreal?",
+ "Plugins": [
+  {
+   "Name": "PythonScriptPlugin",
+   "Enabled": true
+  },
+  {
+   "Name": "EditorScriptingUtilities",
+   "Enabled": true
+  },
+  {
+   "Name": "ModelContextProtocol",
+   "Enabled": true
+  },
+  {
+   "Name": "ToolsetRegistry",
+   "Enabled": true
+  },
+  {
+   "Name": "AllToolsets",
+   "Enabled": true
+  },
+  {
+   "Name": "PCG",
+   "Enabled": true
+  },
+  {
+   "Name": "GeometryScripting",
+   "Enabled": true
+  },
+  {
+   "Name": "ModelingToolsEditorMode",
+   "Enabled": true
+  },
+  {
+   "Name": "Water",
+   "Enabled": true
+  },
+  {
+   "Name": "Landmass",
+   "Enabled": true
+  },
+  {
+   "Name": "MetaHumanCharacter",
+   "Enabled": true
+  },
+  {
+   "Name": "MetaHumanGenerator",
+   "Enabled": true
+  },
+  {
+   "Name": "MetaHumanCharacterUAF",
+   "Enabled": true
+  },
+  {
+   "Name": "MetaHuman",
+   "Enabled": true,
+   "SupportedTargetPlatforms": [
+    "Win64",
+    "Linux",
+    "Mac"
+   ]
+  },
+  {
+   "Name": "PoseSearch",
+   "Enabled": true
+  },
+  {
+   "Name": "MotionTrajectory",
+   "Enabled": true
+  },
+  {
+   "Name": "AnimationLocomotionLibrary",
+   "Enabled": true
+  },
+  {
+   "Name": "ContextualAnimation",
+   "Enabled": true
+  },
+  {
+   "Name": "Chooser",
+   "Enabled": true
+  },
+  {
+   "Name": "AnimationBudgetAllocator",
+   "Enabled": true
+  },
+  {
+   "Name": "ChaosVehiclesPlugin",
+   "Enabled": true
+  },
+  {
+   "Name": "MassGameplay",
+   "Enabled": true
+  },
+  {
+   "Name": "MassAI",
+   "Enabled": true
+  },
+  {
+   "Name": "MassCrowd",
+   "Enabled": true
+  },
+  {
+   "Name": "ZoneGraph",
+   "Enabled": true
+  },
+  {
+   "Name": "ZoneGraphAnnotations",
+   "Enabled": true
+  },
+  {
+   "Name": "SmartObjects",
+   "Enabled": true
+  },
+  {
+   "Name": "StateTree",
+   "Enabled": true
+  },
+  {
+   "Name": "GameplayBehaviors",
+   "Enabled": true
+  },
+  {
+   "Name": "Text3D",
+   "Enabled": true
+  },
+  {
+   "Name": "Mutable",
+   "Enabled": true
+  },
+  {
+   "Name": "MetaHumanCrowd",
+   "Enabled": true
+  },
+  {
+   "Name": "RemoteControl",
+   "Enabled": true
+  },
+  {
+   "Name": "MovieRenderPipeline",
+   "Enabled": true
+  },
+  {
+   "Name": "GameplayAbilities",
+   "Enabled": true
+  },
+  {
+   "Name": "USDImporter",
+   "Enabled": true
+  },
+  {
+   "Name": "NiagaraFluids",
+   "Enabled": true
+  },
+  {
+   "Name": "ProceduralVegetationEditor",
+   "Enabled": true
+  },
+  {
+   "Name": "GeometryCollectionPlugin",
+   "Enabled": true
+  },
+  {
+   "Name": "Mover",
+   "Enabled": true
+  },
+  {
+   "Name": "Locomotor",
+   "Enabled": true
+  },
+  {
+   "Name": "CurveExpression",
+   "Enabled": true
+  },
+  {
+   "Name": "GameplayInteractions",
+   "Enabled": true
+  },
+  {
+   "Name": "DrawDebugLibrary",
+   "Enabled": true
+  },
+  {
+   "Name": "MotionWarping",
+   "Enabled": true
+  },
+  {
+   "Name": "AnimationWarping",
+   "Enabled": true
+  },
+  {
+   "Name": "Takes",
+   "Enabled": true
+  },
+  {
+   "Name": "SequencerScripting",
+   "Enabled": true
+  },
+  {
+   "Name": "LevelSequenceEditor",
+   "Enabled": true
+  },
+  {
+   "Name": "ActorSequence",
+   "Enabled": true
+  }
+ ]
+}

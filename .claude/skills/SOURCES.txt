@@ -1,0 +1,8 @@
+Installed community skill packs (cloned July 2026):
+- CloudAI-X/threejs-skills            (10 skills — three.js API stack)
+- majidmanzarpour/threejs-game-skills  (9 skills — game production: director,
+  gameplay systems, AAA graphics builder, UI, QA, debug/profiler, asset generators)
+- gamedev-skills/awesome-gamedev-agent-skills (craft disciplines + threejs engine skills,
+  prefixed aw-*)
+Plus VibeUE ships 35 UE skill packs in AgentCity/Plugins/VibeUE/Content/Skills/ .
+baked-light, film-look (OSM city, mocap pipeline, Cycles baking, film look).

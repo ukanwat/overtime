@@ -1,0 +1,1768 @@
+
+=== unreal.WidgetService ===
+  acquire_editor_element_handle
+      x.acquire_editor_element_handle(allow_create=True) -> ScriptTypedElementHandle
+      Acquire Editor Object Element Handle
+      
+      Args:
+          allow_create (bool): 
+      
+      Returns:
+          ScriptTypedElementHandle:
+  add_animation_track
+      X.add_animation_track(widget_path, animation_name, component_name, property_name) -> bool
+      Add a property track to a widget animation.
+      Maps to action="add_animation_track"
+      
+      Args:
+          widget_path (str): 
+          animation_name (str): 
+          component_name (str): 
+          property_name (str): 
+      
+      Returns:
+          bool:
+  add_component
+      X.add_component(widget_path, component_type, component_name, parent_name="", is_variable=True) -> WidgetAddComponentResult
+      Add a new widget component to a Widget Blueprint.
+      Maps to action="add_component"
+      Supports both native widget types (TextBlock, Button, etc.) and custom Widget Blueprints by name.
+      Custom WBPs are resolved via the Asset Registry and compiled before use.
+      Circular references (a WBP containing itself) are detected and rejected.
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+          component_type (str): Type of 
+  add_keyframe
+      X.add_keyframe(widget_path, animation_name, component_name, property_name, keyframe) -> bool
+      Add a keyframe to a widget animation track.
+      Maps to action="add_keyframe"
+      
+      Args:
+          widget_path (str): 
+          animation_name (str): 
+          component_name (str): 
+          property_name (str): 
+          keyframe (WidgetAnimKeyframe): 
+      
+      Returns:
+          bool:
+  add_view_model
+      X.add_view_model(widget_path, view_model_class_name, view_model_name, creation_type="CreateInstance") -> bool
+      Add a ViewModel to a Widget Blueprint.
+      Maps to action="add_view_model"
+      The ViewModel class must implement INotifyFieldValueChanged (typically inherits from UMVVMViewModelBase).
+      Classes are resolved by name from C++ or Blueprint ViewModel assets.
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+          view_model_class_name (str): Name of the ViewModel class (e.g. "MyHealthViewModel" or full path)
+          view_model_name (str)
+  add_view_model_binding
+      X.add_view_model_binding(widget_path, view_model_name, view_model_property, widget_name, widget_property, binding_mode="OneWayToDestination") -> bool
+      Add an MVVM binding between a ViewModel property and a widget property.
+      Maps to action="add_view_model_binding"
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+          view_model_name (str): Name of the ViewModel (as registered via add_view_model)
+          view_model_property (str): Property name on the ViewModel (e.g. "CurrentHealth")
+          widget_name (str): Name of the target widget componen
+  bind_event
+      X.bind_event(widget_path, widget_name, event_name, function_name) -> bool
+      Bind an event to a function in the Widget Blueprint.
+      Maps to action="bind_events"
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+          widget_name (str): Name of the widget component that owns the event (e.g., "PlayButton")
+          event_name (str): Name of the event (e.g., "OnClicked")
+          function_name (str): Name of the function to call
+      
+      Returns:
+          bool: True if binding was successful
+  call_method
+      call_method(self, name: str, *args: Tuple[object, ...], **kwargs: Mapping[str, object]) -> Any -- call a method on this object via Unreal reflection using the given ordered (a tuple passed as args) or named (a dict passed as kwargs) argument data - allows calling methods that don't have Python glue
+  capture_preview
+      X.capture_preview(widget_path, width=1920, height=1080) -> WidgetPreviewResult
+      Capture an off-screen preview of a Widget Blueprint.
+      Maps to action="capture_preview"
+      
+      Args:
+          widget_path (str): 
+          width (int32): 
+          height (int32): 
+      
+      Returns:
+          WidgetPreviewResult:
+  cast
+      cast(cls: Type[_T], object: object) -> _T -- cast the given object to this Unreal object type or raise an exception if the cast is not possible
+  create_animation
+      X.create_animation(widget_path, animation_name, duration=1.000000) -> bool
+      Create a new widget animation.
+      Maps to action="create_animation"
+      
+      Args:
+          widget_path (str): 
+          animation_name (str): 
+          duration (float): 
+      
+      Returns:
+          bool:
+  get_available_events
+      X.get_available_events(widget_path, component_name="", widget_type="") -> Array[WidgetEventInfo]
+      Get available events for a widget type or component.
+      Maps to action="get_available_events"
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+          component_name (str): Name of the component (optional)
+          widget_type (str): Type of widget to query events for (optional)
+      
+      Returns:
+          Array[WidgetEventInfo]: Array of available events
+  get_brush
+      X.get_brush(widget_path, component_name, slot_name) -> WidgetBrushInfo
+      Read a brush slot from a widget component.
+      Maps to action="get_brush"
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+          component_name (str): Name of the component
+          slot_name (str): Brush slot name
+      
+      Returns:
+          WidgetBrushInfo: Brush configuration (default/empty on failure)
+  get_class
+      get_class(self) -> Class -- get the Unreal class of this instance
+  get_component_properties
+      X.get_component_properties(widget_path, component_name) -> Array[WidgetPropertyInfo]
+      Get detailed properties for a specific widget component.
+      Maps to action="get_component_properties"
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+          component_name (str): Name of the component to inspect
+      
+      Returns:
+          Array[WidgetPropertyInfo]: Array of property information
+  get_component_snapshot
+      X.get_component_snapshot(widget_path, component_name) -> WidgetComponentSnapshot
+      Get a snapshot of a single widget component by name.
+      Returns hierarchy info, slot layout, and all properties for one widget.
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+          component_name (str): Name of the component
+      
+      Returns:
+          WidgetComponentSnapshot: Component snapshot (default/empty if not found)
+  get_default_object
+      get_default_object(cls: Type[_T]) -> _T -- get the Unreal class default object (CDO) of this type
+  get_editor_property
+      get_editor_property(self, name: str) -> object -- get the value of any property visible to the editor
+  get_fname
+      get_fname(self) -> Name -- get the name of this instance
+  get_font
+      X.get_font(widget_path, component_name, property_name="Font") -> WidgetFontInfo
+      Read a full font configuration from a widget text property.
+      Maps to action="get_font"
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+          component_name (str): Name of the component
+          property_name (str): Font property path (defaults to "Font")
+      
+      Returns:
+          WidgetFontInfo: Font configuration (default/empty on failure)
+  get_full_name
+      get_full_name(self) -> str -- get the full name (class name + full path) of this instance
+  get_hierarchy
+      X.get_hierarchy(widget_path) -> Array[WidgetInfo]
+      Get widget hierarchy for a Widget Blueprint.
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+      
+      Returns:
+          Array[WidgetInfo]: Array of widget information in hierarchy order
+  get_live_property
+      X.get_live_property(handle, component_name, property_name) -> str
+      Read a property from a live PIE widget instance.
+      Maps to action="get_live_property"
+      
+      Args:
+          handle (PIEWidgetHandle): 
+          component_name (str): 
+          property_name (str): 
+      
+      Returns:
+          str:
+  get_name
+      get_name(self) -> str -- get the name of this instance
+  get_outer
+      get_outer(self) -> Any -- get the outer object from this instance (if any)
+  get_outermost
+      get_outermost(self) -> Package -- get the outermost object (the package) from this instance
+  get_package
+      get_package(self) -> Package -- get the package directly associated with this instance
+  get_path_name
+      get_path_name(self) -> str -- get the path name of this instance
+  get_property
+      X.get_property(widget_path, component_name, property_name) -> str
+      Get a specific property value from a widget component.
+      Maps to action="get_property"
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+          component_name (str): Name of the component
+          property_name (str): Name of the property to get
+      
+      Returns:
+          str: Property value as string (empty if not found)
+  get_root_widget
+      X.get_root_widget(widget_path) -> str
+      Get the root widget of a Widget Blueprint.
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+      
+      Returns:
+          str: Name of the root widget, or empty if not found
+  get_typed_outer
+      get_typed_outer(self, type: Union[Class, type]) -> Any -- get the first outer object of the given type from this instance (if any)
+  get_widget_snapshot
+      X.get_widget_snapshot(widget_path) -> Array[WidgetComponentSnapshot]
+      Get a full snapshot of all widget components in a Widget Blueprint.
+      Single-call replacement for get_hierarchy + list_properties per component.
+      Returns hierarchy order with slot layout and all properties for each widget.
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+      
+      Returns:
+          Array[WidgetComponentSnapshot]: Array of component snapshots in hierarchy order
+  get_world
+      get_world(self) -> Optional[World] -- get the world associated with this instance (if any)
+  is_editor_property_overridden
+      x.is_editor_property_overridden(property_name) -> EditorPropertyValueState
+      Attempts to query whether the value of a named property on the given object overrides the value of its archetype (ie, would ResetEditorProperty do anything?).
+      
+      Args:
+          property_name (Name): The name of the object property to query the value of.
+      
+      Returns:
+          EditorPropertyValueState: What state the requested property is in.
+  is_package_external
+      is_package_external(self) -> bool -- returns true if this instance has a different package than its outer's package
+  is_pie_running
+      X.is_pie_running() -> bool
+      Check if Play-In-Editor is currently running.
+      Maps to action="is_pie_running"
+      
+      Returns:
+          bool:
+  list_animations
+      X.list_animations(widget_path) -> Array[WidgetAnimInfo]
+      List all widget animations on a Widget Blueprint.
+      Maps to action="list_animations"
+      
+      Args:
+          widget_path (str): 
+      
+      Returns:
+          Array[WidgetAnimInfo]:
+  list_components
+      X.list_components(widget_path) -> Array[WidgetInfo]
+      List all widget components in a Widget Blueprint.
+      Maps to action="list_components"
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+      
+      Returns:
+          Array[WidgetInfo]: Array of widget component information
+  list_properties
+      X.list_properties(widget_path, component_name, editable_only=True) -> Array[WidgetPropertyInfo]
+      List all editable properties of a widget component.
+      Maps to action="list_properties"
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+          component_name (str): Name of the component
+          editable_only (bool): Whether to only return editable properties
+      
+      Returns:
+          Array[WidgetPropertyInfo]: Array of property information
+  list_view_model_bindings
+      X.list_view_model_bindings(widget_path) -> Array[WidgetViewModelBindingInfo]
+      List all MVVM bindings on a Widget Blueprint.
+      Maps to action="list_view_model_bindings"
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+      
+      Returns:
+          Array[WidgetViewModelBindingInfo]: Array of binding information
+  list_view_models
+      X.list_view_models(widget_path) -> Array[WidgetViewModelInfo]
+      List all ViewModels registered on a Widget Blueprint.
+      Maps to action="list_view_models"
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+      
+      Returns:
+          Array[WidgetViewModelInfo]: Array of ViewModel information
+  list_widget_blueprints
+      X.list_widget_blueprints(path_filter="/Game") -> Array[str]
+      List all Widget Blueprint assets.
+      
+      Args:
+          path_filter (str): Optional path filter
+      
+      Returns:
+          Array[str]: Array of Widget Blueprint paths
+  modify
+      modify(self, always_mark_dirty: bool = True) -> bool -- inform that this instance is about to be modified (tracks changes for undo/redo if transactional)
+  remove_animation
+      X.remove_animation(widget_path, animation_name) -> bool
+      Remove an existing widget animation.
+      Maps to action="remove_animation"
+      
+      Args:
+          widget_path (str): 
+          animation_name (str): 
+      
+      Returns:
+          bool:
+  remove_component
+      X.remove_component(widget_path, component_name, remove_children=False) -> WidgetRemoveComponentResult
+      Remove a widget component from a Widget Blueprint.
+      Maps to action="remove_component"
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+          component_name (str): Name of the component to remove
+          remove_children (bool): Whether to also remove child widgets
+      
+      Returns:
+          WidgetRemoveComponentResult: Result with removed components and orphaned children
+  remove_view_model
+      X.remove_view_model(widget_path, view_model_name) -> bool
+      Remove a ViewModel from a Widget Blueprint.
+      Maps to action="remove_view_model"
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+          view_model_name (str): Name of the ViewModel to remove
+      
+      Returns:
+          bool: True if the ViewModel was removed successfully
+  remove_view_model_binding
+      X.remove_view_model_binding(widget_path, binding_index) -> bool
+      Remove an MVVM binding from a Widget Blueprint by index.
+      Maps to action="remove_view_model_binding"
+      Use list_view_model_bindings to get valid indices.
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+          binding_index (int32): Index of the binding to remove (from list_view_model_bindings)
+      
+      Returns:
+          bool: True if the binding was removed successfully
+  remove_widget_from_pie
+      X.remove_widget_from_pie(handle) -> bool
+      Remove a widget from the PIE viewport.
+      Maps to action="remove_widget_from_pie"
+      
+      Args:
+          handle (PIEWidgetHandle): 
+      
+      Returns:
+          bool:
+  rename
+      rename(self, name: Union[Name, str]="None", outer: Optional[Object]=None) -> bool -- rename this instance and/or change its outer
+  rename_widget
+      X.rename_widget(widget_path, old_name, new_name) -> bool
+      Rename a widget component in the Widget Blueprint.
+      Maps to action="rename_widget"
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+          old_name (str): Current name of the widget component
+          new_name (str): New name for the widget component
+      
+      Returns:
+          bool: True if the rename was successful
+  reparent_widget
+      X.reparent_widget(widget_path, widget_name, new_parent_name) -> bool
+      Move an existing widget to a new parent panel (re-parent), preserving the widget object.
+      Maps to action="reparent_widget".
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+          widget_name (str): Name of the widget to move
+          new_parent_name (str): Name of the destination panel widget (must be a UPanelWidget)
+      
+      Returns:
+          bool: True if the widget was re-slotted under the new parent
+  reset_editor_property
+      x.reset_editor_property(property_name, change_notify_mode=PropertyAccessChangeNotifyMode.DEFAULT) -> bool
+      Attempts to reset the value of a named property on the given object so that it matches the value of the archetype.
+      
+      Args:
+          property_name (Name): The name of the object property to reset the value of.
+          change_notify_mode (PropertyAccessChangeNotifyMode): When to emit property change notifications.
+      
+      Returns:
+          bool: Whether the property value was found and correctly reset.
+  search_types
+      X.search_types(filter_text="") -> Array[str]
+      Get available widget types that can be created.
+      Maps to action="search_types"
+      Returns built-in native types plus discovered Widget Blueprints (prefixed with [WBP]).
+      
+      Args:
+          filter_text (str): Optional filter to narrow results
+      
+      Returns:
+          Array[str]: Array of widget type names (Button, TextBlock, etc.) and discovered WBPs
+  set_brush
+      X.set_brush(widget_path, component_name, slot_name, brush_info) -> bool
+      Set a brush slot on a widget component.
+      Maps to action="set_brush"
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+          component_name (str): Name of the component
+          slot_name (str): Brush slot name
+          brush_info (WidgetBrushInfo): Brush configuration to apply
+      
+      Returns:
+          bool: True if successful
+  set_editor_properties
+      set_editor_properties(self, properties: Mapping[str, object]) -> None -- set the value of any properties visible to the editor (from a name->value dict), ensuring that the pre/post change notifications are called
+  set_editor_property
+      set_editor_property(self, name: str, value: object, notify_mode: PropertyAccessChangeNotifyMode=PropertyAccessChangeNotifyMode.DEFAULT) -> None -- set the value of any property visible to the editor, ensuring that the pre/post change notifications are called
+  set_font
+      X.set_font(widget_path, component_name, font_info, property_name="Font") -> bool
+      Set a full font configuration on a widget text property.
+      Maps to action="set_font"
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+          component_name (str): Name of the component
+          font_info (WidgetFontInfo): Font configuration to apply
+          property_name (str): Font property path (defaults to "Font")
+      
+      Returns:
+          bool: True if successful
+  set_property
+      X.set_property(widget_path, component_name, property_name, property_value) -> bool
+      Set a property value on a widget component.
+      Maps to action="set_property"
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+          component_name (str): Name of the component
+          property_name (str): Name of the property to set
+          property_value (str): Value to set (as string)
+      
+      Returns:
+          bool: True if successful
+  spawn_widget_in_pie
+      X.spawn_widget_in_pie(widget_path, z_order=0) -> PIEWidgetHandle
+      Spawn a widget into the PIE viewport.
+      Maps to action="spawn_widget_in_pie"
+      
+      Args:
+          widget_path (str): 
+          z_order (int32): 
+      
+      Returns:
+          PIEWidgetHandle:
+  start_pie
+      X.start_pie() -> bool
+      Start Play-In-Editor if it is not already running.
+      Maps to action="start_pie"
+      
+      Returns:
+          bool:
+  static_class
+      static_class(cls) -> Class -- get the Unreal class of this type
+  stop_pie
+      X.stop_pie() -> bool
+      Stop Play-In-Editor if it is running.
+      Maps to action="stop_pie"
+      
+      Returns:
+          bool:
+  validate
+      X.validate(widget_path) -> WidgetValidationResult
+      Validate widget hierarchy for errors.
+      Maps to action="validate"
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+      
+      Returns:
+          WidgetValidationResult: Validation result with any errors found
+  widget_blueprint_exists
+      X.widget_blueprint_exists(widget_path) -> bool
+      Check if a Widget Blueprint exists at the given path.
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+      
+      Returns:
+          bool: True if Widget Blueprint exists Example: if not unreal.WidgetService.widget_blueprint_exists("/Game/UI/WBP_MainMenu"): # Create the widget blueprint
+  widget_exists
+      X.widget_exists(widget_path, component_name) -> bool
+      Check if a widget component exists in a Widget Blueprint.
+      
+      Args:
+          widget_path (str): Full path to the Widget Blueprint
+          component_name (str): Name of the widget component
+      
+      Returns:
+          bool: True if component exists Example: if not unreal.WidgetService.widget_exists("/Game/UI/WBP_MainMenu", "StartButton"): unreal.WidgetService.add_component("/Game/UI/WBP_MainMenu", "Button", "StartButton", "CanvasPanel_0")
+
+=== unreal.BlueprintService ===
+  acquire_editor_element_handle
+      x.acquire_editor_element_handle(allow_create=True) -> ScriptTypedElementHandle
+      Acquire Editor Object Element Handle
+      
+      Args:
+          allow_create (bool): 
+      
+      Returns:
+          ScriptTypedElementHandle:
+  add_call_delegate_node
+      X.add_call_delegate_node(blueprint_path, graph_name, dispatcher_name, pos_x=0.000000, pos_y=0.000000) -> str
+      Add a "Call <Dispatcher>" node (UK2Node_CallDelegate) to a graph.
+      This is the broadcast node — wire the execution flow into its "execute" pin
+      to fire all subscribers of the dispatcher.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint that owns the dispatcher
+          graph_name (str): Name of the graph to place the node in (e.g. "EventGraph")
+          dispatcher_name (str): Name of the event dispatcher to call
+          pos_x (float): X p
+  add_comment_around_nodes
+      X.add_comment_around_nodes(blueprint_path, graph_name, comment_text, node_ids, padding=40.000000, r=1.000000, g=0.950000, b=0.400000, a=0.400000) -> str
+      Add a Comment box that wraps the supplied nodes. The position and size are computed
+      from the bounding box of the listed nodes, plus the requested padding. This is the
+      programmatic equivalent of selecting nodes in the editor and pressing C.
+      
+      Pair this with `get_selected_nodes()` to wrap whatever the user has highlighted in
+      the open Blueprint editor:
+      
+        sel = unreal.BlueprintService.get_selected_no
+  add_comment_node
+      X.add_comment_node(blueprint_path, graph_name, comment_text, pos_x=0.000000, pos_y=0.000000, width=400.000000, height=200.000000, r=1.000000, g=0.950000, b=0.400000, a=0.400000) -> str
+      Add a Comment box (UEdGraphNode_Comment) to a graph at an explicit position and size.
+      Comment boxes are the yellow/coloured bubbles that visually group nodes. By default
+      any K2 nodes whose bounds fall inside the comment box will be picked up and dragged
+      with the comment (GroupMovement mode), matching the standard editor behaviour when
+      the user creates a comment via the C hotkey.
+   
+  add_component
+      X.add_component(blueprint_path, component_type, component_name, parent_name="") -> bool
+      Add a component to a blueprint.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          component_type (str): Component class name (e.g., "StaticMeshComponent", "PointLightComponent")
+          component_name (str): Name for the new component
+          parent_name (str): Optional name of parent component (for scene components)
+      
+      Returns:
+          bool: True if successful Example - Add a static mesh: unreal.BlueprintService.add_component("/Game/BP_Player", "S
+  add_create_delegate_node
+      X.add_create_delegate_node(blueprint_path, graph_name, function_name, pos_x=0.000000, pos_y=0.000000) -> str
+      Add a "Create Event" node (K2Node_CreateDelegate) to a graph.
+      This wraps a named function as a delegate reference, for connection to the
+      Delegate pin of a Bind Event node (add_delegate_bind_node).
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          graph_name (str): Name of the graph (e.g. "EventGraph")
+          function_name (str): Name of the function (must match the delegate signature)
+          pos_x (float): X position in the g
+  add_create_event_node
+      X.add_create_event_node(blueprint_path, graph_name, function_name, pos_x=0.000000, pos_y=0.000000) -> str
+      Add a Create Event node (implemented as UK2Node_CreateDelegate) to a graph.
+      Use this for delegate workflows where a function name must be converted into a delegate value.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          graph_name (str): Name of the graph
+          function_name (str): Optional function name to preselect on the node. Leave empty to add an unconfigured node.
+          pos_x (float): X position in the graph
+          pos_y (
+  add_custom_event_input
+      X.add_custom_event_input(blueprint_path, graph_name, node_id, parameter_name, parameter_type, is_array=False, container_type="") -> bool
+      Add an input parameter (user-defined input pin) to an existing Custom Event node.
+      This is the equivalent of clicking "+ New Parameter" under Inputs in the Details panel
+      with a Custom Event node selected. The node is identified by its GUID (as returned by
+      add_custom_event_node / get_nodes_in_graph).
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          graph_name (str): Name of the graph containing the 
+  add_custom_event_node
+      X.add_custom_event_node(blueprint_path, graph_name, event_name, pos_x=0.000000, pos_y=0.000000) -> str
+      Add a Custom Event node to a graph.
+      This creates the same event-style node exposed by the Blueprint editor's
+      "Add Custom Event..." action and returns the resulting node GUID.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          graph_name (str): Name of the graph (typically "EventGraph")
+          event_name (str): Desired custom event name. Leave empty to let Unreal pick a unique name.
+          pos_x (float): X position in the graph
+     
+  add_delegate_bind_node
+      X.add_delegate_bind_node(blueprint_path, graph_name, target_class, delegate_name, pos_x=0.000000, pos_y=0.000000) -> str
+      Add a delegate bind node (AddDelegate) to a graph.
+      This creates the "Bind Event to <DelegateName>" node used to subscribe a function to a multicast delegate.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          graph_name (str): Name of the graph (e.g. "EventGraph")
+          target_class (str): Class that owns the delegate. Accepts: - "Self" or "" for the blueprint's own class - A native class name with or without U/A prefix (e
+  add_delegate_bind_on_variable
+      X.add_delegate_bind_on_variable(blueprint_path, graph_name, variable_name, delegate_name, pos_x=0.000000, pos_y=0.000000) -> str
+      Convenience: bind to an event dispatcher declared on a Blueprint variable's class in one shot.
+      
+      Resolves the variable's type to its owner class (e.g. variable "Cube : BP_Cube_C" -> BP_Cube_C),
+      finds the named multicast delegate on that class, creates a "Bind Event to <Delegate>" node and
+      a Get node for the variable, and wires the variable's output pin into the bind node's Target (self).
+      
+      The variable must be an object-referen
+  add_event_dispatcher
+      X.add_event_dispatcher(blueprint_path, dispatcher_name) -> bool
+      Add a Blueprint Event Dispatcher (multicast delegate) to a blueprint.
+      This is the same as clicking "+" under the "Event Dispatchers" section in the
+      Blueprint editor's My Blueprint panel. Creates both the multicast delegate
+      member variable AND the signature graph that defines its parameters.
+      
+      The skeleton class is recompiled immediately so the dispatcher is callable
+      right after this returns — you do not need to compile the blueprint before
+      calling add_call_delegate_node.
+      
+      
+  add_event_dispatcher_parameter
+      X.add_event_dispatcher_parameter(blueprint_path, dispatcher_name, parameter_name, parameter_type, is_array=False, container_type="") -> bool
+      Add a parameter to an Event Dispatcher's signature. Parameters become inputs
+      on the dispatcher's "Call" node and are received by all subscribers.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          dispatcher_name (str): Name of the event dispatcher
+          parameter_name (str): Name of the new parameter
+          parameter_type (str): Type string (same type-string format as add_function_local_variable)
+  
+  add_function_call_on_variable
+      X.add_function_call_on_variable(blueprint_path, graph_name, variable_name, function_name, pos_x=0.000000, pos_y=0.000000) -> str
+      Convenience: call a function off of a Blueprint variable in one shot.
+      
+      Resolves the variable's type to its owner class, creates a Get node for the
+      variable and a function-call node for the function, and wires the variable's
+      output pin into the call's "self" pin. Use this when you would otherwise
+      compose add_get_variable_node + add_function_call_node + connect_nodes.
+      
+      The variable must be an object-reference type (UObjec
+  add_function_local_variable
+      X.add_function_local_variable(blueprint_path, function_name, variable_name, variable_type, default_value="", is_array=False, container_type="") -> bool
+      Add a local variable to a function.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          function_name (str): Name of the function
+          variable_name (str): Name of the local variable
+          variable_type (str): Type string (same type-string format as add_function_local_variable)
+          default_value (str): Default value as a string (optional)
+          is_array (bool): Whether this is an arra
+  add_function_parameter
+      X.add_function_parameter(blueprint_path, function_name, parameter_name, parameter_type, is_output=False, is_reference=False, default_value="", is_array=False, container_type="") -> bool
+      Add a parameter to a function.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          function_name (str): Name of the function
+          parameter_name (str): Name of the parameter
+          parameter_type (str): Type string (same type-string format as add_function_local_variable)
+          is_output (bool): Whether this is an output parameter
+          is_reference (bool
+  add_interface
+      X.add_interface(blueprint_path, interface_path) -> bool
+      Add a Blueprint Interface to a blueprint.
+      Equivalent to: Class Settings → Interfaces → Add in the editor.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          interface_path (str): Interface asset path or short name (e.g., "BPI_TestInterface" or "/Game/interface/BPI_TestInterface")
+      
+      Returns:
+          bool: True if the interface was added successfully (or already implemented) Example: unreal.BlueprintService.add_interface("/Game/BP_Player", "BPI_TestInterface") unreal.BlueprintSer
+  add_macro_instance_node
+      X.add_macro_instance_node(blueprint_path, graph_name, macro_path, pos_x=0.000000, pos_y=0.000000) -> str
+      Add a macro instance node to a Blueprint graph.
+      
+      Creates a K2Node_MacroInstance wired to the specified macro graph so it exposes the
+      correct exec and data pins at compile time. This is the only reliable path for placing
+      macro nodes from Python — create_node_by_key("NODE K2Node_MacroInstance") produces a
+      husk with no pins because MacroGraphReference cannot be set through UObject reflection.
+      
+      Args:
+          blueprint_path (str): Full path to th
+  add_member_variable
+      X.add_member_variable(blueprint_path, variable_name, variable_type, default_value="", is_array=False, container_type="") -> bool
+      Add a member variable to a blueprint, with full type-string support (struct, object,
+      enum, and container types — parsed by the same type parser as function local variables).
+      
+      This is the Epic-less delta of variable creation: the engine's BlueprintTools.add_variable
+      covers BASIC types only (bool/int/float/name/string/text/Vector/Rotator/Transform...).
+      Use this method when the variable's type is a struct, object, or enum — e.g. the
+ 
+  add_timeline
+      X.add_timeline(blueprint_path, graph_name, timeline_name, length=5.000000, use_last_key_frame=False, auto_play=False, loop=False, pos_x=0.000000, pos_y=0.000000) -> str
+      Add a Timeline node to a graph (and the backing UTimelineTemplate on the blueprint).
+      Equivalent to the "Add Timeline..." action. The new node has exec inputs
+      (Play, PlayFromStart, Stop, Reverse, ReverseFromEnd, SetNewTime / NewTime),
+      exec outputs (Update, Finished), and a Direction output; track output pins are
+      added by add_timeline_float_track / etc.
+      
+      Args:
+          blueprint_path (st
+  add_timeline_color_key
+      X.add_timeline_color_key(blueprint_path, timeline_name, track_name, time, r, g, b, a, interp_mode="Auto") -> bool
+      Add a key to a linear-color track. (Interp mode applied to all 4 channels.)
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          timeline_name (str): Name of the timeline
+          track_name (str): Name of the color track
+          time (float): Key time in seconds
+          r (float): / G / B / A - Channel values (0..1)
+          g (float): 
+          b (float): 
+          a (float): 
+          interp_mode (str): "Auto" (smooth), "Linear",
+  add_timeline_color_track
+      X.add_timeline_color_track(blueprint_path, timeline_name, track_name) -> bool
+      Add a linear-color interpolation track (4-component UCurveLinearColor) to a timeline.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          timeline_name (str): Name of the timeline
+          track_name (str): Name of the new track (also the output pin name on the node)
+      
+      Returns:
+          bool: True if the track was added
+  add_timeline_event_key
+      X.add_timeline_event_key(blueprint_path, timeline_name, track_name, time) -> bool
+      Add a key (time only) to an event track.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          timeline_name (str): Name of the timeline
+          track_name (str): Name of the event track
+          time (float): Time in seconds at which the event fires
+      
+      Returns:
+          bool: True if the key was added
+  add_timeline_event_track
+      X.add_timeline_event_track(blueprint_path, timeline_name, track_name) -> bool
+      Add an event track to a timeline. Event tracks add a named exec output pin on the Timeline
+      node that fires when playback crosses one of the track's keys.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          timeline_name (str): Name of the timeline
+          track_name (str): Name of the new event track (also the exec output pin name)
+      
+      Returns:
+          bool: True if the track was added
+  add_timeline_float_key
+      X.add_timeline_float_key(blueprint_path, timeline_name, track_name, time, value, interp_mode="Auto") -> bool
+      Add (or replace) a keyframe on a timeline float track's curve.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          timeline_name (str): Name of the timeline
+          track_name (str): Name of the float track
+          time (float): Key time in seconds
+          value (float): Key value
+          interp_mode (str): One of "Auto" (cubic, auto tangents — smooth), "Linear", "Constant", "CubicAuto", "CubicUser". Default "Auto".
+      
+      Returns:
+  add_timeline_float_track
+      X.add_timeline_float_track(blueprint_path, timeline_name, track_name) -> bool
+      Add a float interpolation track to an existing timeline. This creates an internal
+      UCurveFloat for the track and adds a matching float output pin to the Timeline node.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          timeline_name (str): Name of the timeline (as passed to add_timeline)
+          track_name (str): Name of the new track (also the name of the output pin on the node)
+      
+      Returns:
+          bool: True if the track was added Example: unreal.Bluepri
+  add_timeline_vector_key
+      X.add_timeline_vector_key(blueprint_path, timeline_name, track_name, time, x, y, z, interp_mode="Auto") -> bool
+      Add a key to a vector track. (Same interp-mode options as add_timeline_float_key, applied to all 3 components.)
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          timeline_name (str): Name of the timeline
+          track_name (str): Name of the vector track
+          time (float): Key time in seconds
+          x (float): / Y / Z - Component values
+          y (float): 
+          z (float): 
+          interp_mode (str): "Auto" (smooth), "Line
+  add_timeline_vector_track
+      X.add_timeline_vector_track(blueprint_path, timeline_name, track_name) -> bool
+      Add a vector interpolation track (3-component UCurveVector) to a timeline.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          timeline_name (str): Name of the timeline
+          track_name (str): Name of the new track (also the output pin name on the node)
+      
+      Returns:
+          bool: True if the track was added
+  analyze_graph_layout
+      X.analyze_graph_layout(blueprint_path, graph_name) -> (out_report_json=str, out_error=str) or None
+      Measure the visual quality of a graph's current layout WITHOUT changing it.
+      Returns a JSON report with: nodeCount, wireCount, execWireCount, nodeOverlaps
+      (+ overlappingPairs), wireCrossings, backwardExecWires (+ list), longWires,
+      total/avg wire length, execWireMeanAbsDeltaY (0 = perfectly straight exec
+      backbone), graph bounds, an "issues" summary array (empty = layout looks
+      clean), and per-node bounding boxes {id, title, x, y, width, height} so an
+      agent c
+  auto_layout_graph
+      X.auto_layout_graph(blueprint_path, graph_name) -> str or None
+      Auto-layout all nodes in an existing graph.
+      Uses topological sort on execution flow + layered positioning.
+      Does not modify any connections or node logic — only positions.
+      
+      Python Usage:
+        unreal.BlueprintService.auto_layout_graph("/Game/BP_Player", "EventGraph")
+      
+      Args:
+          blueprint_path (str): 
+          graph_name (str): 
+      
+      Returns:
+          str or None: 
+      
+          out_error (str):
+  auto_layout_selected_nodes
+      X.auto_layout_selected_nodes(blueprint_path, graph_name, node_ids) -> str or None
+      Auto-layout a specific subset of nodes in a graph.
+      Uses the same topological-sort layering as auto_layout_graph but only repositions
+      the nodes whose GUIDs are listed in NodeIds — all other nodes are untouched.
+      
+      NodeIds come from node_id fields returned by get_selected_nodes() or get_nodes_in_graph().
+      
+      Python Usage:
+        # Layout whatever is currently selected in the editor
+        selected = unreal.BlueprintService.get_selected_nodes("/Game/BP_Player")
+        ids = [n
+  blueprint_exists
+      X.blueprint_exists(blueprint_path) -> bool
+      Check if a blueprint exists at the given path.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint (e.g., "/Game/Blueprints/BP_Player")
+      
+      Returns:
+          bool: True if blueprint exists Example: if not unreal.BlueprintService.blueprint_exists("/Game/Blueprints/BP_Enemy"): # Create engine-side: BlueprintFactory (set ParentClass) + AssetTools.create_asset. pass
+  build_graph
+      X.build_graph(blueprint_path, graph_name, nodes, connections, pin_defaults, auto_layout, compile_after) -> BuildGraphResult or None
+      Create multiple nodes, wire connections, and set pin defaults in a single
+      call. The entire operation is wrapped in FScopedTransaction (Ctrl+Z undoes all).
+      
+      Uses the same discovery/spawner resolution as individual methods.
+      Every connection goes through Schema->TryCreateConnection().
+      Nodes that fail to create are skipped (with errors logged).
+      Connections referencing failed nodes are skipped.
+      The graph is left in a vali
+  call_method
+      call_method(self, name: str, *args: Tuple[object, ...], **kwargs: Mapping[str, object]) -> Any -- call a method on this object via Unreal reflection using the given ordered (a tuple passed as args) or named (a dict passed as kwargs) argument data - allows calling methods that don't have Python glue
+  cast
+      cast(cls: Type[_T], object: object) -> _T -- cast the given object to this Unreal object type or raise an exception if the cast is not possible
+  clear_timeline_track_keys
+      X.clear_timeline_track_keys(blueprint_path, timeline_name, track_name) -> bool
+      Remove all keys from a track (any type).
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          timeline_name (str): Name of the timeline
+          track_name (str): Name of the track to clear
+      
+      Returns:
+          bool: True if the track was found and cleared
+  compare_components
+      X.compare_components(blueprint_path_a, component_name_a, blueprint_path_b, component_name_b) -> str or None
+      Compare properties of two components and return the differences.
+      Components can be in the same or different blueprints.
+      
+      Args:
+          blueprint_path_a (str): Full path to the first blueprint
+          component_name_a (str): Name of the first component
+          blueprint_path_b (str): Full path to the second blueprint (or same as A)
+          component_name_b (str): Name of the second component
+      
+      Returns:
+          str or None: True if comparison su
+  component_exists
+      X.component_exists(blueprint_path, component_name) -> bool
+      Check if a component exists in a blueprint.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          component_name (str): Name of the component (case-insensitive)
+      
+      Returns:
+          bool: True if component exists Example: if not unreal.BlueprintService.component_exists(bp_path, "Mesh"): unreal.BlueprintService.add_component(bp_path, "StaticMeshComponent", "Mesh")
+  configure_node
+      X.configure_node(blueprint_path, graph_name, node_id, property_name, value) -> bool
+      Configure node-specific settings. This is for setting internal node properties
+      that are not exposed as pins (like class selection on spawn nodes).
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          graph_name (str): Name of the graph
+          node_id (str): GUID of the node to configure
+          property_name (str): Name of the property to set
+          value (str): Value to set as string
+      
+      Returns:
+          bool: True if successful Example - Config
+  connect_nodes
+      X.connect_nodes(blueprint_path, graph_name, source_node_id, source_pin_name, target_node_id, target_pin_name) -> bool
+      Connect two nodes by their pins.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          graph_name (str): Name of the graph
+          source_node_id (str): GUID of the source node
+          source_pin_name (str): Name of the output pin on the source node
+          target_node_id (str): GUID of the target node
+          target_pin_name (str): Name of the input pin on the target node
+      
+      Returns:
+          bool: True if successful E
+  create_component_bound_event
+      X.create_component_bound_event(blueprint_path, graph_name, component_name, delegate_name, pos_x=0.000000, pos_y=0.000000) -> str
+      Create a component-bound event node (e.g. "On Clicked (MyButton)") — the same
+      node the Designer's green "+" next to an event creates. This is the ONLY
+      path that produces a runtime-live bound event: it initializes the delegate
+      binding params (including the auto-generated handler function name) that the
+      compiler needs to register the handler. Building the node manually via
+      create_node_by_key + configure_node compiles clean but never 
+  create_macro_graph
+      X.create_macro_graph(blueprint_path, macro_name) -> bool
+      Add a macro graph to a Blueprint (typically a Macro Library Blueprint).
+      
+      Macro graphs are referenced by K2Node_MacroInstance nodes via add_macro_instance_node.
+      Use this to create the macro graph, then reference it with the full path format:
+        "/Game/MyMacroLib.MyMacroLib:MyMacroName"
+      
+      To create a Macro Library Blueprint from Python:
+        factory = unreal.BlueprintMacroFactory()
+        factory.set_editor_property("parent_class", unreal.Actor.static_class())
+        tools = unreal.AssetToolsHel
+  create_node_by_key
+      X.create_node_by_key(blueprint_path, graph_name, spawner_key, pos_x=0.000000, pos_y=0.000000) -> str
+      Create a node by spawner key (discovered via discover_nodes).
+      This is the most flexible node creation method and supports function-call,
+      generic node-class, and event-spawner keys.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          graph_name (str): Name of the graph
+          spawner_key (str): Spawner key from discover_nodes (for example "FUNC KismetMathLibrary::Clamp", "NODE K2Node_CreateDelegate", or "EVENT StateTreeTaskBlueprintBase::R
+  delete_node
+      X.delete_node(blueprint_path, graph_name, node_id) -> bool
+      Delete a node from a graph.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          graph_name (str): Name of the graph
+          node_id (str): GUID of the node to delete
+      
+      Returns:
+          bool: True if successful Example: unreal.BlueprintService.delete_node("/Game/BP_Player", "ApplyDamage", node_id)
+  diff_blueprints
+      X.diff_blueprints(blueprint_path_a, blueprint_path_b) -> str or None
+      Compare two blueprints and return differences as string.
+      Compares variables, functions, components, and parent classes.
+      
+      Args:
+          blueprint_path_a (str): Full path to first blueprint
+          blueprint_path_b (str): Full path to second blueprint
+      
+      Returns:
+          str or None: True if differences found, false if identical Python Usage (out params become return values): has_diff, diff_text = unreal.BlueprintService.diff_blueprints("/Game/BP_Player", "/Game/BP_Enemy")
+      
+        
+  disconnect_pin
+      X.disconnect_pin(blueprint_path, graph_name, node_id, pin_name) -> bool
+      Disconnect a pin from all its connections.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          graph_name (str): Name of the graph
+          node_id (str): GUID of the node
+          pin_name (str): Name of the pin to disconnect
+      
+      Returns:
+          bool: True if any connections were broken Example: unreal.BlueprintService.disconnect_pin("/Game/BP_Player", "ApplyDamage", node_id, "then")
+  discover_nodes
+      X.discover_nodes(blueprint_path, search_term="", category="", max_results=20) -> Array[BlueprintNodeTypeInfo]
+      Discover available node types that can be created in a blueprint.
+      Mimics the Blueprint editor's "Add Node" context menu and includes
+      Blueprint action database event spawners such as Add Custom Event and parent event overrides.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint (for context-aware suggestions)
+          search_term (str): Search term to filter nodes (partial match)
+          category (str): Optional category filter (e.g., "Mat
+  function_call_exists
+      X.function_call_exists(blueprint_path, graph_name, function_name) -> bool
+      Check if a function call node exists in a graph (calls a specific function).
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          graph_name (str): Name of the graph
+          function_name (str): Function name being called (case-insensitive)
+      
+      Returns:
+          bool: True if a call to that function exists Example: if not unreal.BlueprintService.function_call_exists(bp_path, "EventGraph", "PrintString"): unreal.BlueprintService.add_print_string_node(bp_path, "EventGrap
+  function_exists
+      X.function_exists(blueprint_path, function_name) -> bool
+      Check if a function exists in a blueprint.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          function_name (str): Name of the function (case-insensitive)
+      
+      Returns:
+          bool: True if function exists Example: if not unreal.BlueprintService.function_exists(bp_path, "ApplyDamage"): unreal.BlueprintService.create_function(bp_path, "ApplyDamage")
+  get_all_component_properties
+      X.get_all_component_properties(blueprint_path, component_name, include_inherited=True) -> Array[ComponentPropertyInfo]
+      Get all properties of a component in a blueprint.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          component_name (str): Name of the component
+          include_inherited (bool): Whether to include inherited properties (default: true)
+      
+      Returns:
+          Array[ComponentPropertyInfo]: Array of property information Example: props = unreal.BlueprintService.get_all_component_properties("/Game/BP_Player", "Mesh") for prop in 
+  get_available_components
+      X.get_available_components(search_filter="", max_results=50) -> Array[ComponentTypeInfo]
+      Get available component types that can be added to blueprints.
+      Use this to discover what components are available before adding them.
+      
+      Args:
+          search_filter (str): Optional filter to search by name (partial match, case-insensitive)
+          max_results (int32): Maximum number of results to return (default 50)
+      
+      Returns:
+          Array[ComponentTypeInfo]: Array of available component types Example - Get all available components: types = unreal.BlueprintService.ge
+  get_blueprint_info
+      X.get_blueprint_info(blueprint_path) -> BlueprintDetailedInfo or None
+      Get comprehensive blueprint information.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint (e.g., "/Game/Blueprints/BP_Player_Test")
+      
+      Returns:
+          BlueprintDetailedInfo or None: True if successful, false if blueprint not found or invalid Python Usage (out params become return values): info = unreal.BlueprintService.get_blueprint_info("/Game/BP_Player_Test") if info: print(f"Found {len(info.variables)} variables")
+      
+          out_info (BlueprintDetailedInfo): Structure 
+  get_class
+      get_class(self) -> Class -- get the Unreal class of this instance
+  get_component_hierarchy
+      X.get_component_hierarchy(blueprint_path) -> Array[BlueprintComponentInfo]
+      Get the component hierarchy as a flat list with parent information.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+      
+      Returns:
+          Array[BlueprintComponentInfo]: Array of components with hierarchy information Example: hierarchy = unreal.BlueprintService.get_component_hierarchy("/Game/BP_Player_Test") for comp in hierarchy: indent = "  " if comp.attach_parent else "" print(f"{indent}{comp.component_name} ({comp.component_class})")
+  get_component_info
+      X.get_component_info(component_type) -> ComponentDetailedInfo or None
+      Get detailed information about a component type.
+      
+      Args:
+          component_type (str): Component class name (e.g., "StaticMeshComponent")
+      
+      Returns:
+          ComponentDetailedInfo or None: True if successful Example: info = unreal.BlueprintService.get_component_info("StaticMeshComponent")  # ComponentDetailedInfo or None if info: print(f"Properties: {info.property_count}, Functions: {info.function_count}")
+      
+          out_info (ComponentDetailedInfo): Detailed component type information
+  get_component_property
+      X.get_component_property(blueprint_path, component_name, property_name) -> str or None
+      Get a property value from a component in a blueprint.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          component_name (str): Name of the component
+          property_name (str): Name of the property to get
+      
+      Returns:
+          str or None: True if successful Example: value = unreal.BlueprintService.get_component_property("/Game/BP_Player", "Mesh", "RelativeLocation")  # str or None
+      
+          out_value (str): Property value as a string
+  get_connections
+      X.get_connections(blueprint_path, graph_name) -> Array[BlueprintConnectionInfo]
+      Get all connections in a graph.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          graph_name (str): Name of the graph
+      
+      Returns:
+          Array[BlueprintConnectionInfo]: Array of connection information Example: connections = unreal.BlueprintService.get_connections("/Game/BP_Player", "ApplyDamage") for conn in connections: print(f"{conn.source_node_title}.{conn.source_pin_name} -> {conn.target_node_title}.{conn.target_pin_name}")
+  get_custom_event_inputs
+      X.get_custom_event_inputs(blueprint_path, graph_name, node_id) -> Array[BlueprintFunctionParameterInfo]
+      List the input parameters (user-defined input pins) of a Custom Event node.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          graph_name (str): Name of the graph containing the node
+          node_id (str): GUID of the Custom Event node
+      
+      Returns:
+          Array[BlueprintFunctionParameterInfo]: Array of parameter info (parameter_name / parameter_type), empty if the node has no inputs or isn't a Custom Event Example: for p in unreal.Blue
+  get_default_object
+      get_default_object(cls: Type[_T]) -> _T -- get the Unreal class default object (CDO) of this type
+  get_editor_property
+      get_editor_property(self, name: str) -> object -- get the value of any property visible to the editor
+  get_fname
+      get_fname(self) -> Name -- get the name of this instance
+  get_focused_graph_context
+      X.get_focused_graph_context() -> BlueprintFocusContext
+      Report the graph the user is currently focused on — which asset, which graph,
+      its kind/size, and what's selected — in a single call. Covers Blueprint-family
+      editors (graph_kind Ubergraph/Function/Macro/DelegateSignature) and the
+      Material editor (graph_kind "Material").
+      
+      VibeUE's analogue of Epic's UAIAssistantToolset::GetDockedContext(). Epic
+      anchors on the AI assistant's own docked widget; VibeUE has no in-editor
+      widget, so it anchors on the globally-active dock tab and falls back to the
+   
+  get_full_name
+      get_full_name(self) -> str -- get the full name (class name + full path) of this instance
+  get_function_info
+      X.get_function_info(blueprint_path, function_name) -> BlueprintFunctionDetailedInfo or None
+      Get detailed information about a specific function.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          function_name (str): Name of the function
+      
+      Returns:
+          BlueprintFunctionDetailedInfo or None: True if successful Example: info = unreal.BlueprintService.get_function_info("/Game/BP_Player", "ApplyDamage")  # detailed info struct or None if info: print(f"Nodes: {info.node_count}, Pure: {info.is_pure}") for param in info.input_parameters: prin
+  get_function_parameters
+      X.get_function_parameters(blueprint_path, function_name) -> Array[BlueprintFunctionParameterInfo]
+      Get detailed parameter information for a function.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          function_name (str): Name of the function
+      
+      Returns:
+          Array[BlueprintFunctionParameterInfo]: Array of parameter information Example: params = unreal.BlueprintService.get_function_parameters("/Game/BP_Player", "ApplyDamage") for param in params: print(f"{param.parameter_name}: {param.parameter_type} (output={param.is_output})")
+  get_graph_definition
+      X.get_graph_definition(blueprint_path, graph_name) -> (out_nodes=Array[GraphNodeDesc], out_connections=Array[GraphConnectionDesc], out_pin_defaults=Array[GraphPinDefaultDesc], out_error=str) or None
+      Get the definition of an existing graph in the batch builder format.
+      The returned definition can be fed back into BuildGraph.
+      Enables round-tripping and learning from hand-built graphs.
+      
+      Python Usage:
+        success, nodes, connections, defaults, error = \
+            unreal.BlueprintService.get_graph_definition("/Game/BP_Player", "EventGraph")
+      
+      Args:
+    
+  get_graph_summary
+      X.get_graph_summary(blueprint_path, graph_name) -> BlueprintGraphSummary or None
+      Get a fixed-size overview of a graph: node/connection counts, blueprint
+      compile status, entry points, and a node-class histogram. Use this as the
+      default first read on any graph — its payload does not grow with graph
+      size, unlike get_nodes_in_graph.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          graph_name (str): Name of the graph
+      
+      Returns:
+          BlueprintGraphSummary or None: True if the blueprint and graph were found Example: s = un
+  get_name
+      get_name(self) -> str -- get the name of this instance
+  get_node_details
+      X.get_node_details(blueprint_path, graph_name, node_id) -> BlueprintNodeDetailedInfo or None
+      Get detailed information about a specific node in a graph.
+      Returns complete pin information including connections.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          graph_name (str): Name of the graph
+          node_id (str): GUID of the node
+      
+      Returns:
+          BlueprintNodeDetailedInfo or None: True if successful Example: info = unreal.BlueprintService.get_node_details("/Game/BP_Player", "EventGraph", node_id)  # detailed info struct or No
+  get_node_pins
+      X.get_node_pins(blueprint_path, graph_name, node_id) -> Array[BlueprintPinInfo]
+      Get detailed pin information for a specific node.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          graph_name (str): Name of the graph
+          node_id (str): GUID of the node
+      
+      Returns:
+          Array[BlueprintPinInfo]: Array of pin information Example: pins = unreal.BlueprintService.get_node_pins("/Game/BP_Player", "ApplyDamage", "45CC026642D99D1D713EDCA5C483E490") for pin in pins: print(f"{pin.pin_name} ({pin.pin_type}) - {'input' if pin.is_input else 'ou
+  get_nodes_in_graph
+      X.get_nodes_in_graph(blueprint_path, graph_name, max_nodes=0, name_filter="", include_pins=True) -> Array[BlueprintNodeInfo]
+      Get all nodes in a graph.
+      
+      On large graphs the full dump is expensive — prefer get_graph_summary first,
+      then narrow this call with the optional filters.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          graph_name (str): Name of the graph
+          max_nodes (int32): Cap on returned nodes; 0 = unlimited (default)
+          name_filter (str): Case-insensitive substring match against node title, node type, or no
+  get_outer
+      get_outer(self) -> Any -- get the outer object from this instance (if any)
+  get_outermost
+      get_outermost(self) -> Package -- get the outermost object (the package) from this instance
+  get_package
+      get_package(self) -> Package -- get the package directly associated with this instance
+  get_parent_class
+      X.get_parent_class(blueprint_path) -> str
+      Get the parent class of a blueprint.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+      
+      Returns:
+          str: Parent class name, or empty string if not found Example: parent = unreal.BlueprintService.get_parent_class("/Game/BP_Player_Test")
+  get_path_name
+      get_path_name(self) -> str -- get the path name of this instance
+  get_property
+      X.get_property(blueprint_path, property_name) -> str or None
+      Get a property value from a blueprint's Class Default Object (CDO).
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          property_name (str): Name of the property to get
+      
+      Returns:
+          str or None: True if successful Python Usage — bool + out param collapse into ONE return value (str or None, NOT a tuple): value = unreal.BlueprintService.get_property("/Game/BP_Player", "Health")   # e.g. "150.0", or None if not found Use the native C++ property name: booleans KEEP the 'b' pref
+  get_selected_nodes
+      X.get_selected_nodes(blueprint_path="") -> Array[BlueprintNodeInfo]
+      Get the nodes currently selected by the user in an open Blueprint editor.
+      
+      Reads the live selection from FBlueprintEditor::GetSelectedNodes(). The
+      Blueprint must already be open in the editor (graph selection only exists
+      on the open Slate panel — there is no persisted selection state on the
+      asset itself). Use this to act on whatever the user has highlighted in
+      the graph (e.g. inspect, reposition, document, or programmatically edit
+      the selected nodes).
+      ({n.pos_x},{n.pos_y})"
+  get_timelines
+      X.get_timelines(blueprint_path) -> Array[BlueprintFunctionParameterInfo]
+      List the timelines on a blueprint, with their float track names.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+      
+      Returns:
+          Array[BlueprintFunctionParameterInfo]: Array of "TimelineName" entries; each entry's ParameterType lists comma-separated float track names Example: for t in unreal.BlueprintService.get_timelines("/Game/StateTree/BP_Cube"): print(t.parameter_name, "tracks:", t.parameter_type)
+  get_typed_outer
+      get_typed_outer(self, type: Union[Class, type]) -> Any -- get the first outer object of the given type from this instance (if any)
+  get_variable_info
+      X.get_variable_info(blueprint_path, variable_name) -> BlueprintVariableDetailedInfo or None
+      Get detailed information about a specific variable.
+      Use this to discover all properties that can be modified before calling ModifyVariable.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          variable_name (str): Name of the variable
+      
+      Returns:
+          BlueprintVariableDetailedInfo or None: True if successful Example: info = unreal.BlueprintService.get_variable_info("/Game/BP_Player", "Health")  # BlueprintVariableDetailedInfo or None if info:
+  get_world
+      get_world(self) -> Optional[World] -- get the world associated with this instance (if any)
+  is_editor_property_overridden
+      x.is_editor_property_overridden(property_name) -> EditorPropertyValueState
+      Attempts to query whether the value of a named property on the given object overrides the value of its archetype (ie, would ResetEditorProperty do anything?).
+      
+      Args:
+          property_name (Name): The name of the object property to query the value of.
+      
+      Returns:
+          EditorPropertyValueState: What state the requested property is in.
+  is_package_external
+      is_package_external(self) -> bool -- returns true if this instance has a different package than its outer's package
+  is_widget_blueprint
+      X.is_widget_blueprint(blueprint_path) -> bool
+      Check if a blueprint is a Widget Blueprint.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+      
+      Returns:
+          bool: True if it's a Widget Blueprint Example: is_widget = unreal.BlueprintService.is_widget_blueprint("/Game/UI/WBP_MainMenu")
+  list_component_properties
+      X.list_component_properties(blueprint_path, component_name, include_inherited=True) -> Array[ComponentPropertyInfo]
+      List all properties of a component in a blueprint.
+      This is an alias for GetAllComponentProperties with a more intuitive name.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          component_name (str): Name of the component
+          include_inherited (bool): Whether to include inherited properties (default: true)
+      
+      Returns:
+          Array[ComponentPropertyInfo]: Array of property information Example: props = unreal.Bluepr
+  list_components
+      X.list_components(blueprint_path) -> Array[BlueprintComponentInfo]
+      List all components in a blueprint.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+      
+      Returns:
+          Array[BlueprintComponentInfo]: Array of component information Example: comps = unreal.BlueprintService.list_components("/Game/BP_Player_Test")
+  list_function_local_variables
+      X.list_function_local_variables(blueprint_path, function_name) -> Array[BlueprintLocalVariableInfo]
+      List all local variables in a function.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          function_name (str): Name of the function
+      
+      Returns:
+          Array[BlueprintLocalVariableInfo]: Array of local variable information Example: locals = unreal.BlueprintService.list_function_local_variables("/Game/BP_Player", "ApplyDamage") for var in locals: print(f"{var.variable_name}: {var.variable_type} = {var.default_value}")
+  list_functions
+      X.list_functions(blueprint_path) -> Array[VibeBlueprintFunctionInfo]
+      List all functions in a blueprint.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+      
+      Returns:
+          Array[VibeBlueprintFunctionInfo]: Array of function information Example: funcs = unreal.BlueprintService.list_functions("/Game/BP_Player_Test")
+  list_graphs
+      X.list_graphs(blueprint_path) -> Array[BlueprintGraphInfo]
+      Enumerate every UEdGraph attached to a Blueprint — ubergraph pages, functions,
+      macros, and delegate signature graphs.
+      
+      Use this when you don't know the exact name of a graph tab. The default
+      Blueprint editor only exposes "EventGraph" by name; user-created ubergraph
+      pages (e.g. "Graph_PlayerInput") and inherited function graphs are invisible
+      without this enumeration.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint (e.g., "/Game/Blueprints/BP_Player_Test")
+      
+   
+  list_overridable_functions
+      X.list_overridable_functions(blueprint_path) -> Array[OverridableFunctionInfo]
+      List all functions from the parent class hierarchy that can be overridden
+      in this blueprint (BlueprintImplementableEvent / BlueprintNativeEvent).
+      Each entry reports whether the override already exists in this blueprint.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+      
+      Returns:
+          Array[OverridableFunctionInfo]: Array of overridable function info Example: funcs = unreal.BlueprintService.list_overridable_functions("/Game/StateTree/STT_Rotate") for f in
+  list_variables
+      X.list_variables(blueprint_path) -> Array[BlueprintVariableInfo]
+      List all variables in a blueprint.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+      
+      Returns:
+          Array[BlueprintVariableInfo]: Array of variable information Example: vars = unreal.BlueprintService.list_variables("/Game/BP_Player_Test") for var in vars: print(f"{var.variable_name}: {var.variable_type}")
+  local_variable_exists
+      X.local_variable_exists(blueprint_path, function_name, variable_name) -> bool
+      Check if a local variable exists in a function.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          function_name (str): Name of the function
+          variable_name (str): Name of the local variable (case-insensitive)
+      
+      Returns:
+          bool: True if local variable exists Example: if not unreal.BlueprintService.local_variable_exists(bp_path, "ApplyDamage", "TempValue"): unreal.BlueprintService.add_function_local_variable(bp_path, "ApplyDamage", "TempValue", "flo
+  modify
+      modify(self, always_mark_dirty: bool = True) -> bool -- inform that this instance is about to be modified (tracks changes for undo/redo if transactional)
+  modify_custom_event_input
+      X.modify_custom_event_input(blueprint_path, graph_name, node_id, parameter_name, new_name="", new_type="", is_array=False, container_type="") -> bool
+      Modify an existing input parameter on a Custom Event node — rename it, change its type, or both.
+      Existing connections are preserved where the change allows (a rename keeps wires; a type change
+      keeps wires only if the new type is compatible).
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          graph_name (str): Name of the graph containing the node
+          node_id (str): GUID of the Custom Ev
+  modify_timeline
+      X.modify_timeline(blueprint_path, timeline_name, new_name="", length=-1.000000, use_last_key_frame=-1, auto_play=-1, loop=-1, replicated=-1, ignore_time_dilation=-1) -> bool
+      Modify settings on an existing timeline. Pass a sentinel to leave a setting unchanged:
+      empty string for NewName, a negative number for Length, and -1 for the int flags
+      (0 = false, 1 = true).
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          timeline_name (str): Current name of the timeline
+          new_name (str): New name (also renames the component variable & event
+  node_exists
+      X.node_exists(blueprint_path, graph_name, node_title) -> bool
+      Check if a node with the given title exists in a graph.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          graph_name (str): Name of the graph ("EventGraph", function name, etc.)
+          node_title (str): Node title to search for (case-insensitive)
+      
+      Returns:
+          bool: True if a node with matching title exists Example: if not unreal.BlueprintService.node_exists(bp_path, "EventGraph", "Event BeginPlay"): # Add BeginPlay event
+  open_function_graph
+      X.open_function_graph(blueprint_path, function_name) -> bool
+      Open a blueprint and navigate to a specific function graph.
+      Opens the blueprint editor and focuses on the specified function tab.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          function_name (str): Name of the function to open (use "EventGraph" for main graph)
+      
+      Returns:
+          bool: True if successful Example - Open a function graph: unreal.BlueprintService.open_function_graph("/Game/BP_Player", "ApplyDamage") Example - Open the EventGraph: unreal.BlueprintService.op
+  override_function
+      X.override_function(blueprint_path, function_name) -> bool
+      Override a parent-class BlueprintImplementableEvent or BlueprintNativeEvent.
+      Equivalent to selecting a function from the "Override" dropdown in the editor.
+      
+      Automatically chooses the correct mechanism:
+        - Functions with FUNC_Event (void/latent — EnterState, StateCompleted, Tick etc.)
+          → adds an event node to the EventGraph (same as add_event_node)
+        - Functions that return a value (GetDescription etc.)
+          → creates a function graph with entry + result nodes
+      
+      Idempotent — 
+  recombine_pin
+      X.recombine_pin(blueprint_path, graph_name, node_id, pin_name) -> bool
+      Recombine a previously split pin back into a single struct pin.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          graph_name (str): Name of the graph
+          node_id (str): GUID of the node
+          pin_name (str): Base name of the split pin to recombine
+      
+      Returns:
+          bool: True if successful Example: unreal.BlueprintService.recombine_pin("/Game/BP_Player", "EventGraph", node_id, "ReturnValue")
+  refresh_node
+      X.refresh_node(blueprint_path, graph_name, node_id, compile=True) -> bool
+      Refresh/reconstruct a node to update its pins and connections.
+      Useful after modifying a function signature or when pins are out of date.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          graph_name (str): Name of the graph
+          node_id (str): GUID of the node to refresh
+          compile (bool): Whether to compile the blueprint after refresh (default: true)
+      
+      Returns:
+          bool: True if successful Example: unreal.BlueprintService.refresh_node("/Game/B
+  remove_component
+      X.remove_component(blueprint_path, component_name, remove_children=True) -> bool
+      Remove a component from a blueprint.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          component_name (str): Name of the component to remove
+          remove_children (bool): Whether to also remove child components (default: true)
+      
+      Returns:
+          bool: True if successful Example: unreal.BlueprintService.remove_component("/Game/BP_Player", "OldMesh")
+  remove_custom_event_input
+      X.remove_custom_event_input(blueprint_path, graph_name, node_id, parameter_name) -> bool
+      Remove an input parameter (user-defined input pin) from a Custom Event node.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          graph_name (str): Name of the graph containing the node
+          node_id (str): GUID of the Custom Event node
+          parameter_name (str): Name of the input pin to remove
+      
+      Returns:
+          bool: True if the pin existed and was removed Example: unreal.BlueprintService.remove_custom_event_input("/Game/StateTree/BP_Cube", "
+  remove_event_dispatcher
+      X.remove_event_dispatcher(blueprint_path, dispatcher_name) -> bool
+      Remove a Blueprint Event Dispatcher and its signature graph.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          dispatcher_name (str): Name of the event dispatcher to remove
+      
+      Returns:
+          bool: True if found and removed Example: unreal.BlueprintService.remove_event_dispatcher("/Game/BP_Player", "OnHealthChanged")
+  remove_function_local_variable
+      X.remove_function_local_variable(blueprint_path, function_name, variable_name) -> bool
+      Remove a local variable from a function.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          function_name (str): Name of the function
+          variable_name (str): Name of the local variable to remove
+      
+      Returns:
+          bool: True if successful Example: unreal.BlueprintService.remove_function_local_variable("/Game/BP_Player", "ApplyDamage", "TempVar")
+  remove_function_parameter
+      X.remove_function_parameter(blueprint_path, function_name, parameter_name, is_output=False) -> bool
+      Remove a parameter from a function.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          function_name (str): Name of the function
+          parameter_name (str): Name of the parameter to remove
+          is_output (bool): Whether this is an output parameter (default: false for input)
+      
+      Returns:
+          bool: True if successful Example: unreal.BlueprintService.remove_function_parameter("/Game/BP_Player", "ApplyDamage", "OldParam") unreal.Blue
+  remove_interface
+      X.remove_interface(blueprint_path, interface_path) -> bool
+      Remove a Blueprint Interface from a blueprint.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          interface_path (str): Interface asset path or short name
+      
+      Returns:
+          bool: True if the interface was removed successfully Example: unreal.BlueprintService.remove_interface("/Game/BP_Player", "BPI_TestInterface")
+  remove_timeline
+      X.remove_timeline(blueprint_path, timeline_name) -> bool
+      Remove a timeline from a blueprint — deletes the Timeline node and its UTimelineTemplate.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          timeline_name (str): Name of the timeline to remove
+      
+      Returns:
+          bool: True if the timeline existed and was removed Example: unreal.BlueprintService.remove_timeline("/Game/StateTree/BP_Cube", "LookAtTimeline")
+  remove_timeline_key
+      X.remove_timeline_key(blueprint_path, timeline_name, track_name, time, tolerance=0.001000) -> bool
+      Remove a key near a given time from a track of any type (all component curves for vector/color).
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          timeline_name (str): Name of the timeline
+          track_name (str): Name of the track
+          time (float): Key time in seconds
+          tolerance (float): Time tolerance for matching the key (default 0.001)
+      
+      Returns:
+          bool: True if at least one key was removed
+  remove_timeline_track
+      X.remove_timeline_track(blueprint_path, timeline_name, track_name) -> bool
+      Remove a track of any type from a timeline (and its output pin on the node).
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          timeline_name (str): Name of the timeline
+          track_name (str): Name of the track to remove
+      
+      Returns:
+          bool: True if the track existed and was removed
+  rename
+      rename(self, name: Union[Name, str]="None", outer: Optional[Object]=None) -> bool -- rename this instance and/or change its outer
+  rename_timeline_track
+      X.rename_timeline_track(blueprint_path, timeline_name, old_track_name, new_track_name) -> bool
+      Rename a track on a timeline (and its output pin on the node).
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          timeline_name (str): Name of the timeline
+          old_track_name (str): Current track name
+          new_track_name (str): New track name (must be unique on the timeline)
+      
+      Returns:
+          bool: True if the track was found and renamed
+  reparent_component
+      X.reparent_component(blueprint_path, component_name, new_parent_name) -> bool
+      Reparent a component to a new parent in the hierarchy.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          component_name (str): Name of the component to reparent
+          new_parent_name (str): Name of the new parent component
+      
+      Returns:
+          bool: True if successful Example: unreal.BlueprintService.reparent_component("/Game/BP_Player", "Light", "NewRoot")
+  reset_editor_property
+      x.reset_editor_property(property_name, change_notify_mode=PropertyAccessChangeNotifyMode.DEFAULT) -> bool
+      Attempts to reset the value of a named property on the given object so that it matches the value of the archetype.
+      
+      Args:
+          property_name (Name): The name of the object property to reset the value of.
+          change_notify_mode (PropertyAccessChangeNotifyMode): When to emit property change notifications.
+      
+      Returns:
+          bool: Whether the property value was found and correctly reset.
+  search_variable_types
+      X.search_variable_types(search_term="", category="", max_results=20) -> Array[VariableTypeInfo]
+      Search for available variable types.
+      Use this to discover valid type names/paths before creating variables.
+      
+      Args:
+          search_term (str): Search term to filter types (partial match, case-insensitive)
+          category (str): Filter by category: "Basic", "Structure", "Object", "Enum" (empty for all)
+          max_results (int32): Maximum number of results to return (default 20)
+      
+      Returns:
+          Array[VariableTypeInfo]: Array of matching type information E
+  set_collision_settings
+      X.set_collision_settings(blueprint_path, component_name, collision_enabled, object_type, collision_profile, channel_responses) -> bool
+      Set collision settings on a primitive component in a blueprint.
+      
+      Collision properties live inside UPrimitiveComponent::BodyInstance and cannot be set
+      via set_component_property (which only resolves top-level properties). Use this method
+      to configure collision profile, enabled state, object type, and per-channel responses.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          component_name (str): N
+  set_component_property
+      X.set_component_property(blueprint_path, component_name, property_name, property_value) -> bool
+      Set a property value on a component in a blueprint.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          component_name (str): Name of the component
+          property_name (str): Name of the property to set
+          property_value (str): Value to set as a string
+      
+      Returns:
+          bool: True if successful Example - Set relative location: unreal.BlueprintService.set_component_property("/Game/BP_Player", "Mesh", "RelativeLocation", "(X=0,Y=0,Z=50
+  set_editor_properties
+      set_editor_properties(self, properties: Mapping[str, object]) -> None -- set the value of any properties visible to the editor (from a name->value dict), ensuring that the pre/post change notifications are called
+  set_editor_property
+      set_editor_property(self, name: str, value: object, notify_mode: PropertyAccessChangeNotifyMode=PropertyAccessChangeNotifyMode.DEFAULT) -> None -- set the value of any property visible to the editor, ensuring that the pre/post change notifications are called
+  set_node_pin_value
+      X.set_node_pin_value(blueprint_path, graph_name, node_id, pin_name, value) -> bool
+      Set a pin's default value on a node.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          graph_name (str): Name of the graph
+          node_id (str): GUID of the node
+          pin_name (str): Name of the pin to set
+          value (str): Value to set as string
+      
+      Returns:
+          bool: True if successful Example - Set string value: unreal.BlueprintService.set_node_pin_value("/Game/BP_Player", "EventGraph", node_id, "InString", "Hello World") Example - Set nu
+  set_node_position
+      X.set_node_position(blueprint_path, graph_name, node_id, pos_x=0.000000, pos_y=0.000000) -> bool
+      Set the position of a node in a graph.
+      Use this to reposition Entry/Result nodes for clean layouts.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          graph_name (str): Name of the graph
+          node_id (str): GUID of the node to reposition
+          pos_x (float): New X position in the graph
+          pos_y (float): New Y position in the graph
+      
+      Returns:
+          bool: True if successful Example - Reposition Result node to end of funct
+  set_property
+      X.set_property(blueprint_path, property_name, property_value) -> bool
+      Set a property value on a blueprint's Class Default Object (CDO).
+      WARNING: Modifying CDO can cause instability. Prefer using variables and defaults instead.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          property_name (str): Name of the property to set
+          property_value (str): Value to set as a string
+      
+      Returns:
+          bool: True if successful Example: unreal.BlueprintService.set_property("/Game/BP_Player", "Health", "150.0")
+  set_root_component
+      X.set_root_component(blueprint_path, component_name) -> bool
+      Set a component as the root component of the blueprint.
+      The component must be a SceneComponent and must exist in the blueprint.
+      The previous root's children are reparented to the new root. If the previous root was
+      the auto-generated DefaultSceneRoot it is removed entirely (matching the Blueprint
+      editor); a previous user-created root becomes a child of the new root. Any other
+      root-level scene components are also folded under the new root, since an actor has
+      exactly one scene root.
+      
+     
+  set_variable_default_value
+      X.set_variable_default_value(blueprint_path, variable_name, default_value) -> bool
+      Set the default value of an existing variable.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          variable_name (str): Name of the variable
+          default_value (str): New default value as a string
+      
+      Returns:
+          bool: True if successful Example: unreal.BlueprintService.set_variable_default_value("/Game/BP_Player", "Health", "150.0")
+  split_pin
+      X.split_pin(blueprint_path, graph_name, node_id, pin_name) -> bool
+      Split a struct pin into individual member pins.
+      Works on struct types like FVector, FRotator, FTransform, etc.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          graph_name (str): Name of the graph
+          node_id (str): GUID of the node
+          pin_name (str): Name of the struct pin to split
+      
+      Returns:
+          bool: True if successful Example - Split a Vector output: unreal.BlueprintService.split_pin("/Game/BP_Player", "EventGraph", node_id, "ReturnValue") # Now
+  static_class
+      static_class(cls) -> Class -- get the Unreal class of this type
+  update_function_local_variable
+      X.update_function_local_variable(blueprint_path, function_name, variable_name, new_name="", new_type="", new_default_value="") -> bool
+      Update a local variable in a function.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          function_name (str): Name of the function
+          variable_name (str): Current name of the local variable
+          new_name (str): New name for the variable (empty to keep current)
+          new_type (str): New type for the variable (empty to keep current)
+          new_default_value (str): New default value (empty to keep curr
+  variable_exists
+      X.variable_exists(blueprint_path, variable_name) -> bool
+      Check if a variable exists in a blueprint.
+      
+      Args:
+          blueprint_path (str): Full path to the blueprint
+          variable_name (str): Name of the variable (case-insensitive)
+      
+      Returns:
+          bool: True if variable exists Example: if not unreal.BlueprintService.variable_exists(bp_path, "Health"): unreal.BlueprintService.add_member_variable(bp_path, "Health", "float")
+== unreal.UMGService : NOT PRESENT
+== unreal.AssetService : NOT PRESENT

@@ -1,0 +1,16 @@
+# the agent's output is a RESULT of a run, not part of the harness
+run/
+*.log
+qa-shots/
+__pycache__/
+.DS_Store
+
+# the agent run output lives in the run repo, not the published harness
+docs/shots/
+docs/film/
+
+# agent scratch, never publish
+.claude/worktrees/
+.claude/shell-snapshots/
+.claude/todos/
+.claude/projects/
