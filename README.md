@@ -18,12 +18,6 @@
          autoplay loop muted playsinline controls width="100%"></video>
 </p>
 
-<p align="center">
-  <em>Arrival, the entry screen, driving, the map, the city from the air.<br>
-  An agent built all of it, including the menu. Output of one run, shown to say what the<br>
-  benchmark asks for — no run output is committed here beyond these few seconds.</em>
-</p>
-
 One agent. One Unreal Engine editor, driven live over MCP. A fierce brief, a shelf of production
 knowledge, and no human help.
 
