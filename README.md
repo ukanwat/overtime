@@ -52,9 +52,35 @@ no results — what an agent produces is the output of a run, and belongs to tha
 | `run-many.sh` | Sequential unattended sessions, single-instance locked. |
 | `ue_qa.py` | Sensor: viewport capture and inspection so the agent can see its own work. |
 | `prep-project.sh` | Creates the project skeleton if you're starting from nothing. |
+| `setup-capabilities.sh` | Widens what the agent can reach: enables engine plugins in the `.uproject`, turns on renderer features that are off by default, installs the Python libraries a world generator wants, and the optional local image/mesh/audio tools. Idempotent. |
 | `project/` | The project skeleton: `.uproject` with the required plugins, and the config that auto-starts the MCP server. Copy it to `AgentCity/` to begin. |
 | `HARNESS-RULES.md` | **Read this.** The line between operating the harness and doing the agent's job. Breaking it invalidates the result. |
 | `SETUP.md`, `SETUP-VERIFIED.md` | Install steps, and the ones that actually worked, with every trap we hit. |
+
+### Running unattended
+
+A long run outlives your attention, so these exist to keep one going without a human watching, and
+to tell you honestly whether it is working or merely running.
+
+| Path | What it is |
+|---|---|
+| `supervise.sh` | Keeps exactly one runner alive indefinitely, with exponential backoff so a broken editor or a dead credential cannot turn into a relaunch loop. Honours a pause file so a manual restart cannot race it. |
+| `health.sh` | One-shot check: process counts, the MCP bridge, who holds the port, commit age, and whether the agent is *taking turns* rather than merely existing. Exits non-zero if anything is wrong. |
+| `restart-agent.sh` | The only safe manual restart: pause the supervisor, stop the runner and agent, verify they are actually dead, then relaunch and release the pause. |
+
+Two lessons are baked into these, and both cost real time to learn. **Counting processes with
+`pgrep -f` also matches the shell running your check**, which manufactures phantom duplicates —
+`health.sh` counts process trees with an anchored pattern instead. And **a runner and an editor
+both being up is not progress**: if something else holds the MCP port, every boot produces an
+editor with no bridge and the runner cycles forever. Liveness has to be measured from work done,
+not from processes present.
+
+### Optional extras
+
+| Path | What it is |
+|---|---|
+| `gen-image.py` | On-device image generation for the printed matter a city is covered in — signage, posters, billboards, brands. Runs locally, no API key. |
+| `appui.py` | Helper for authoring UMG widgets from Python, for the game's own screens. |
 
 ## Prerequisites
 

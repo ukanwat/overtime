@@ -59,7 +59,7 @@ Ambience, engine sound, radio, weather, particles. Keyed to the now-stable world
 
 ## 7. Optimization (continuous from step 4, not a final chore)
 Profile, then fix. Draw calls, instancing, texture budget.
-**Gate:** inside the budget in [../tech/stack.md](../tech/stack.md).
+**Gate:** inside the budget in [../tech/capabilities.md](../tech/capabilities.md).
 Rule: optimizing before geometry is stable is wasted work; discovering a budget
 problem after art is locked is worse.
 

@@ -26,7 +26,7 @@ engine content — rather than settling for grey-box placeholders. `docs/tech/ca
 the inventory of what is switched on and installed for you; there is far more there than a
 default project has.
 
-`docs/sources/verified-2026-08.md` lists sources tested live with every login wall named —
+`docs/sources/verified.md` lists sources tested live with every login wall named —
 including on-disk libraries for models, humans, animation, real-world building heights and
 professional game audio.
 

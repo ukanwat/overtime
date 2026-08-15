@@ -46,7 +46,7 @@ physics-tuning · procedural-gen · audio-design · game-ui-ux · shader-program
 input-systems · dialogue-systems · game-ai · save-systems).
 
 ## sources/ — getting assets in
-- `sources/verified-2026-08.md` — sources tested live with the login walls named: Objaverse and Poly Haven and Smithsonian for models, MPFB2 and 100STYLE and Mixamo for humans, Overture and Geofabrik and Microsoft footprints for real-world data, Sonniss and Freesound and EchoThief impulse responses for sound
+- `sources/verified.md` — sources tested live with the login walls named: Objaverse and Poly Haven and Smithsonian for models, MPFB2 and 100STYLE and Mixamo for humans, Overture and Geofabrik and Microsoft footprints for real-world data, Sonniss and Freesound and EchoThief impulse responses for sound
 - [engine-content.md](sources/engine-content.md) — what ships locally and is free to use
 - [importing.md](sources/importing.md) — headless import API per format
 - [open-sources.md](sources/open-sources.md) — login-free external sources (and the walls)
