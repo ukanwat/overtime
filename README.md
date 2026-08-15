@@ -13,12 +13,15 @@
 </p>
 
 <p align="center">
-  <img src="docs/media/film.gif" alt="The game's entry screen: a title over a live street, traffic moving, a working menu" width="100%">
+  <video src="https://github.com/ukanwat/aaabench/raw/main/docs/media/film.mp4"
+         poster="https://github.com/ukanwat/aaabench/raw/main/docs/media/poster.jpg"
+         autoplay loop muted playsinline controls width="100%"></video>
 </p>
 
 <p align="center">
-  <em>An agent built this, including the menu. Output of one run, shown to say what the<br>
-  benchmark asks for — no run output is committed here beyond these few frames.</em>
+  <em>Arrival, the entry screen, driving, the map, the city from the air.<br>
+  An agent built all of it, including the menu. Output of one run, shown to say what the<br>
+  benchmark asks for — no run output is committed here beyond these few seconds.</em>
 </p>
 
 One agent. One Unreal Engine editor, driven live over MCP. A fierce brief, a shelf of production
