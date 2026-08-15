@@ -13,6 +13,11 @@
 </p>
 
 <p align="center">
+  Built and run by <a href="https://utkarshkanwat.com">Utkarsh Kanwat</a> ·
+  run it on another model and open an issue with what broke
+</p>
+
+<p align="center">
   <img src="docs/media/film.gif" alt="Eight shots from one run: arrival over open water, the entry screen and its menu, walking, driving, the map, the city from the air" width="100%">
 </p>
 
@@ -270,14 +275,6 @@ Keep a contamination log and publish it. Ours is at the bottom of `HARNESS-RULES
   supervise interactively instead.
 - Heavy asset churn from Python can trip an RHI resource-lifetime assertion and take the editor
   down. Expect it, and make sure a crash is survivable rather than fatal to the run.
-
-## Who runs this
-
-Built and operated by [Utkarsh Kanwat](https://utkarshkanwat.com) — write-ups of the runs, what
-the failures turned out to be, and how to get in touch are there.
-
-If you run this on another model, or on another engine, I want to hear about it. Open an issue with
-what you tried and what broke.
 
 ## Licence
 
