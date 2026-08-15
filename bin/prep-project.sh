@@ -3,7 +3,7 @@
 # is ACTUALLY called in this build (the name differs between docs and releases),
 # enables it in the project, and verifies the toolchain is ready.
 set -uo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."   # anchor at the repo root
 
 ENGINE_DIR="${1:-/Users/Shared/Epic Games/UE_5.8}"
 PROJ="AgentCity/AgentCity.uproject"
@@ -36,4 +36,4 @@ done
 echo "(the project already enables exactly these — no greedy auto-enable)"
 
 echo
-echo "next: ./run-agent.sh   (boots editor with the project, waits for MCP, runs the agent)"
+echo "next: bin/run-agent.sh   (boots editor with the project, waits for MCP, runs the agent)"

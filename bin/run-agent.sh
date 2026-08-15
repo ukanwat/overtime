@@ -2,13 +2,13 @@
 # Boot the UE editor with the project, wait for Epic's MCP server, then hand the
 # project to a headless claude -p session.
 #
-#   ./run-agent.sh [/abs/path/to/Project.uproject]
+#   ./bin/run-agent.sh [/abs/path/to/Project.uproject]
 #
 # Prereqs (one-time, human): UE 5.8 installed; project created; plugins
 # "Unreal MCP" + "AllToolsets" + "Python Scripting" enabled; MCP auto-start ON;
 # `ModelContextProtocol.GenerateClientConfig ClaudeCode` run once in the editor.
 set -uo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."   # anchor at the repo root
 
 # One runner at a time. Two runners means two agents driving one editor through one MCP port,
 # and the symptom is not an error — it is two conversations interleaving edits to the same

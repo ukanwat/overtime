@@ -211,7 +211,7 @@ portraits — running locally, no key, no cost, and the model is your choice. Se
 **The open web** — search it, fetch it, download from it. And the local Epic library and engine
 content, to take assets from and to read for technique.
 
-**Hands on the desktop, not just the shell.** `appui.py` lets you operate a single application's
+**Hands on the desktop, not just the shell.** `tools/appui.py` lets you operate a single application's
 window — capture it, read the image, click, type, scroll. Permissions are already granted, so it
 works. That matters because the best free professional assets sit in a storefront with no API:
 the Epic Games Launcher is installed, signed in, and its Fab tab has a large free catalogue of

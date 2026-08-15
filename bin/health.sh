@@ -2,13 +2,13 @@
 # One-shot health check for the AAABench run. Prints OK lines and PROBLEM lines; exits non-zero
 # if anything is wrong, so a supervisor loop or an operator can branch on it.
 #
-#   ./health.sh
+#   ./bin/health.sh
 #
 # Every check uses `ps -eo` with an anchored pattern rather than `pgrep -f` / `grep -c`, because
 # those also match the shell wrapper running this script — which produced three separate false
 # alarms (two editors, three supervisors, a phantom crash reporter).
 set -uo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."   # anchor at the repo root
 bad=0
 say_ok()  { echo "  OK       $*"; }
 say_bad() { echo "  PROBLEM  $*"; bad=1; }

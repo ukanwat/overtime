@@ -53,9 +53,9 @@ directories and block nobody. Lighting should wait for stable geometry.
 Read-only critics never conflict with builders, and this is the single
 best-evidenced multi-agent win (generate → critique → revise roughly doubled fix
 rates in published benchmarks, *provided the critic actually executes things*):
-- a screenshot critic that runs `tools/screenshot.js`, LOOKS at the images, and
+- a screenshot critic that runs a screenshot script it wrote, LOOKS at the images, and
   reports what a stranger would call fake;
-- a perf prober running `tools/probe.js` against the budgets;
+- a perf prober running a perf script it wrote against the budgets;
 - a playtest scripter driving synthetic input and reporting what broke.
 
 A critic that only reads code and opines is worthless. It must run, look, measure.

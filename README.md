@@ -1,10 +1,43 @@
-# AAABench
+<h1 align="center">AAABench</h1>
 
-**A long-horizon capability benchmark: give a coding agent a real game engine, professional
-conditions and as much time as it wants, and ask it to build an open-world game.**
+<p align="center">
+  <strong>Give a coding agent a real game engine, professional conditions and time.<br>
+  Ask it to build an open-world game. Then go away.</strong>
+</p>
 
-One agent, one Unreal Engine editor driven live over MCP, a fierce brief, a shelf of production
+<p align="center">
+  <img alt="licence: MIT" src="https://img.shields.io/badge/licence-MIT-black?style=flat-square">
+  <img alt="engine: Unreal Engine 5" src="https://img.shields.io/badge/engine-Unreal%20Engine%205-black?style=flat-square">
+  <img alt="control: MCP" src="https://img.shields.io/badge/control-MCP-black?style=flat-square">
+  <img alt="contains: no results" src="https://img.shields.io/badge/contains-no%20results-black?style=flat-square">
+</p>
+
+<p align="center">
+  <img src="docs/media/film.gif" alt="Shots from one run: arrival over water, a title screen with a working menu, driving, the map" width="100%">
+</p>
+
+<p align="center">
+  <em>Output of one run, shown to say what the benchmark asks for.<br>
+  No run output is committed to this repository beyond this strip.</em>
+</p>
+
+One agent. One Unreal Engine editor, driven live over MCP. A fierce brief, a shelf of production
 knowledge, and no human help.
+
+The agent decides everything — the geography, the districts, the roads, the buildings, the people,
+the traffic, the weather, the game's own screens, and what to fix when it doesn't work. Nobody
+points at anything for it.
+
+```bash
+git clone https://github.com/ukanwat/aaabench && cd aaabench
+cp -R project AgentCity        # the project skeleton
+./bin/setup-capabilities.sh    # plugins, renderer features, python libraries
+./bin/run-agent.sh             # boots the editor, hands over the demand, keeps it going
+```
+
+> **The one rule.** Provide conditions, resources and the demand — never diagnosis, never the fix,
+> never an answer. Whether the model *notices* its own mistakes is the capability being measured,
+> so every hint is a result you can no longer claim. See [`HARNESS-RULES.md`](HARNESS-RULES.md).
 
 ## What it actually measures
 
@@ -38,24 +71,60 @@ pattern-matching a familiar task:
 
 The headline artefact is a playable world. The interesting data is everything above.
 
-This repository is **the harness**: everything needed to run the benchmark yourself. It contains
-no results — what an agent produces is the output of a run, and belongs to that run.
+## What passing looks like
+
+The bar is not "a level loads". It is a place that survives a stranger looking at it, and a game
+that opens like a game.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/media/street.jpg" alt="Third-person character on a city street with traffic and a minimap"></td>
+    <td width="50%"><img src="docs/media/map.jpg" alt="A full-screen map with named districts and a player marker"></td>
+  </tr>
+  <tr>
+    <td><em>A street that behaves — traffic, pedestrians, a player in it.</em></td>
+    <td><em>The game's own screens, built by the agent: a map with named districts.</em></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/media/city.jpg" alt="The central business district from the air"></td>
+    <td width="50%"><img src="docs/media/hero.jpg" alt="A title screen over a live street with a working menu"></td>
+  </tr>
+  <tr>
+    <td><em>A city that reads as one from any height.</em></td>
+    <td><em>An entry screen with a working menu, over a live world.</em></td>
+  </tr>
+</table>
+
+These are from one run, and they are here to show what the demand asks for. They are the only run
+output in the repository — everything an agent produces belongs to the run that produced it, not
+here.
+
+This repository is **the harness**: everything needed to run the benchmark yourself.
 
 ## What's in here
+
+```
+PROMPT.md            the demand — this is the benchmark
+HARNESS-RULES.md     the line between operating it and doing the agent's job
+bin/                 run it, keep it alive, check whether it is working
+tools/               what the agent uses: eyes, widgets, image generation
+docs/                the handbook it may consult
+project/             the Unreal project skeleton
+```
 
 | Path | What it is |
 |---|---|
 | `PROMPT.md` | **The demand.** The brief handed to the agent — scope, standards, what failure looks like, the certification requirements. This is the benchmark. |
 | `docs/` | The handbook the agent may consult: production workflow, level pipeline, systems budgets, detail and density, parallelism, the world inventory (hundreds of kinds of real-world object, mined from OpenStreetMap), asset/mocap/map-data/rendering sources, and the engine's version traps. |
 | `.claude/skills/` | 21 skill packs — game AI, level design, game feel, shaders, Niagara, Blueprints, Enhanced Input, behaviour trees, physics tuning, camera, dialogue, audio, save systems, performance, and reference-image search. |
-| `run-agent.sh` | One session: boots the editor, waits for MCP, hands over the demand, resumes the session if it stops early, relaunches the editor if it dies. |
-| `run-many.sh` | Sequential unattended sessions, single-instance locked. |
-| `ue_qa.py` | Sensor: viewport capture and inspection so the agent can see its own work. |
-| `prep-project.sh` | Creates the project skeleton if you're starting from nothing. |
-| `setup-capabilities.sh` | Widens what the agent can reach: enables engine plugins in the `.uproject`, turns on renderer features that are off by default, installs the Python libraries a world generator wants, and the optional local image/mesh/audio tools. Idempotent. |
+| `bin/run-agent.sh` | One session: boots the editor, waits for MCP, hands over the demand, resumes the session if it stops early, relaunches the editor if it dies. |
+| `bin/run-many.sh` | Sequential unattended sessions, single-instance locked. |
+| `tools/ue_qa.py` | Sensor: viewport capture and inspection so the agent can see its own work. |
+| `bin/prep-project.sh` | Creates the project skeleton if you're starting from nothing. |
+| `bin/setup-capabilities.sh` | Widens what the agent can reach: enables engine plugins in the `.uproject`, turns on renderer features that are off by default, installs the Python libraries a world generator wants, and the optional local image/mesh/audio tools. Idempotent. |
 | `project/` | The project skeleton: `.uproject` with the required plugins, and the config that auto-starts the MCP server. Copy it to `AgentCity/` to begin. |
 | `HARNESS-RULES.md` | **Read this.** The line between operating the harness and doing the agent's job. Breaking it invalidates the result. |
-| `SETUP.md`, `SETUP-VERIFIED.md` | Install steps, and the ones that actually worked, with every trap we hit. |
+| `docs/setup.md` | Install steps end to end, with every trap that cost us time: the Xcode version pin, the separately-shipped Metal toolchain, why `open -a` fails, and the content packs that need one human sign-in. |
 
 ### Running unattended
 
@@ -64,13 +133,13 @@ to tell you honestly whether it is working or merely running.
 
 | Path | What it is |
 |---|---|
-| `supervise.sh` | Keeps exactly one runner alive indefinitely, with exponential backoff so a broken editor or a dead credential cannot turn into a relaunch loop. Honours a pause file so a manual restart cannot race it. |
-| `health.sh` | One-shot check: process counts, the MCP bridge, who holds the port, commit age, and whether the agent is *taking turns* rather than merely existing. Exits non-zero if anything is wrong. |
-| `restart-agent.sh` | The only safe manual restart: pause the supervisor, stop the runner and agent, verify they are actually dead, then relaunch and release the pause. |
+| `bin/supervise.sh` | Keeps exactly one runner alive indefinitely, with exponential backoff so a broken editor or a dead credential cannot turn into a relaunch loop. Honours a pause file so a manual restart cannot race it. |
+| `bin/health.sh` | One-shot check: process counts, the MCP bridge, who holds the port, commit age, and whether the agent is *taking turns* rather than merely existing. Exits non-zero if anything is wrong. |
+| `bin/restart-agent.sh` | The only safe manual restart: pause the supervisor, stop the runner and agent, verify they are actually dead, then relaunch and release the pause. |
 
 Two lessons are baked into these, and both cost real time to learn. **Counting processes with
 `pgrep -f` also matches the shell running your check**, which manufactures phantom duplicates —
-`health.sh` counts process trees with an anchored pattern instead. And **a runner and an editor
+`bin/health.sh` counts process trees with an anchored pattern instead. And **a runner and an editor
 both being up is not progress**: if something else holds the MCP port, every boot produces an
 editor with no bridge and the runner cycles forever. Liveness has to be measured from work done,
 not from processes present.
@@ -79,14 +148,14 @@ not from processes present.
 
 | Path | What it is |
 |---|---|
-| `gen-image.py` | On-device image generation for the printed matter a city is covered in — signage, posters, billboards, brands. Runs locally, no API key. |
-| `appui.py` | Helper for authoring UMG widgets from Python, for the game's own screens. |
+| `tools/gen-image.py` | On-device image generation for the printed matter a city is covered in — signage, posters, billboards, brands. Runs locally, no API key. |
+| `tools/appui.py` | Helper for authoring UMG widgets from Python, for the game's own screens. |
 
 ## Prerequisites
 
 Verified on macOS / Apple Silicon; exact versions that worked are recorded in
-`SETUP-VERIFIED.md`. Windows should be easier (VibeUE targets it natively); the launch paths in
-`run-agent.sh` would need changing. The runner auto-detects whichever engine is installed —
+`docs/setup.md`. Windows should be easier (VibeUE targets it natively); the launch paths in
+`bin/run-agent.sh` would need changing. The runner auto-detects whichever engine is installed —
 override with `UE_ROOT`.
 
 1. **Xcode** — pin the version your engine release documents as supported, *not* necessarily the
@@ -115,10 +184,10 @@ override with `UE_ROOT`.
 ```bash
 git clone https://github.com/ukanwat/aaabench && cd aaabench
 cp -R project AgentCity && mv AgentCity/AgentCity.uproject AgentCity/   # project skeleton
-./run-agent.sh
+./bin/run-agent.sh
 ```
 
-`run-agent.sh` will:
+`bin/run-agent.sh` will:
 
 1. launch the editor with an absolute project path, `-unattended -nosplash -NoPause`
    (a modal dialog freezes the game thread and kills the MCP transport, so never run the editor
@@ -131,17 +200,17 @@ cp -R project AgentCity && mv AgentCity/AgentCity.uproject AgentCity/   # projec
 5. relaunch the editor between nudges if it has crashed.
 
 Everything the agent makes lands in your project: assets under `Content/`, its own plan and
-progress documents at the project root, screenshots wherever `ue_qa.py` writes them.
+progress documents at the project root, screenshots wherever `tools/ue_qa.py` writes them.
 
 ### Running a different agent
 
 The harness is agent-agnostic. `AGENT` selects the CLI; add your own preset in `agent_run()`.
 
 ```bash
-AGENT=claude MODEL=claude-opus-5 ./run-agent.sh
-AGENT=codex ./run-agent.sh
-AGENT=gemini ./run-agent.sh
-AGENT=custom AGENT_CMD='my-cli --headless "$1"' ./run-agent.sh
+AGENT=claude MODEL=claude-opus-5 ./bin/run-agent.sh
+AGENT=codex ./bin/run-agent.sh
+AGENT=gemini ./bin/run-agent.sh
+AGENT=custom AGENT_CMD='my-cli --headless "$1"' ./bin/run-agent.sh
 ```
 
 The only requirements on a candidate: it runs headless from a prompt on argv, has shell and file
@@ -195,7 +264,7 @@ Keep a contamination log and publish it. Ours is at the bottom of `HARNESS-RULES
 - `open -a UnrealEditor.app project.uproject` hands UE a **relative** path and it looks inside
   the engine folder. Always exec the binary in the bundle with an absolute path.
 - Two editor processes fight over the project lock and the MCP port, and the second usually
-  crashes. `run-many.sh` holds a single-instance lock; don't run two launchers.
+  crashes. `bin/run-many.sh` holds a single-instance lock; don't run two launchers.
 - `CrashReportClient` inherits the MCP port and silently blocks the next editor from binding it.
 - MCP auto-start only applies at editor **startup**; toggling it in a running editor does
   nothing until relaunch.

@@ -23,7 +23,7 @@ again rather than assuming.
 The Epic Games Launcher is installed and signed in, and its **Fab** tab has a large free catalogue
 of professional-grade content: Megascans scans, environment kits, props, vehicles, characters,
 animation sets, materials. There is no public API for the library, so reach it through the GUI
-with `appui.py` (see `tech/capabilities.md`) — filter to free, add to library, install into the
+with `tools/appui.py` (see `tech/capabilities.md`) — filter to free, add to library, install into the
 project. Prefer this over hand-modelling or scraping when you need something to look real.
 
 ## 3D models
@@ -59,7 +59,7 @@ project. Prefer this over hand-modelling or scraping when you need something to 
   it needs **one Adobe login** to seed a session; after that community scripts run headless.
 - **Rokoko free packs** — 263 professional clips, free account required.
 - **Epic Game Animation Sample** — 500+ AAA animations with a working Motion Matching setup.
-  Needs an Epic login once (see `SETUP.md`). This is the highest-value animation source there is,
+  Needs an Epic login once (see `docs/setup.md`). This is the highest-value animation source there is,
   and `PoseSearch` is enabled with nothing to search until it exists.
 - Dead ends for a published artefact: AMASS, LAFAN1, SMPL/SMPL-X (registration and/or
   non-commercial). Ready Player Me's public APIs shut down in January 2026.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Give the agent maximum capability. Idempotent — safe to re-run.
 #
-#   ./setup-capabilities.sh [/abs/path/to/Project.uproject]
+#   ./bin/setup-capabilities.sh [/abs/path/to/Project.uproject]
 #
 # Three things happen here:
 #   1. engine plugins are enabled in the .uproject (a plugin the project has not enabled is
@@ -12,7 +12,7 @@
 #   3. optional local tools: an on-device image generator for signage and billboard art, and
 #      mesh/texture CLIs
 set -uo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."   # anchor at the repo root
 PROJECT="${1:-$(ls -1 "$PWD"/*/*.uproject 2>/dev/null | head -1)}"
 
 # ---------------------------------------------------------------- 1. engine plugins
@@ -142,7 +142,7 @@ PY
 # --------------------------------------------- 3a. on-device image generation (signage)
 # A city is covered in printed matter: billboards, posters, murals, packaging, signage,
 # portraits. SDXL-Turbo runs locally on Apple Silicon via MPS, is ungated (no HF login), and
-# costs nothing per image. Used through ./gen-image.py, which shells into this venv.
+# costs nothing per image. Used through tools/gen-image.py, which shells into this venv.
 IMG_VENV="${IMG_VENV:-$HOME/imagegen}"
 if ! "$IMG_VENV/bin/python" -c "import diffusers" 2>/dev/null; then
   PY312="$(command -v python3.12 || command -v python3.13 || true)"

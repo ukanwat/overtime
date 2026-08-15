@@ -1,7 +1,7 @@
 # What you have — the full capability surface
 
 An inventory, not instructions. Nothing here is required; it is here so that "I couldn't" is
-never about not knowing the tool existed. Run `../setup-capabilities.sh` if any of it is absent.
+never about not knowing the tool existed. Run `../bin/setup-capabilities.sh` if any of it is absent.
 
 ## The engine, with everything switched on
 
@@ -116,7 +116,7 @@ rather than assuming — the good ones change every few months, and a web search
 is strong right now for the kind of image you need. Larger models are slower but better; few-step
 "turbo"/"schnell" variants trade quality for seconds.
 
-`gen-image.py` at the repo root is a forty-line convenience wrapper around one model. Treat it as
+`tools/gen-image.py` at the repo root is a forty-line convenience wrapper around one model. Treat it as
 a starting point, not the interface — replace it, extend it with image-to-image, inpainting,
 ControlNet, LoRAs, higher resolution, upscaling, or a different model entirely if that serves the
 work better.
@@ -160,7 +160,7 @@ commercial game.
 
 ## Driving a desktop application
 
-Some things are only reachable through a GUI. `appui.py` at the repo root lets you operate one
+Some things are only reachable through a GUI. `tools/appui.py` at the repo root lets you operate one
 application's window: it captures **only that window's rectangle** — never the whole screen,
 never anything else that is open — and takes click coordinates relative to the window's top-left.
 

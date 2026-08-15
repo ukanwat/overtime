@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Keep exactly one agent runner alive, indefinitely, with nobody watching.
 #
-#   nohup ./supervise.sh >/dev/null 2>&1 &
+#   nohup bin/supervise.sh >/dev/null 2>&1 &
 #
 # WHY THIS EXISTS. run-agent.sh survives a lot on its own: it waits out usage limits, retries
 # transient API failures without spending a nudge, and resumes after every clean stop until its
@@ -14,7 +14,7 @@
 # first"); re-issuing it on every relaunch for hours would keep pointing the agent at work it has
 # already finished. A plain resume tells it to continue where it left off, which is what is wanted.
 set -uo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."   # anchor at the repo root
 
 LOCK=/tmp/aaabench-agent.lock
 LOG=/tmp/wb-supervisor.log
@@ -55,7 +55,7 @@ while true; do
   say "no runner alive - launching"
   start=$(date +%s)
   # Foreground on purpose: this loop is the single-instance guarantee.
-  MAX_NUDGES=${MAX_NUDGES:-20} ./run-agent.sh >> "$OUT" 2>&1
+  MAX_NUDGES=${MAX_NUDGES:-20} bin/run-agent.sh >> "$OUT" 2>&1
   dur=$(( $(date +%s) - start ))
   say "runner exited after ${dur}s"
 
