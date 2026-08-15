@@ -271,6 +271,14 @@ Keep a contamination log and publish it. Ours is at the bottom of `HARNESS-RULES
 - Heavy asset churn from Python can trip an RHI resource-lifetime assertion and take the editor
   down. Expect it, and make sure a crash is survivable rather than fatal to the run.
 
+## Who runs this
+
+Built and operated by [Utkarsh Kanwat](https://utkarshkanwat.com) — write-ups of the runs, what
+the failures turned out to be, and how to get in touch are there.
+
+If you run this on another model, or on another engine, I want to hear about it. Open an issue with
+what you tried and what broke.
+
 ## Licence
 
 Harness: MIT. `docs/sources/` records where third-party assets come from and under what terms;
