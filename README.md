@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  Built and run by <a href="https://utkarshkanwat.com">Utkarsh Kanwat</a> ·
+  Built and run by <a href="https://utkarshkanwat.com">Utkarsh Kanwat</a> · <a href="https://x.com/ukanwat">𝕏</a> ·
   run it on another model and open an issue with what broke
 </p>
 
