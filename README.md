@@ -13,12 +13,12 @@
 </p>
 
 <p align="center">
-  <img src="docs/media/film.gif" alt="Shots from one run: arrival over water, a title screen with a working menu, driving, the map" width="100%">
+  <img src="docs/media/film.gif" alt="The game's entry screen: a title over a live street, traffic moving, a working menu" width="100%">
 </p>
 
 <p align="center">
-  <em>Output of one run, shown to say what the benchmark asks for.<br>
-  No run output is committed to this repository beyond this strip.</em>
+  <em>An agent built this, including the menu. Output of one run, shown to say what the<br>
+  benchmark asks for — no run output is committed here beyond these few frames.</em>
 </p>
 
 One agent. One Unreal Engine editor, driven live over MCP. A fierce brief, a shelf of production
@@ -87,11 +87,11 @@ that opens like a game.
   </tr>
   <tr>
     <td width="50%"><img src="docs/media/city.jpg" alt="The central business district from the air"></td>
-    <td width="50%"><img src="docs/media/hero.jpg" alt="A title screen over a live street with a working menu"></td>
+    <td width="50%"><img src="docs/media/coast.jpg" alt="The city on its headland seen across open water at a low warm sun"></td>
   </tr>
   <tr>
     <td><em>A city that reads as one from any height.</em></td>
-    <td><em>An entry screen with a working menu, over a live world.</em></td>
+    <td><em>A place, not a level — geography the city had to be built around.</em></td>
   </tr>
 </table>
 
