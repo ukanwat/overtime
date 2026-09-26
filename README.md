@@ -1,20 +1,31 @@
-<h1 align="center">AAABench</h1>
+<h1 align="center">SelfStarter</h1>
 
 <p align="center">
-  <strong>Give a coding agent a real game engine, professional conditions and time.<br>
-  Ask it to build an open-world game. Then go away.</strong>
+  <strong>Give an agent a brief, not a chat. Then it works on its own.</strong>
 </p>
 
 <p align="center">
   <img alt="licence: MIT" src="https://img.shields.io/badge/licence-MIT-black?style=flat-square">
-  <img alt="engine: Unreal Engine 5" src="https://img.shields.io/badge/engine-Unreal%20Engine%205-black?style=flat-square">
-  <img alt="control: MCP" src="https://img.shields.io/badge/control-MCP-black?style=flat-square">
-  <img alt="contains: no results" src="https://img.shields.io/badge/contains-no%20results-black?style=flat-square">
+  <img alt="status: early development" src="https://img.shields.io/badge/status-early%20development-black?style=flat-square">
 </p>
 
 <p align="center">
-  Built and run by <a href="https://utkarshkanwat.com">Utkarsh Kanwat</a> · <a href="https://x.com/ukanwat">𝕏</a> ·
-  run it on another model and open an issue with what broke
+  Built by <a href="https://utkarshkanwat.com">Utkarsh Kanwat</a> · <a href="https://x.com/ukanwat">𝕏</a>
+</p>
+
+Chat is how you manage a junior. A brief is how you manage a senior: the goal, the constraints,
+what "done" looks like, and a budget. SelfStarter gives a coding agent a brief and then stays out
+of the way. The agent plans its own work across many sessions, writes its own status reports, and
+asks for a decision only when it really needs one.
+
+SelfStarter is in early development. What's here today is an example run: one agent, one brief,
+a real game engine, and no human help.
+
+## Example run: Agent City
+
+<p align="center">
+  <img alt="engine: Unreal Engine 5" src="https://img.shields.io/badge/engine-Unreal%20Engine%205-black?style=flat-square">
+  <img alt="control: MCP" src="https://img.shields.io/badge/control-MCP-black?style=flat-square">
 </p>
 
 <p align="center">
@@ -22,26 +33,26 @@
 </p>
 
 One agent. One Unreal Engine editor, driven live over MCP. A fierce brief, a shelf of production
-knowledge, and no human help.
+knowledge, and no human help. This is what it built.
 
 The agent decides everything — the geography, the districts, the roads, the buildings, the people,
 the traffic, the weather, the game's own screens, and what to fix when it doesn't work. Nobody
 points at anything for it.
 
 ```bash
-git clone https://github.com/ukanwat/aaabench && cd aaabench
+git clone https://github.com/ukanwat/selfstarter && cd selfstarter
 cp -R project AgentCity        # the project skeleton
 ./bin/setup-capabilities.sh    # plugins, renderer features, python libraries
-./bin/run-agent.sh             # boots the editor, hands over the demand, keeps it going
+./bin/run-agent.sh             # boots the editor, hands over the brief, keeps it going
 ```
 
-> **The one rule.** Provide conditions, resources and the demand — never diagnosis, never the fix,
-> never an answer. Whether the model *notices* its own mistakes is the capability being measured,
+> **The one rule.** Provide conditions, resources and the brief — never diagnosis, never the fix,
+> never an answer. Whether the model *notices* its own mistakes is the whole point of the run,
 > so every hint is a result you can no longer claim. See [`HARNESS-RULES.md`](HARNESS-RULES.md).
 
-## What it actually measures
+## What the run shows
 
-Building a world turns out to be an unusually complete test, because it cannot be faked by
+Building a world turns out to be an unusually complete job, because it cannot be faked by
 pattern-matching a familiar task:
 
 - **Real-world understanding.** Does the model know how a city works — that deep water decides
@@ -51,7 +62,7 @@ pattern-matching a familiar task:
 - **Reasoning from causes rather than from examples.** The brief demands that nothing be placed
   because it looked good there. Every district, block and parcel has to be derivable from
   something — geology, water, trade, money, law, time. That is causal reasoning under a load no
-  benchmark question puts on it.
+  test question puts on it.
 - **Long-horizon execution.** Work that cannot fit in one context, across sessions that start
   cold, where the only continuity is what the agent chose to write down. Plans have to survive
   their author. Nothing is resumed for it.
@@ -61,7 +72,7 @@ pattern-matching a familiar task:
 - **Self-verification.** The agent has eyes — viewport capture, play-in-editor, its own
   screenshots — and reference photographs of the real world. Does it look at its own work, notice
   what a stranger would call fake, and fix it without being told? Nobody points at anything for
-  it. Whether it *notices* is the measurement.
+  it. Whether it *notices* is the point.
 - **Systems thinking.** Traffic, crowds, time of day, weather, police, economy — independent
   systems that have to cross each other and produce something that behaves, cheaply, in frame
   budget.
@@ -99,12 +110,12 @@ These are from one run, and they are here to show what the demand asks for. They
 output in the repository — everything an agent produces belongs to the run that produced it, not
 here.
 
-This repository is **the harness**: everything needed to run the benchmark yourself.
+This repository has **the harness** for the run: everything needed to run it yourself.
 
 ## What's in here
 
 ```
-PROMPT.md            the demand — this is the benchmark
+PROMPT.md            the brief handed to the agent
 HARNESS-RULES.md     the line between operating it and doing the agent's job
 bin/                 run it, keep it alive, check whether it is working
 tools/               what the agent uses: eyes, widgets, image generation
@@ -114,7 +125,7 @@ project/             the Unreal project skeleton
 
 | Path | What it is |
 |---|---|
-| `PROMPT.md` | **The demand.** The brief handed to the agent — scope, standards, what failure looks like, the certification requirements. This is the benchmark. |
+| `PROMPT.md` | **The brief.** What the agent is handed — scope, standards, what failure looks like, the certification requirements. |
 | `docs/` | The handbook the agent may consult: production workflow, level pipeline, systems budgets, detail and density, parallelism, the world inventory (hundreds of kinds of real-world object, mined from OpenStreetMap), asset/mocap/map-data/rendering sources, and the engine's version traps. |
 | `.claude/skills/` | 21 skill packs — game AI, level design, game feel, shaders, Niagara, Blueprints, Enhanced Input, behaviour trees, physics tuning, camera, dialogue, audio, save systems, performance, and reference-image search. |
 | `bin/run-agent.sh` | One session: boots the editor, waits for MCP, hands over the demand, resumes the session if it stops early, relaunches the editor if it dies. |
@@ -182,7 +193,7 @@ override with `UE_ROOT`.
 ## Running a session
 
 ```bash
-git clone https://github.com/ukanwat/aaabench && cd aaabench
+git clone https://github.com/ukanwat/selfstarter && cd selfstarter
 cp -R project AgentCity && mv AgentCity/AgentCity.uproject AgentCity/   # project skeleton
 ./bin/run-agent.sh
 ```
