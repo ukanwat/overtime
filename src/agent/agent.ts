@@ -193,9 +193,15 @@ async function frontMatterOf(name: string): Promise<{ data: AgentSettings; body:
 
 /** After a turn: make AGENT.md's settings block exactly the person's settings again. */
 export async function restoreSettings(name: string): Promise<boolean> {
-  const snap = (await readSettingsSnapshot(name)) ?? {};
   const fm = await frontMatterOf(name);
   if (!fm) return false;
+  const saved = await readSettingsSnapshot(name);
+  if (!saved) {
+    // No copy (lost or damaged): AGENT.md's block is the best record left, so keep it rather than wipe it.
+    await writeSettingsSnapshot(name, fm.data ?? {});
+    return false;
+  }
+  const snap = saved;
   if (JSON.stringify(sortKeys(fm.data as Record<string, unknown>)) === JSON.stringify(sortKeys(snap as Record<string, unknown>))) return false;
   const { stringifyFrontMatter } = await import("./frontmatter.js");
   await writeFile(join(paths.agent(name), "AGENT.md"), stringifyFrontMatter(snap as Record<string, unknown>, fm.body));

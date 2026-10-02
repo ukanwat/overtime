@@ -77,7 +77,7 @@ export async function runAcpServer(): Promise<void> {
     .onRequest("initialize", () => ({
       protocolVersion: acp.PROTOCOL_VERSION,
       agentCapabilities: { loadSession: true, promptCapabilities: { image: false, embeddedContext: true } },
-      agentInfo: { name: "overtime", title: "Overtime", version: "0.2.0" },
+      agentInfo: { name: "overtime", title: "Overtime", version: "0.2.1" },
     }) as any)
     .onRequest("session/new", async () => {
       const list = await agents();

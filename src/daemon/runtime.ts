@@ -19,6 +19,7 @@ import { runTurn, sessionPreamble, TurnIncompleteError, UsageLimitError, type Tu
 import { blockedUntil, usageToday, type TurnUsage } from "../runtime/usage.js";
 import { workingInstructions } from "../runtime/instructions.js";
 import { MonitorRunner, reapStaleMonitors } from "./monitors.js";
+import { needsPerson } from "../runtime/errors.js";
 
 const exec = promisify(execFile);
 
@@ -427,12 +428,19 @@ export class Runtime extends EventEmitter implements ToolHost {
         return true;
       }
       const failures = (agent.state.failures ?? 0) + 1;
-      const wait = BACKOFF_MS[Math.min(BACKOFF_MS.length - 1, failures - 1)];
       const msg = String(e?.message ?? e);
+      // Some failures only the person can fix: say exactly what to do, once, and retry slowly meanwhile.
+      const hint = needsPerson(msg, eff.backend, agentName);
+      const wait = hint ? BACKOFF_MS[BACKOFF_MS.length - 1] : BACKOFF_MS[Math.min(BACKOFF_MS.length - 1, failures - 1)];
+      if (hint && agent.state.lastError !== msg.slice(0, 500)) {
+        await store.startThread({ kind: "alert", title: "Needs you to fix something", from: "overtime", text: `${hint}\n\nThe error was: ${msg}`, urgent: true, baseDir: agent.dir });
+        this.notify(`${agentName} needs you`, hint);
+        this.changed(agentName, "threads");
+      }
       await updateState(agentName, { status: idle, failures, lastError: msg.slice(0, 500) });
       await store.setWake(new Date(Date.now() + wait), `retry after an error: ${msg.slice(0, 200)}`);
       this.log(`[${agentName}] main turn failed (${failures}): ${e?.stack ?? e}`);
-      if (failures === 3) {
+      if (failures === 3 && !hint) {
         await store.startThread({ kind: "alert", title: "Something keeps failing", from: "overtime", text: `${agentName}'s last ${failures} turns failed. Latest error:\n\n${msg}\n\nOvertime keeps retrying with longer gaps. Its log is in ${join(paths.meta(agentName), "runs")}.`, urgent: true, baseDir: agent.dir });
         this.notify(`${agentName} keeps failing`, msg);
         this.changed(agentName, "threads");
@@ -602,7 +610,7 @@ export class Runtime extends EventEmitter implements ToolHost {
           ? `I'm paused by the ${e.backend} usage limit${e.resetsAt ? ` until ${e.resetsAt.toLocaleString()}` : ""}. I've kept your message and will pick it up then.`
           : stoppedNow
             ? "I was stopped before I could answer. I've kept your message for when I'm started again."
-            : `I couldn't answer just now (${String(e?.message ?? e).slice(0, 200)}). I've passed your message to my main session.`;
+            : (needsPerson(String(e?.message ?? e), (await effectiveSettings(agent)).backend, agentName) ?? `I couldn't answer just now (${String(e?.message ?? e).slice(0, 200)}). I've passed your message to my main session.`);
       await store.addToThread(threadId, { from: "overtime", text: msg, baseDir: agent.dir });
       await store.pushInbox({ type: "message", text, threadId });
       // A session that failed may be broken: the next message in this thread starts a fresh one.

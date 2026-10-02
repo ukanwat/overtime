@@ -1,6 +1,6 @@
 {
   "name": "@ukanwat/overtime",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Agents that exist, not sessions. Brief a coding agent once; it works on its own, keeps its own folder, and checks in only when it needs you.",
   "keywords": [
     "agents",
@@ -27,7 +27,7 @@
   },
   "type": "module",
   "bin": {
-    "overtime": "dist/cli.js"
+    "overtime": "dist/bin.js"
   },
   "engines": {
     "node": ">=22.19"
