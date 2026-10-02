@@ -35,8 +35,7 @@ GitHub Copilot, OpenCode, and the rest.
 ## Quick start
 
 ```bash
-git clone https://github.com/ukanwat/overtime && cd overtime
-npm install && npm run build && npm link
+npm install -g @ukanwat/overtime
 overtime
 ```
 
