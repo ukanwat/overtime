@@ -257,6 +257,7 @@ export class Runtime extends EventEmitter implements ToolHost {
         kind: "main",
         reason,
         text: mainTurnText(items, firstJob, resume === null && !!agent.state.mainSessionId),
+        header: await this.turnHeader(agentName),
         resumeSessionId: resume,
         extraMcp: [mcp],
         timeoutMs: settings.turnTimeoutMinutes * 60_000,
@@ -270,7 +271,7 @@ export class Runtime extends EventEmitter implements ToolHost {
       if (agent.state.activity === "learning its job" || agent.state.activity === "working") patch.activity = firstJob ? "settled in" : "resting";
       await updateState(agentName, patch);
       if (!ctx.wakeChosen) {
-        await store.setWake(clampWake(new Date(Date.now() + DEFAULT_WAKE_MS)), "default wake-up: you didn't choose one last turn (use sleep_until)");
+        await store.setWake(clampWake(new Date(Date.now() + DEFAULT_WAKE_MS)), "default wake-up: you didn't choose one last turn (use wake)");
       }
     } catch (e: any) {
       if (items.length) await store.returnInbox(items);
@@ -295,6 +296,15 @@ export class Runtime extends EventEmitter implements ToolHost {
       await this.refreshNextWake(agentName);
       this.changed(agentName, "state");
     }
+  }
+
+  /** What every main turn is told besides the time: spend so far today and helpers still running. */
+  private async turnHeader(agentName: string): Promise<string> {
+    const s = await this.spentToday(agentName);
+    const spend = s.costReported ? `Spent today: $${s.usd.toFixed(2)} of $${s.budgetUsd.toFixed(2)} (as your backend reports it).` : `Used today: ${s.tokens.toLocaleString()} tokens${s.budgetTokens != null ? ` of ${s.budgetTokens.toLocaleString()}` : ""}.`;
+    const running = (await this.store(agentName).helpers()).filter((h) => h.status === "running");
+    const helpers = running.length ? `Helpers still running: ${running.map((h) => `${h.id} (${h.task.split("\n")[0].slice(0, 60)})`).join("; ")}.` : "";
+    return [spend, helpers].filter(Boolean).join("\n");
   }
 
   /** Keep state.nextWake in sync: the earliest of its wake-up and loops. */
@@ -339,9 +349,24 @@ export class Runtime extends EventEmitter implements ToolHost {
     await store.addToThread(threadId, { from: "you", text: answerText, choice, baseDir: agent.dir });
     await store.patchThread(threadId, { status: "answered", unread: 0 });
     await store.recordDecision({ threadId, category: th.meta.category ?? "uncategorised", question: q?.text ?? th.meta.title, answer: answerText });
-    await store.pushInbox({ type: "answer", text: answerText, threadId, data: { question: q?.text ?? th.meta.title } });
+    await store.pushInbox({ type: "answer", text: answerText + (await this.autonomyHint(agentName, th.meta.category)), threadId, data: { question: q?.text ?? th.meta.title } });
     this.changed(agentName, "threads");
     if (agent.state.status !== "stopped") this.wakeMain(agentName, "the person answered one of your questions");
+  }
+
+  /**
+   * Earned autonomy: when the person keeps giving the same answer to the same kind of question,
+   * tell the agent so it can propose deciding those itself. Overtime counts; the agent asks.
+   */
+  private async autonomyHint(agentName: string, category: string | undefined): Promise<string> {
+    if (!category) return "";
+    const same = (await this.store(agentName).decisions()).filter((d) => d.category === category);
+    const recent = same.slice(-5);
+    if (recent.length < 3) return "";
+    const norm = (s: string) => s.replace(/^\d+\.\s*/, "").split(" — ")[0].trim().toLowerCase();
+    const first = norm(recent[0].answer);
+    if (!recent.every((d) => norm(d.answer) === first)) return "";
+    return `\n\n(Overtime: this is the ${same.length}th "${category}" question, and the last ${recent.length} answers were all "${recent[0].answer.replace(/^\d+\.\s*/, "").split(" — ")[0]}". If it fits, ask whether you can decide these yourself from now on; if they agree, add the rule to AGENT.md.)`;
   }
 
   private queueChat(agentName: string, threadId: string, text: string): void {
@@ -375,7 +400,7 @@ export class Runtime extends EventEmitter implements ToolHost {
         reason: "the person sent you a message in a conversation thread",
         preamble: chatPreamble(agent),
         resumeSessionId: th.meta.chatSessionId ?? null,
-        text: `${th.meta.chatSessionId ? "" : `What you are doing right now (from your main session):\n${state}\n\n${history ? `Earlier in this thread:\n${history}\n\n` : ""}`}The person just wrote:\n\n${text}\n\nAnswer them with reply(). If this changes your work or needs real work done, call pass_to_main() with what to do, and tell them you've passed it on.`,
+        text: `${th.meta.chatSessionId ? "" : `What you are doing right now (from your main session):\n${state}\n\n${history ? `Earlier in this thread:\n${history}\n\n` : ""}`}The person just wrote:\n\n${text}\n\nAnswer them with send. If it changes your work or needs real work done, send it to: "main" and tell them you have.`,
         extraMcp: [mcp],
         timeoutMs: 20 * 60_000,
         signal: this.abort.signal,
@@ -419,8 +444,6 @@ export class Runtime extends EventEmitter implements ToolHost {
     const store = this.store(ctx.agent);
     const agent = await loadAgent(ctx.agent);
     const eff = await effectiveSettings(agent);
-    const role = req.role ? (await store.roles()).find((r) => r.name === req.role) : undefined;
-    if (req.role && !role) throw new Error(`No saved role "${req.role}". Define it with define_role, or pass instructions.`);
     const running = (await store.helpers()).filter((h) => h.status === "running").length;
     if (running >= 6) throw new Error("Six helpers are already running. Wait for some to finish.");
     const id = newId("helper");
@@ -444,8 +467,8 @@ export class Runtime extends EventEmitter implements ToolHost {
       id,
       task: req.task,
       role: req.role,
-      backend: req.backend ?? role?.backend,
-      model: req.model ?? role?.model ?? null,
+      backend: req.backend,
+      model: req.model ?? null,
       workdir,
       branch,
       parent: ctx.helperId ?? "main",
@@ -454,7 +477,7 @@ export class Runtime extends EventEmitter implements ToolHost {
       startedAt: new Date().toISOString(),
     };
     await store.saveHelper(rec);
-    const run = this.runHelper(ctx.agent, rec, role?.instructions ?? req.instructions ?? "", eff.workspace)
+    const run = this.runHelper(ctx.agent, rec, req.instructions ?? "", eff.workspace)
       .catch((e) => this.log(`[${ctx.agent}] helper ${id}: ${e?.stack ?? e}`))
       .finally(() => this.helperRuns.delete(`${ctx.agent}/${id}`));
     this.helperRuns.set(`${ctx.agent}/${id}`, run);
@@ -582,17 +605,17 @@ function mainTurnText(items: InboxItem[], firstJob: boolean, contextReset: boole
   const parts: string[] = [];
   if (firstJob) {
     parts.push(
-      "This is your first conversation. You don't have an identity yet. From what the person tells you, rewrite AGENT.md in your folder: who you are, your job, what good looks like, and your rules (what you must check with them first). Create INDEX.md. Then reply in their thread with a short summary of what you understood and what you'll do first, and start.",
+      "This is your first conversation. You don't have an identity yet. From what the person tells you, rewrite AGENT.md in your folder: who you are, your job, what good looks like, and your rules (what you must check with them first). Create INDEX.md. Reply in their thread with a short summary of what you understood and what you'll do first. Then start.",
     );
   }
   if (contextReset) parts.push("Note: this is a fresh session. Your earlier conversation isn't carried over; your folder is. Check INDEX.md and your notes for where things stand.");
   parts.push(inboxBlock(items));
-  parts.push("Reply to every message with reply(thread_id, ...). Do the work. Before you end this turn, make sure your notes and INDEX.md are current, and call sleep_until with when you should next wake.");
+  parts.push("Reply to each message with send (to: its thread id). Do the work. Before this turn ends, bring your notes and INDEX.md up to date and choose when to wake.");
   return parts.join("\n\n");
 }
 
 function chatPreamble(agent: Agent): string {
-  return `${sessionPreamble(agent)}\n\n---\n\n# This session\n\nThis is a conversation thread with the person, separate from your main work session. Answer from what you know and what's in your folder. Keep replies short and plain. Anything that changes your work or needs real work goes to your main session with pass_to_main.`;
+  return `${sessionPreamble(agent)}\n\n---\n\n# This session\n\nThis is a conversation thread with the person, separate from your main work session. Answer from what you know and what's in your folder. Keep replies short and plain. Anything that changes your work or needs real work goes to your main session: send with to: "main".`;
 }
 
 function helperPreamble(agentName: string, rec: HelperRecord, instructions: string, workspace: string): string {
@@ -607,7 +630,7 @@ You are a helper started by ${agentName} for one task. You start clean: everythi
 Work in: ${rec.workdir}${rec.branch ? ` (a git worktree of ${workspace}, on branch ${rec.branch}; commit your work there)` : ""}
 The main workspace is ${workspace}; don't change it directly.
 
-When you're finished, call done() with what you did, where the output is, what you checked, and anything left open. Then end your turn.
+When you're finished, call done with what you did, where the output is, what you checked, and anything left open. Then end your turn.
 ${instructions ? `\n# Your role\n\n${instructions}\n` : ""}`;
 }
 

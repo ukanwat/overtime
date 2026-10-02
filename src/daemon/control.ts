@@ -54,7 +54,6 @@ export class ControlServer {
         monitors: (await store.monitors()).filter((m) => m.status !== "removed"),
         helpers: await store.helpers(),
         reports: await store.reports(30),
-        roles: await store.roles(),
       };
     },
     threads: async ({ name }) => (await this.rt.store(name).threads()).sort((x, y) => x.updatedAt.localeCompare(y.updatedAt)),
