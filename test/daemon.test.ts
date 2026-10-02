@@ -12,9 +12,11 @@ const { usageToday } = await import("../src/runtime/usage.js");
 const logs: string[] = [];
 const rt = new Runtime((l) => logs.push(l));
 
-async function lastAgentEntry(agent: string, threadId: string) {
-  const th = await rt.store(agent).thread(threadId);
-  return th?.entries.filter((e) => e.from === "agent").pop();
+/** The agent's first message after the given one, once it exists. */
+async function replyAfter(agent: string, id: string, match?: (t: string) => boolean) {
+  const all = await rt.store(agent).messages();
+  const i = all.findIndex((m) => m.id === id);
+  return all.slice(i + 1).find((m) => m.from === "agent" && (!match || match(m.text)));
 }
 
 beforeAll(async () => {
@@ -30,20 +32,20 @@ describe("an agent's life", () => {
     const a = await loadAgent("tester");
     expect(a.state.status).toBe("new");
     expect(a.identity).toContain("No identity yet");
-    const ths = await rt.store("tester").threads();
-    expect(ths).toHaveLength(1);
-    expect(ths[0].unread).toBe(1);
+    const ms = await rt.store("tester").messages();
+    expect(ms).toHaveLength(1);
+    expect(ms[0].from).toBe("agent");
+    expect(await rt.store("tester").unread()).toBe(1);
   });
 
   it("learns its job from the first message and writes its own AGENT.md and INDEX.md", async () => {
-    const [greeting] = await rt.store("tester").threads();
-    await rt.send("tester", "Your job is testing.", greeting.id);
+    const m = await rt.send("tester", "Your job is testing.");
     await until(async () => (await loadAgent("tester")).state.status === "asleep", 30_000, "first turn");
     const a = await loadAgent("tester");
     expect(a.identity).toContain("Test job");
     expect(a.index).toContain("notes/");
     expect(a.state.mainSessionId).toBeTruthy();
-    expect((await lastAgentEntry("tester", greeting.id))?.text).toContain("main reply");
+    expect((await replyAfter("tester", m.id))?.text).toContain("main reply");
     const sched = await rt.store("tester").schedule();
     const inMin = (new Date(sched.wakeAt!).getTime() - Date.now()) / 60000;
     expect(inMin).toBeGreaterThan(25);
@@ -54,47 +56,45 @@ describe("an agent's life", () => {
   });
 
   it("answers in a separate chat session once it has a job", async () => {
-    const tid = await rt.send("tester", "how is it going?");
-    const e = await until(() => lastAgentEntry("tester", tid), 30_000, "chat reply");
+    const m = await rt.send("tester", "how is it going?");
+    const e = await until(() => replyAfter("tester", m.id, (t) => t.includes("chat reply")), 30_000, "chat reply");
     expect(e.text).toContain("chat reply to: how is it going?");
-    await until(async () => (await rt.store("tester").thread(tid))?.meta.chatSessionId, 10_000, "chat session saved");
+    await until(async () => (await rt.store("tester").conversation()).chatSessionId, 10_000, "chat session saved");
     expect((await loadAgent("tester")).state.status).toBe("asleep");
   });
 
-  it("uses the chat's final words when it doesn't call reply", async () => {
-    const tid = await rt.send("tester", "NOREPLYTOOL ping");
-    const e = await until(() => lastAgentEntry("tester", tid), 30_000, "fallback reply");
+  it("uses the chat's final words when it doesn't call send", async () => {
+    const m = await rt.send("tester", "NOREPLYTOOL ping");
+    const e = await until(() => replyAfter("tester", m.id, (t) => t.includes("final words")), 30_000, "fallback reply");
     expect(e.text).toContain("final words as reply to: NOREPLYTOOL ping");
   });
 
   it("passes work from a chat to the main session, which wakes and replies", async () => {
-    const tid = await rt.send("tester", "PASS please do the thing");
-    await until(async () => (await rt.store("tester").thread(tid))?.entries.some((e) => e.text.startsWith("main reply")), 40_000, "main reply after pass");
+    const m = await rt.send("tester", "PASS please do the thing");
+    await until(() => replyAfter("tester", m.id, (t) => t.startsWith("main reply")), 40_000, "main reply after pass");
   });
 
   it("asks without blocking, records the answer and wakes with it", async () => {
-    const tid = await rt.send("tester", "PASS ASK");
-    const q = await until(async () => (await rt.store("tester").threads()).find((t) => t.kind === "question"), 40_000, "question");
-    expect(q.status).toBe("waiting_on_you");
+    await rt.send("tester", "PASS ASK");
+    const q = await until(async () => (await rt.store("tester").openQuestions()).at(-1), 40_000, "question");
     expect(q.category).toBe("test-choice");
-    await rt.answer("tester", q.id, 1);
+    expect(q.options).toEqual(["Bridge", "Ferry"]);
+    await rt.answer("tester", undefined, 1);
     const ds = await rt.store("tester").decisions();
     expect(ds.at(-1)).toMatchObject({ category: "test-choice" });
     expect(ds.at(-1)!.answer).toContain("Bridge");
-    await until(async () => (await rt.store("tester").thread(q.id))?.entries.some((e) => e.text.startsWith("main reply")), 40_000, "reply to answer");
-    expect((await rt.store("tester").threads()).find((t) => t.id === q.id)!.status).not.toBe("waiting_on_you");
-    expect(tid).toBeTruthy();
+    const answered = await rt.store("tester").message(q.id);
+    expect(answered!.answer?.choice).toBe(1);
+    expect(await rt.store("tester").openQuestions()).toHaveLength(0);
+    await until(async () => (await rt.store("tester").messages()).some((m) => m.from === "agent" && m.text === "main reply" && m.t > answered!.answer!.t), 40_000, "reply to answer");
+    await expect(rt.answer("tester", q.id, 1)).rejects.toThrow(/already answered/);
   });
 
   it("notices when the person keeps giving the same answer (earned autonomy)", async () => {
     for (let i = 0; i < 2; i++) {
-      const before = (await rt.store("tester").threads()).filter((t) => t.kind === "question").length;
       await rt.send("tester", "PASS ASK");
-      const q = await until(async () => {
-        const qs = (await rt.store("tester").threads()).filter((t) => t.kind === "question");
-        return qs.length > before ? qs.at(-1) : null;
-      }, 40_000, "another question");
-      await rt.answer("tester", q!.id, 1);
+      await until(async () => (await rt.store("tester").openQuestions()).at(-1), 40_000, "another question");
+      await rt.answer("tester", undefined, 1);
     }
     const delivered = join(home, "agents", "tester", ".overtime", "inbox-delivered.jsonl");
     const inbox = join(home, "agents", "tester", ".overtime", "inbox.json");
@@ -138,8 +138,7 @@ describe("an agent's life", () => {
 
   it("keeps the message and retries after a failed turn", async () => {
     await rt.create("flaky");
-    const [g] = await rt.store("flaky").threads();
-    await rt.send("flaky", "FAIL_TURN", g.id);
+    await rt.send("flaky", "FAIL_TURN");
     await until(async () => ((await loadAgent("flaky")).state.failures ?? 0) >= 1, 30_000, "failure recorded");
     const a = await loadAgent("flaky");
     expect(a.state.status).toBe("new");
@@ -154,14 +153,13 @@ describe("an agent's life", () => {
     await rt.create("budget");
     const md = join(home, "agents", "budget", "AGENT.md");
     writeFileSync(md, `---\ndailyBudgetUsd: 0.005\n---\n\n` + readFileSync(md, "utf8"));
-    const [g] = await rt.store("budget").threads();
-    await rt.send("budget", "go", g.id);
+    await rt.send("budget", "go");
     await until(async () => (await loadAgent("budget")).state.status === "asleep", 30_000, "first turn");
     rt.wakeMain("budget", "test");
     await until(async () => (await loadAgent("budget")).state.status === "paused", 30_000, "paused");
     rt.wakeMain("budget", "test again");
     await new Promise((r) => setTimeout(r, 1500));
-    const alerts = (await rt.store("budget").threads()).filter((t) => t.kind === "alert");
+    const alerts = (await rt.store("budget").messages()).filter((m) => m.kind === "alert");
     expect(alerts).toHaveLength(1);
   });
 

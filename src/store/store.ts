@@ -1,10 +1,10 @@
 import { existsSync, statSync } from "node:fs";
-import { readdir, rm } from "node:fs/promises";
+import { readdir, rename, rm } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { paths } from "../paths.js";
 import { appendJsonl, newId, readJson, readJsonl, writeJson } from "../fsutil.js";
 import { withLock } from "./mutex.js";
-import type { Decision, HelperRecord, InboxItem, Loop, Monitor, Schedule, ThreadEntry, ThreadKind, ThreadMeta } from "./types.js";
+import type { Conversation, Decision, HelperRecord, InboxItem, Link, Loop, Message, MessageKind, Monitor, Schedule } from "./types.js";
 
 export const MIN_SLEEP_MS = 60_000;
 export const MAX_SLEEP_MS = 3 * 24 * 3600_000;
@@ -30,8 +30,8 @@ const PATH_RE = /(?:^|[\s(`"'])((?:~|\/)[^\s`"')]+)/g;
 const URL_RE = /\bhttps?:\/\/[^\s`"')<>]+/g;
 
 /** Turn paths and URLs in a message into links. Paths are only linked if they exist. */
-export function extractLinks(text: string, baseDir: string): ThreadEntry["links"] {
-  const links: NonNullable<ThreadEntry["links"]> = [];
+export function extractLinks(text: string, baseDir: string): Link[] | undefined {
+  const links: Link[] = [];
   const seen = new Set<string>();
   for (const m of text.matchAll(URL_RE)) {
     const url = m[0].replace(/[.,;:!?]+$/, "");
@@ -61,76 +61,113 @@ export class Store {
     return withLock(`store:${this.agent}`, fn);
   }
 
-  // ---------- threads ----------
+  // ---------- the conversation ----------
 
-  async threads(): Promise<ThreadMeta[]> {
-    return readJson<ThreadMeta[]>(this.p("threads.json"), []);
+  private migrated = false;
+
+  /**
+   * Agents made before conversations were a single list kept threads. The first time one is read,
+   * every thread's messages are merged into one list in time order. The old files are kept.
+   */
+  private async migrateThreads(): Promise<void> {
+    if (this.migrated) return;
+    this.migrated = true;
+    const old = this.p("threads.json");
+    if (!existsSync(old) || existsSync(this.p("messages.jsonl"))) return;
+    const metas = await readJson<any[]>(old, []);
+    const all: Message[] = [];
+    for (const m of metas) {
+      const entries = await readJsonl<any>(this.p("threads", `${m.id}.jsonl`));
+      let questionId: string | undefined;
+      entries.forEach((e, i) => {
+        const first = i === 0;
+        const kind: MessageKind = first && m.kind === "question" ? "question" : first && (m.kind === "report" || m.kind === "alert") ? m.kind : e.options?.length ? "question" : "message";
+        const msg: Message = { id: e.id, t: e.t, from: e.from, kind, text: e.text, why: e.why, recommendation: e.recommendation, options: e.options, links: e.links };
+        if (kind === "question") {
+          questionId = e.id;
+          msg.category = m.category;
+          msg.urgent = m.urgent;
+        }
+        if (kind === "report" || kind === "alert") msg.title = m.title;
+        if (e.from === "you" && questionId) {
+          msg.replyTo = questionId;
+          msg.choice = e.choice;
+          questionId = undefined;
+        }
+        all.push(msg);
+      });
+    }
+    all.sort((x, y) => x.t.localeCompare(y.t));
+    for (const m of all) await appendJsonl(this.p("messages.jsonl"), m);
+    const unreadAny = metas.some((m) => m.unread > 0);
+    const lastRead = unreadAny ? [...all].reverse().find((m) => m.from === "you")?.id ?? null : all.at(-1)?.id ?? null;
+    await writeJson(this.p("conversation.json"), { lastReadId: lastRead, chatSessionId: null } satisfies Conversation);
+    await rename(old, `${old}.before-single-conversation`).catch(() => {});
   }
 
-  async thread(id: string): Promise<{ meta: ThreadMeta; entries: ThreadEntry[] } | null> {
-    const meta = (await this.threads()).find((t) => t.id === id);
-    if (!meta) return null;
-    return { meta, entries: await readJsonl<ThreadEntry>(this.p("threads", `${id}.jsonl`)) };
+  async conversation(): Promise<Conversation> {
+    await this.migrateThreads();
+    return readJson<Conversation>(this.p("conversation.json"), { lastReadId: null, chatSessionId: null });
   }
 
-  /** Start a thread. Returns its id. */
-  async startThread(o: { kind: ThreadKind; title: string; from: ThreadEntry["from"]; text: string; why?: string; recommendation?: string; options?: string[]; urgent?: boolean; category?: string; baseDir: string }): Promise<string> {
-    return this.lock(async () => {
-      const id = newId("th");
-      const now = new Date().toISOString();
-      const meta: ThreadMeta = {
-        id,
-        kind: o.kind,
-        title: o.title.slice(0, 120),
-        status: o.kind === "question" ? "waiting_on_you" : "open",
-        createdAt: now,
-        updatedAt: now,
-        unread: o.from === "agent" ? 1 : 0,
-        urgent: o.urgent,
-        category: o.category,
-        chatSessionId: null,
-      };
-      const entry: ThreadEntry = { id: newId("m"), t: now, from: o.from, text: o.text, why: o.why, recommendation: o.recommendation, options: o.options, links: extractLinks(o.text, o.baseDir) };
-      await appendJsonl(this.p("threads", `${id}.jsonl`), entry);
-      const all = await this.threads();
-      all.push(meta);
-      await writeJson(this.p("threads.json"), all);
-      return id;
-    });
-  }
-
-  async addToThread(threadId: string, e: Omit<ThreadEntry, "id" | "t" | "links"> & { baseDir: string }): Promise<ThreadEntry> {
-    return this.lock(async () => {
-      const all = await this.threads();
-      const meta = all.find((t) => t.id === threadId);
-      if (!meta) throw new Error(`No thread ${threadId}.`);
-      const entry: ThreadEntry = { id: newId("m"), t: new Date().toISOString(), from: e.from, text: e.text, why: e.why, recommendation: e.recommendation, options: e.options, choice: e.choice, links: extractLinks(e.text, e.baseDir) };
-      await appendJsonl(this.p("threads", `${threadId}.jsonl`), entry);
-      meta.updatedAt = entry.t;
-      if (e.from === "agent") meta.unread += 1;
-      if (e.from === "you" && meta.status === "waiting_on_you") meta.status = "answered";
-      if (e.from === "agent" && e.options?.length) meta.status = "waiting_on_you";
-      await writeJson(this.p("threads.json"), all);
-      return entry;
-    });
-  }
-
-  async patchThread(threadId: string, patch: Partial<ThreadMeta>): Promise<void> {
+  async patchConversation(patch: Partial<Conversation>): Promise<void> {
     await this.lock(async () => {
-      const all = await this.threads();
-      const meta = all.find((t) => t.id === threadId);
-      if (!meta) return;
-      Object.assign(meta, patch);
-      await writeJson(this.p("threads.json"), all);
+      const c = await this.conversation();
+      await writeJson(this.p("conversation.json"), { ...c, ...patch });
     });
   }
 
-  async markRead(threadId: string): Promise<void> {
-    await this.patchThread(threadId, { unread: 0 });
+  /** Every message, oldest first, with each question's answer filled in. */
+  async messages(): Promise<Message[]> {
+    await this.migrateThreads();
+    const all = await readJsonl<Message>(this.p("messages.jsonl"));
+    const byId = new Map(all.map((m) => [m.id, m]));
+    for (const m of all) {
+      if (m.replyTo) {
+        const q = byId.get(m.replyTo);
+        if (q && !q.answer) q.answer = { choice: m.choice, text: m.text, t: m.t };
+      }
+    }
+    return all;
   }
 
-  async waitingOnYou(): Promise<number> {
-    return (await this.threads()).filter((t) => t.status === "waiting_on_you" || t.unread > 0).length;
+  async message(id: string): Promise<Message | null> {
+    return (await this.messages()).find((m) => m.id === id) ?? null;
+  }
+
+  /** Questions the person hasn't answered yet, newest last. */
+  async openQuestions(): Promise<Message[]> {
+    return (await this.messages()).filter((m) => m.kind === "question" && !m.answer);
+  }
+
+  /** Add a message to the conversation. */
+  async addMessage(o: Omit<Message, "id" | "t" | "links" | "answer"> & { baseDir: string }): Promise<Message> {
+    return this.lock(async () => {
+      await this.migrateThreads();
+      const { baseDir, ...rest } = o;
+      const msg: Message = { id: newId("m"), t: new Date().toISOString(), ...rest, title: rest.title?.slice(0, 120), links: extractLinks(o.text, baseDir) };
+      for (const k of Object.keys(msg) as (keyof Message)[]) if (msg[k] === undefined) delete msg[k];
+      await appendJsonl(this.p("messages.jsonl"), msg);
+      // Your own messages count as read: everything up to them has been seen.
+      if (o.from === "you") {
+        const c = await readJson<Conversation>(this.p("conversation.json"), { lastReadId: null });
+        await writeJson(this.p("conversation.json"), { ...c, lastReadId: msg.id });
+      }
+      return msg;
+    });
+  }
+
+  /** How many messages from the agent (or Overtime) the person hasn't seen. */
+  async unread(): Promise<number> {
+    const all = await this.messages();
+    const { lastReadId } = await this.conversation();
+    const from = lastReadId ? all.findIndex((m) => m.id === lastReadId) + 1 : 0;
+    return all.slice(from).filter((m) => m.from !== "you").length;
+  }
+
+  async markRead(): Promise<void> {
+    const last = (await this.messages()).at(-1);
+    if (last) await this.patchConversation({ lastReadId: last.id });
   }
 
   // ---------- inbox ----------

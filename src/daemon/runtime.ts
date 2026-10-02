@@ -11,7 +11,8 @@ import { paths } from "../paths.js";
 import { loadSettings } from "../settings.js";
 import { withLock } from "../store/mutex.js";
 import { Store, clampWake } from "../store/store.js";
-import type { HelperRecord, InboxItem, Monitor, ThreadEntry } from "../store/types.js";
+import type { Attachment, HelperRecord, InboxItem, Message, Monitor } from "../store/types.js";
+import { receiveAttachments } from "../store/attachments.js";
 import type { ToolContext, ToolHost } from "../tools/host.js";
 import { ToolServer } from "../tools/server.js";
 import { AcpSession } from "../acp/session.js";
@@ -37,7 +38,7 @@ const RUN_KEEP_MS = 30 * 24 * 3600_000;
 const COPY_MAX_FILES = 5_000;
 const COPY_MAX_BYTES = 200 * 1024 * 1024;
 
-export type ChangeEvent = { agent: string; what: "threads" | "state" | "schedule" | "monitors" | "helpers" | "agents" };
+export type ChangeEvent = { agent: string; what: "messages" | "state" | "schedule" | "monitors" | "helpers" | "agents" };
 
 /** Why an agent can't spend right now (usage limit or daily budget), or null if it can. */
 type Blocked = { kind: "limit"; until: Date; backend: string } | { kind: "budget"; until: Date; text: string };
@@ -128,13 +129,11 @@ export class Runtime extends EventEmitter implements ToolHost {
     if (a.state.status !== "stopped") await this.monitors.startAll(a.name);
     // Conversation messages whose chat turn never ran: answer them now.
     if (a.state.status === "new" || a.state.status === "stopped") return;
-    const inboxThreads = new Set((await store.inbox()).map((i) => i.threadId).filter(Boolean));
-    for (const t of await store.threads()) {
-      if (t.kind !== "conversation" || t.status === "closed" || inboxThreads.has(t.id)) continue;
-      const th = await store.thread(t.id);
-      const last = th?.entries.at(-1);
-      if (last?.from === "you") this.queueChat(a.name, t.id, last.text);
-    }
+    // A message from the person that never got its chat turn: answer it now.
+    const all = await store.messages();
+    const last = all.at(-1);
+    const queued = new Set((await store.inbox()).map((i) => i.messageId).filter(Boolean));
+    if (last?.from === "you" && !last.replyTo && !queued.has(last.id)) this.queueChat(a.name, last);
   }
 
   async stop(): Promise<void> {
@@ -355,8 +354,8 @@ export class Runtime extends EventEmitter implements ToolHost {
       const already = agent.state.status === "paused" && agent.state.pausedUntil && new Date(agent.state.pausedUntil) >= b.until;
       await updateState(agentName, { status: "paused", pausedUntil: b.until.toISOString(), activity: b.kind === "limit" ? `paused: ${b.backend} usage limit` : "paused: daily budget used" });
       if (b.kind === "budget" && !already) {
-        await store.startThread({ kind: "alert", title: "Daily budget used", from: "overtime", text: b.text, baseDir: agent.dir });
-        this.changed(agentName, "threads");
+        await store.addMessage({ from: "overtime", kind: "alert", title: "Daily budget used", text: b.text, baseDir: agent.dir });
+        this.changed(agentName, "messages");
       }
       this.changed(agentName, "state");
       return true;
@@ -433,17 +432,17 @@ export class Runtime extends EventEmitter implements ToolHost {
       const hint = needsPerson(msg, eff.backend, agentName);
       const wait = hint ? BACKOFF_MS[BACKOFF_MS.length - 1] : BACKOFF_MS[Math.min(BACKOFF_MS.length - 1, failures - 1)];
       if (hint && agent.state.lastError !== msg.slice(0, 500)) {
-        await store.startThread({ kind: "alert", title: "Needs you to fix something", from: "overtime", text: `${hint}\n\nThe error was: ${msg}`, urgent: true, baseDir: agent.dir });
+        await store.addMessage({ from: "overtime", kind: "alert", title: "Needs you to fix something", text: `${hint}\n\nThe error was: ${msg}`, urgent: true, baseDir: agent.dir });
         this.notify(`${agentName} needs you`, hint);
-        this.changed(agentName, "threads");
+        this.changed(agentName, "messages");
       }
       await updateState(agentName, { status: idle, failures, lastError: msg.slice(0, 500) });
       await store.setWake(new Date(Date.now() + wait), `retry after an error: ${msg.slice(0, 200)}`);
       this.log(`[${agentName}] main turn failed (${failures}): ${e?.stack ?? e}`);
       if (failures === 3 && !hint) {
-        await store.startThread({ kind: "alert", title: "Something keeps failing", from: "overtime", text: `${agentName}'s last ${failures} turns failed. Latest error:\n\n${msg}\n\nOvertime keeps retrying with longer gaps. Its log is in ${join(paths.meta(agentName), "runs")}.`, urgent: true, baseDir: agent.dir });
+        await store.addMessage({ from: "overtime", kind: "alert", title: "Something keeps failing", text: `${agentName}'s last ${failures} turns failed. Latest error:\n\n${msg}\n\nOvertime keeps retrying with longer gaps. Its log is in ${join(paths.meta(agentName), "runs")}.`, urgent: true, baseDir: agent.dir });
         this.notify(`${agentName} keeps failing`, msg);
-        this.changed(agentName, "threads");
+        this.changed(agentName, "messages");
       }
       return false;
     } finally {
@@ -460,8 +459,8 @@ export class Runtime extends EventEmitter implements ToolHost {
     const key = `${a.settings.backend ?? ""}/${a.settings.model ?? ""}`;
     if (a.state.modelIssueFor === key) return;
     await updateState(agentName, { modelIssueFor: key });
-    await this.store(agentName).startThread({ kind: "alert", title: "The chosen model isn't available", from: "overtime", text: `${text}\n\nChange the model for ${agentName} in the app (Ctrl+T) or in its AGENT.md settings.`, baseDir: a.dir });
-    this.changed(agentName, "threads");
+    await this.store(agentName).addMessage({ from: "overtime", kind: "alert", title: "The chosen model isn't available", text: `${text}\n\nChange the model for ${agentName} in its settings in the app, or with \`overtime set ${agentName} model=…\`.`, baseDir: a.dir });
+    this.changed(agentName, "messages");
   }
 
   /** What every main turn is told besides the time: spend so far today and helpers still running. */
@@ -483,45 +482,40 @@ export class Runtime extends EventEmitter implements ToolHost {
 
   // ---------- people talking to agents ----------
 
-  /** A message from the person. Returns the thread it went into. */
-  async send(agentName: string, text: string, threadId?: string): Promise<string> {
+  /** A message from the person, with any files they attached. Returns the message. */
+  async send(agentName: string, text: string, files: string[] = []): Promise<Message> {
     const agent = await loadAgent(agentName);
     const store = this.store(agentName);
-    let tid = threadId;
-    if (tid) {
-      await store.addToThread(tid, { from: "you", text, baseDir: agent.dir });
-      const meta = (await store.thread(tid))?.meta;
-      if (meta?.status === "closed") await store.patchThread(tid, { status: "open" });
-    }
-    else tid = await store.startThread({ kind: "conversation", title: text.split("\n")[0], from: "you", text, baseDir: agent.dir });
-    await store.markRead(tid);
-    this.changed(agentName, "threads");
+    if (!text.trim() && !files.length) throw new Error("Write a message or attach a file.");
+    const attachments = files.length ? await receiveAttachments(files, agent.dir) : undefined;
+    const m = await store.addMessage({ from: "you", kind: "message", text, attachments, baseDir: agent.dir });
+    this.changed(agentName, "messages");
     if (agent.state.status === "new" || agent.state.status === "stopped") {
       // Before it has a job, and while stopped, every message goes straight to its main session.
-      await store.pushInbox({ type: "message", text, threadId: tid });
+      await store.pushInbox({ type: "message", text: withFiles(text, attachments), messageId: m.id, attachments });
       if (agent.state.status === "new") this.wakeMain(agentName, "the person sent you your first message");
     } else {
-      this.queueChat(agentName, tid, text);
+      this.queueChat(agentName, m);
     }
-    return tid;
+    return m;
   }
 
-  /** The person answered a question: pick an option and/or write something. */
-  async answer(agentName: string, threadId: string, choice?: number, text?: string): Promise<void> {
+  /** The person answered a question: pick an option and/or write something. Defaults to the newest open question. */
+  async answer(agentName: string, questionId?: string, choice?: number, text?: string): Promise<void> {
     const agent = await loadAgent(agentName);
     const store = this.store(agentName);
-    const th = await store.thread(threadId);
-    if (!th) throw new Error(`No thread ${threadId}.`);
-    const q = [...th.entries].reverse().find((e) => e.from === "agent" && e.options?.length);
-    const picked = choice && q?.options ? q.options[choice - 1] : undefined;
+    const open = await store.openQuestions();
+    const q = questionId ? await store.message(questionId) : open.at(-1);
+    if (!q || q.kind !== "question") throw new Error(questionId ? `There's no question ${questionId}.` : `${agentName} hasn't asked you anything.`);
+    if (q.answer) throw new Error("That question is already answered.");
+    const picked = choice && q.options ? q.options[choice - 1] : undefined;
     if (choice && !picked) throw new Error(`There is no option ${choice}.`);
     const answerText = [picked ? `${choice}. ${picked}` : "", text ?? ""].filter(Boolean).join(" — ");
     if (!answerText) throw new Error("Pick an option or write an answer.");
-    await store.addToThread(threadId, { from: "you", text: answerText, choice, baseDir: agent.dir });
-    await store.patchThread(threadId, { status: "answered", unread: 0 });
-    await store.recordDecision({ threadId, category: th.meta.category ?? "uncategorised", question: q?.text ?? th.meta.title, answer: answerText });
-    await store.pushInbox({ type: "answer", text: answerText + (await this.autonomyHint(agentName, th.meta.category)), threadId, data: { question: q?.text ?? th.meta.title } });
-    this.changed(agentName, "threads");
+    const m = await store.addMessage({ from: "you", kind: "message", text: answerText, replyTo: q.id, choice, baseDir: agent.dir });
+    await store.recordDecision({ threadId: q.id, category: q.category ?? "uncategorised", question: q.text, answer: answerText });
+    await store.pushInbox({ type: "answer", text: answerText + (await this.autonomyHint(agentName, q.category)), messageId: m.id, data: { question: q.text } });
+    this.changed(agentName, "messages");
     if (agent.state.status !== "stopped") this.wakeMain(agentName, "the person answered one of your questions");
   }
 
@@ -540,11 +534,12 @@ export class Runtime extends EventEmitter implements ToolHost {
     return `\n\n(Overtime: this is the ${same.length}th "${category}" question, and the last ${recent.length} answers were all "${recent[0].answer.replace(/^\d+\.\s*/, "").split(" — ")[0]}". If it fits, ask whether you can decide these yourself from now on; if they agree, add the rule to AGENT.md.)`;
   }
 
-  private queueChat(agentName: string, threadId: string, text: string): void {
-    const key = `${agentName}/${threadId}`;
+  /** One chat turn at a time per agent; messages sent meanwhile are answered in order. */
+  private queueChat(agentName: string, m: Message): void {
+    const key = `${agentName}/chat`;
     const prev = this.chatQueues.get(key) ?? Promise.resolve();
     const next = prev
-      .then(() => this.runChat(agentName, threadId, text))
+      .then(() => this.runChat(agentName, m))
       .catch((e) => this.log(`[${agentName}] chat failed: ${e?.stack ?? e}`))
       .finally(() => {
         if (this.chatQueues.get(key) === next) this.chatQueues.delete(key);
@@ -552,56 +547,55 @@ export class Runtime extends EventEmitter implements ToolHost {
     this.chatQueues.set(key, next);
   }
 
-  private async runChat(agentName: string, threadId: string, text: string): Promise<void> {
+  private async runChat(agentName: string, m: Message): Promise<void> {
     if (this.stopping) return;
     const store = this.store(agentName);
-    await this.adoptEdits(agentName, `${agentName}/${threadId}`);
+    await this.adoptEdits(agentName, `${agentName}/chat`);
     const agent = await loadAgent(agentName);
-    const th = await store.thread(threadId);
-    if (!th) return;
+    const text = withFiles(m.text, m.attachments);
     if (agent.state.status === "stopped") {
       // Stopped while this was queued: it waits for the agent's main session instead.
-      await store.pushInbox({ type: "message", text, threadId });
+      await store.pushInbox({ type: "message", text, messageId: m.id, attachments: m.attachments });
       return;
     }
     const b = await this.blocked(agentName);
     if (b) {
-      await store.addToThread(threadId, { from: "overtime", text: `${agentName} is ${this.blockedLine(b)}. Your message is kept and it will pick it up then.`, baseDir: agent.dir });
-      await store.pushInbox({ type: "message", text, threadId });
-      this.changed(agentName, "threads");
+      await store.addMessage({ from: "overtime", kind: "message", text: `${agentName} is ${this.blockedLine(b)}. Your message is kept and it will pick it up then.`, baseDir: agent.dir });
+      await store.pushInbox({ type: "message", text, messageId: m.id, attachments: m.attachments });
+      this.changed(agentName, "messages");
       return;
     }
-    const { ctx, mcp } = this.tools.open({ agent: agentName, kind: "chat", threadId, depth: 0 });
-    const before = th.entries.length;
+    const conv = await store.conversation();
+    const { ctx, mcp } = this.tools.open({ agent: agentName, kind: "chat", depth: 0 });
+    const all = await store.messages();
     try {
       const state = await this.stateSummary(agentName);
-      const history = th.entries
-        .slice(0, -1)
-        .map((e) => `${e.from === "you" ? "Person" : e.from === "agent" ? "You" : "Overtime"} (${e.t}): ${e.text}`)
+      const idx = all.findIndex((x) => x.id === m.id);
+      const history = all
+        .slice(Math.max(0, idx - 40), idx)
+        .map((e) => `${e.from === "you" ? "Person" : e.from === "agent" ? "You" : "Overtime"} (${e.t})${e.kind === "question" ? " [question]" : e.kind === "report" ? " [report]" : ""}: ${withFiles(e.text, e.attachments)}${e.answer ? `\n  (answered: ${e.answer.text})` : ""}`)
         .join("\n\n");
-      const chatEdits = th.meta.chatSessionId ? editedSince(agent, th.meta.chatFiles) : Promise.resolve("");
-      const editsText = await chatEdits;
+      const resume = conv.chatSessionId && !full(await lastContext(agentName, conv.chatSessionId)) ? conv.chatSessionId : null;
+      const editsText = resume ? await editedSince(agent, conv.chatFiles) : "";
       const r = await runTurn({
         agent: agentName,
         kind: "chat",
-        reason: "the person sent you a message in a conversation thread",
+        reason: "the person sent you a message",
         preamble: chatPreamble(agent),
-        resumeSessionId: th.meta.chatSessionId && !full(await lastContext(agentName, th.meta.chatSessionId)) ? th.meta.chatSessionId : null,
-        // A fresh session (first message, or the old one couldn't be resumed) gets the thread so far.
+        resumeSessionId: resume,
+        // A fresh session (first message, or the old one couldn't be resumed) gets the recent conversation.
         text: (fresh) =>
-          `${fresh ? "" : editsText}${fresh ? `What you are doing right now (from your main session):\n${state}\n\n${history ? `Earlier in this thread:\n${history}\n\n` : ""}` : ""}The person just wrote:\n\n${text}\n\nAnswer them with send. If it changes your work or needs real work done, send it to: "main" and tell them you have.`,
+          `${fresh ? "" : editsText}${fresh ? `What you are doing right now (from your main session):\n${state}\n\n${history ? `The conversation so far (most recent last):\n${history}\n\n` : ""}` : ""}The person just wrote:\n\n${text}\n\nAnswer them with send. If it changes your work or needs real work done, send it to: "main" and tell them you have.`,
         extraMcp: [mcp],
         timeoutMs: 20 * 60_000,
         signal: this.signalFor(agentName),
-        onUpdate: (u) => this.emit("update", { agent: agentName, kind: "chat", threadId, update: u }),
+        onUpdate: (u) => this.emit("update", { agent: agentName, kind: "chat", update: u }),
         log: this.log,
       });
-      await store.patchThread(threadId, { chatSessionId: r.sessionId, chatFiles: fileHashes(await loadAgent(agentName)) });
+      await store.patchConversation({ chatSessionId: r.sessionId, chatFiles: fileHashes(await loadAgent(agentName)) });
       if (r.modelIssue) await this.modelIssue(agentName, r.modelIssue);
       // If it didn't use send, its final words are the reply, so the person always gets an answer.
-      const after = (await store.thread(threadId))?.entries ?? [];
-      const replied = after.slice(before).some((e) => e.from === "agent");
-      if (!replied) await store.addToThread(threadId, { from: "agent", text: r.reply || "(I read this, but didn't write a reply.)", baseDir: agent.dir });
+      if (!ctx.sent) await store.addMessage({ from: "agent", kind: "message", text: r.reply || "(I read this, but didn't write a reply.)", baseDir: agent.dir });
     } catch (e: any) {
       const stoppedNow = (await loadAgent(agentName)).state.status === "stopped";
       if (this.stopping && e instanceof TurnIncompleteError) return; // answered after the restart
@@ -611,15 +605,15 @@ export class Runtime extends EventEmitter implements ToolHost {
           : stoppedNow
             ? "I was stopped before I could answer. I've kept your message for when I'm started again."
             : (needsPerson(String(e?.message ?? e), (await effectiveSettings(agent)).backend, agentName) ?? `I couldn't answer just now (${String(e?.message ?? e).slice(0, 200)}). I've passed your message to my main session.`);
-      await store.addToThread(threadId, { from: "overtime", text: msg, baseDir: agent.dir });
-      await store.pushInbox({ type: "message", text, threadId });
-      // A session that failed may be broken: the next message in this thread starts a fresh one.
-      if (!(e instanceof UsageLimitError)) await store.patchThread(threadId, { chatSessionId: null });
+      await store.addMessage({ from: "overtime", kind: "message", text: msg, baseDir: agent.dir });
+      await store.pushInbox({ type: "message", text, messageId: m.id, attachments: m.attachments });
+      // A session that failed may be broken: the next message starts a fresh one.
+      if (!(e instanceof UsageLimitError)) await store.patchConversation({ chatSessionId: null });
       if (!(e instanceof UsageLimitError) && !stoppedNow) this.wakeMain(agentName, "a chat session failed, so the person's message came to you");
     } finally {
       this.tools.close(ctx.token);
-      this.emit("turnEnd", { agent: agentName, kind: "chat", threadId });
-      this.changed(agentName, "threads");
+      this.emit("turnEnd", { agent: agentName, kind: "chat" });
+      this.changed(agentName, "messages");
     }
   }
 
@@ -830,9 +824,8 @@ export class Runtime extends EventEmitter implements ToolHost {
   async create(name: string, settings: { backend?: string; model?: string | null } = {}): Promise<Agent> {
     const a = await createAgent(name, Object.fromEntries(Object.entries(settings).filter(([, v]) => v !== undefined && v !== null)) as any);
     // The greeting costs nothing: Overtime writes it, not the model.
-    await this.store(name).startThread({
-      kind: "conversation",
-      title: "Hi, I don't have a job yet",
+    await this.store(name).addMessage({
+      kind: "message",
       from: "agent",
       text: `Hi, I'm ${name}. I don't have a job yet. What should I be looking after, and is there anything I should always check with you first?`,
       baseDir: a.dir,
@@ -892,7 +885,15 @@ export class Runtime extends EventEmitter implements ToolHost {
   }
 
   /** The person changed an agent's settings. Takes effect from its next turn. */
-  async setAgentSettings(name: string, patch: { backend?: string; model?: string | null; dailyBudgetUsd?: number }): Promise<void> {
+  async setAgentSettings(name: string, patch: { backend?: string; model?: string | null; dailyBudgetUsd?: number; dailyTokenBudget?: number | null; workspace?: string | null }): Promise<void> {
+    if (patch.dailyTokenBudget !== undefined && patch.dailyTokenBudget !== null && !(Number.isFinite(patch.dailyTokenBudget) && patch.dailyTokenBudget > 0)) throw new Error("The token budget must be a positive number of tokens, or empty for none.");
+    if (typeof patch.workspace === "string" && patch.workspace.trim()) {
+      const { expandHome } = await import("../agent/agent.js");
+      const { existsSync, statSync } = await import("node:fs");
+      const p = expandHome(patch.workspace.trim());
+      if (!existsSync(p) || !statSync(p).isDirectory()) throw new Error(`There's no folder at ${p}.`);
+      patch.workspace = p;
+    }
     if (patch.backend) {
       const known = await this.backends();
       if (!known.includes(patch.backend)) throw new Error(`Unknown backend "${patch.backend}". Choose one of: ${known.join(", ")}.`);
@@ -903,14 +904,6 @@ export class Runtime extends EventEmitter implements ToolHost {
     await setSettings(name, { ...patch, model: patch.backend && patch.model === undefined ? null : patch.model });
     this.log(`[${name}] settings changed: ${JSON.stringify(patch)}`);
     this.changed(name, "state");
-  }
-
-  /** The person is done with a thread. Closed threads stay readable; a new message reopens one. */
-  async closeThread(name: string, id: string): Promise<void> {
-    const store = this.store(name);
-    if (!(await store.thread(id))) throw new Error(`No thread ${id}.`);
-    await store.patchThread(id, { status: "closed", unread: 0 });
-    this.changed(name, "threads");
   }
 
   /** Stop an agent and move its folder to the archive. Nothing is deleted. */
@@ -941,6 +934,13 @@ export class Runtime extends EventEmitter implements ToolHost {
 
 // ---------- prompt text ----------
 
+/** A message's text plus where its attached files are, for the agent. */
+function withFiles(text: string, files?: Attachment[]): string {
+  if (!files?.length) return text;
+  const list = files.map((f) => `- ${f.path} (${f.kind}${f.kind !== "folder" ? `, ${f.bytes < 1024 ? `${f.bytes} B` : f.bytes < 1048576 ? `${Math.round(f.bytes / 1024)} KB` : `${(f.bytes / 1048576).toFixed(1)} MB`}` : ""})`).join("\n");
+  return `${text}${text ? "\n\n" : ""}Attached (copied into your folder; open them with your own tools if you need to, images included):\n${list}`;
+}
+
 function describeInbox(items: InboxItem[]): string {
   const kinds = new Set(items.map((i) => i.type));
   const words: Record<string, string> = { message: "a message from the person", answer: "an answer to your question", monitor: "a monitor fired", helper: "a helper finished", loop: "a recurring task came due", system: "a note from Overtime" };
@@ -955,9 +955,11 @@ function inboxBlock(items: InboxItem[]): string {
       .map((i, n) => {
         const head =
           i.type === "message"
-            ? `Message from the person${i.threadId ? ` (thread ${i.threadId})` : ""}`
+            ? (i.data as any)?.fromChat
+              ? "Passed on by your chat session (from your conversation with the person)"
+              : "Message from the person"
             : i.type === "answer"
-              ? `The person answered your question${i.threadId ? ` (thread ${i.threadId})` : ""}: "${String((i.data as any)?.question ?? "").slice(0, 200)}"`
+              ? `The person answered your question: "${String((i.data as any)?.question ?? "").slice(0, 200)}"`
               : i.type === "monitor"
                 ? "Monitor fired"
                 : i.type === "helper"
@@ -975,17 +977,17 @@ function mainTurnText(items: InboxItem[], firstJob: boolean, contextReset: boole
   const parts: string[] = [];
   if (firstJob) {
     parts.push(
-      "This is your first conversation. You don't have an identity yet. From what the person tells you, rewrite AGENT.md in your folder: who you are, your job, what good looks like, and your rules (what you must check with them first). Create INDEX.md. Reply in their thread with a short summary of what you understood and what you'll do first. Then start.",
+      "This is your first conversation. You don't have an identity yet. From what the person tells you, rewrite AGENT.md in your folder: who you are, your job, what good looks like, and your rules (what you must check with them first). Create INDEX.md. Reply to them with a short summary of what you understood and what you'll do first. Then start.",
     );
   }
   if (contextReset) parts.push("Note: this is a fresh session. Your earlier conversation isn't carried over; your folder is. Check INDEX.md and your notes for where things stand.");
   parts.push(inboxBlock(items));
-  parts.push("Reply to each message with send (to: its thread id). Do the work. Before this turn ends, bring your notes and INDEX.md up to date and choose when to wake.");
+  parts.push("Reply to the person's messages with send. Do the work. Before this turn ends, bring your notes and INDEX.md up to date and choose when to wake.");
   return parts.join("\n\n");
 }
 
 function chatPreamble(agent: Agent): string {
-  return `${sessionPreamble(agent, "chat")}\n\n---\n\n# This session\n\nThis is a conversation thread with the person, separate from your main work session. Answer from what you know and what's in your folder. Keep replies short and plain. Anything that changes your work or needs real work goes to your main session: send with to: "main".`;
+  return `${sessionPreamble(agent, "chat")}\n\n---\n\n# This session\n\nThis session answers the person in your conversation with them, separately from your main work session. Answer from what you know and what's in your folder. Keep replies short and plain. Anything that changes your work or needs real work goes to your main session: send with to: "main".`;
 }
 
 function helperInboxText(h: HelperRecord): string {
@@ -1078,4 +1080,4 @@ async function isGitRepo(dir: string): Promise<boolean> {
   }
 }
 
-export type { ThreadEntry };
+export type { Message };

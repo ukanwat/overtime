@@ -23,8 +23,7 @@ beforeAll(async () => {
   control = new ControlServer(rt, () => {}, () => {});
   await control.start();
   await rt.create("editorbot");
-  const [g] = await rt.store("editorbot").threads();
-  await rt.send("editorbot", "Your job is answering from the editor.", g.id);
+  await rt.send("editorbot", "Your job is answering from the editor.");
   await until(async () => (await loadAgent("editorbot")).state.status === "asleep", 30_000, "job learned");
 });
 afterAll(async () => {
@@ -51,8 +50,7 @@ describe("Overtime as an ACP agent for editors", () => {
       const r = await sess.prompt("hello from the editor");
       expect(r.stopReason).toBe("end_turn");
       expect(text).toContain("chat reply to: hello from the editor");
-      const threads = await rt.store("editorbot").threads();
-      expect(threads.some((t) => t.title === "hello from the editor")).toBe(true);
+      expect((await rt.store("editorbot").messages()).some((m) => m.from === "you" && m.text === "hello from the editor")).toBe(true);
     } finally {
       await sess.close();
     }

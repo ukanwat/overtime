@@ -6,13 +6,13 @@ export interface ToolContext {
   token: string;
   agent: string;
   kind: SessionKind;
-  /** The thread a chat session belongs to. */
-  threadId?: string;
   /** For helpers: their id and how deep in the helper tree they are (main = 0). */
   helperId?: string;
   depth: number;
   /** Set when the agent chose its next wake during this turn. */
   wakeChosen: boolean;
+  /** Set when this session sent the person a message. */
+  sent?: boolean;
   /** For helpers: set when the helper called done. */
   result?: string;
 }
@@ -30,6 +30,6 @@ export interface ToolHost {
   stopMonitor(agent: string, monitorId: string): void;
   notify(title: string, body: string): void;
   /** Something visible changed; the terminal app refreshes. */
-  changed(agent: string, what: "threads" | "state" | "schedule" | "monitors" | "helpers"): void;
+  changed(agent: string, what: "messages" | "state" | "schedule" | "monitors" | "helpers"): void;
   setActivity(agent: string, text: string): Promise<void>;
 }

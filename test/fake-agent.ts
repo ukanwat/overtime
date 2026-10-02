@@ -55,7 +55,6 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
   const t = await tools(s.tools);
   const names = await t.list();
   const folder = /# Your folder\n\n(.+)/.exec(text)?.[1];
-  const threads = [...new Set([...text.matchAll(/\(thread (th_[a-z0-9_]+)\)/g)].map((m) => m[1]))];
   try {
     if (/You are a helper/.test(text) || /a helper working for/.test(text)) {
       if (/SLOW/.test(text)) {
@@ -65,7 +64,7 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
       writeFileSync(join(s.cwd, "result.txt"), "helper output\n");
       await t.call("done", { result: `wrote ${join(s.cwd, "result.txt")}` });
       await say("helper done");
-    } else if (/conversation thread with the person/.test(text)) {
+    } else if (/The person just wrote:/.test(text)) {
       const msg = /The person just wrote:\n\n([\s\S]*?)\n\nAnswer them/.exec(text)?.[1] ?? text.split("\n").pop();
       if (/PASS/.test(msg ?? "")) await t.call("send", { to: "main", text: `do this: ${msg}` });
       if (!/NOREPLYTOOL/.test(msg ?? "")) await t.call("send", { text: `chat reply to: ${msg}` });
@@ -78,7 +77,7 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
         mkdirSync(join(folder, "notes"), { recursive: true });
         writeFileSync(join(folder, "INDEX.md"), "# Index\n\n- notes/: what I learned\n");
       }
-      for (const th of threads) await t.call("send", { to: th, text: `main reply in ${th}` });
+      if (/Message from the person|The person answered|Passed on by your chat session/.test(text)) await t.call("send", { text: "main reply" });
       if (/SPAWN_SLOW/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "SLOW write result.txt" });
       else if (/SPAWN/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "write result.txt" });
       if (/SLOW/.test(text) && !/SPAWN_SLOW/.test(text) && !/Helper result/.test(text) && (await slow())) return { stopReason: "cancelled" };
