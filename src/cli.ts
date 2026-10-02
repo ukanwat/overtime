@@ -39,7 +39,8 @@ const HELP = `overtime: agents that exist, not sessions
 async function main() {
   if (!cmd) {
     const { runApp } = await import("./tui/app.js");
-    return runApp();
+    await runApp();
+    return;
   }
   if (cmd === "help" || cmd === "--help" || cmd === "-h") return void console.log(HELP);
   if (cmd === "daemon") {
