@@ -51,71 +51,277 @@ function badForcePush(cmd: string): boolean {
 }
 
 const DESTRUCTIVE_WORD = /^(rm|rmdir|unlink|shred|trash|mv|truncate|srm)$/;
-const DESTRUCTIVE = /(^|[\s;&|(`])(rm|rmdir|unlink|shred|trash|mv|truncate|srm)\b|\s-delete\b|\bgit\b[^;&|\n]*\sclean\b/;
 
 function within(p: string, roots: string[]): boolean {
   return roots.some((r) => p === r || p.startsWith(r.endsWith(sep) ? r : r + sep));
 }
 
-function unquote(p: string): string {
-  return p.replace(/^(['"])(.*)\1$/, "$2");
-}
-
 function expand(p: string, cwd: string): string {
-  const unq = unquote(p);
-  const h = unq === "~" ? homedir() : unq.startsWith("~/") ? homedir() + unq.slice(1) : unq.replace(/^\$\{?HOME\}?(?=\/|$)/, homedir());
+  const h = p === "~" ? homedir() : p.startsWith("~/") ? homedir() + p.slice(1) : p.replace(/^\$\{?HOME\}?(?=\/|$)/, homedir());
   return isAbsolute(h) ? resolve(h) : resolve(cwd, h);
 }
 
-/** A path we can't know before the shell runs: a variable, a command substitution. */
-function unknowable(w: string): boolean {
-  const unq = unquote(w).replace(/^\$\{?HOME\}?(?=\/|$)/, "");
-  return /[$`]/.test(unq);
+/** A shell word: its text with quotes removed, and whether some of it can only be known when it runs. */
+interface Word {
+  text: string;
+  dynamic: boolean;
+  /** Was the whole word quoted (so it is one argument, e.g. a script for -c). */
+  quoted: boolean;
+}
+type Token = { word: Word } | { op: string };
+
+/**
+ * Split a command line the way a POSIX shell would, closely enough to see what each command acts on:
+ * quotes, escapes, operators (; && || | & newlines), redirections and $(...) / backticks.
+ */
+export function tokenize(src: string): Token[] {
+  const out: Token[] = [];
+  let i = 0;
+  let cur = null as Word | null;
+  const flush = () => {
+    if (cur) out.push({ word: cur });
+    cur = null;
+  };
+  const w = () => (cur ??= { text: "", dynamic: false, quoted: true });
+  while (i < src.length) {
+    const c = src[i];
+    if (c === " " || c === "\t") {
+      flush();
+      i++;
+    } else if (c === "\n" || c === ";" || c === "&" || c === "|" || c === "(" || c === ")") {
+      flush();
+      const two = src.slice(i, i + 2);
+      if (two === "&&" || two === "||" || two === ";;") {
+        out.push({ op: two });
+        i += 2;
+      } else if (c === "&" && src[i + 1] === ">") {
+        out.push({ op: ">" });
+        i += src[i + 2] === ">" ? 3 : 2;
+      } else {
+        out.push({ op: c });
+        i++;
+      }
+    } else if (c === ">" || c === "<") {
+      // Leading fd number belongs to the redirection (2>file), not to the previous word.
+      if (cur && /^\d+$/.test((cur as Word).text) && !(cur as Word).dynamic) cur = null;
+      flush();
+      let op = c;
+      i++;
+      if (src[i] === c) {
+        op += c;
+        i++;
+      }
+      if (src[i] === "&") {
+        // 2>&1 and friends duplicate a descriptor; they write nothing.
+        i++;
+        while (i < src.length && /[\d-]/.test(src[i])) i++;
+        continue;
+      }
+      if (src[i] === "|") i++;
+      out.push({ op });
+    } else if (c === "'") {
+      const end = src.indexOf("'", i + 1);
+      w().text += src.slice(i + 1, end < 0 ? undefined : end);
+      i = end < 0 ? src.length : end + 1;
+    } else if (c === '"') {
+      i++;
+      while (i < src.length && src[i] !== '"') {
+        if (src[i] === "\\" && i + 1 < src.length) {
+          w().text += src[i + 1];
+          i += 2;
+          continue;
+        }
+        if (src[i] === "$" || src[i] === "`") w().dynamic = true;
+        w().text += src[i++];
+      }
+      i++;
+    } else if (c === "\\") {
+      w().text += src[i + 1] ?? "";
+      w().quoted = false;
+      i += 2;
+    } else if (c === "$" && src[i + 1] === "(") {
+      // Command substitution: what it prints is unknowable; the command inside is checked too.
+      let depth = 0;
+      let j = i + 1;
+      for (; j < src.length; j++) {
+        if (src[j] === "(") depth++;
+        else if (src[j] === ")" && --depth === 0) break;
+      }
+      const inner = src.slice(i + 2, j);
+      out.push({ op: "subst:" + inner });
+      w().dynamic = true;
+      w().quoted = false;
+      w().text += "$(…)";
+      i = j + 1;
+    } else if (c === "`") {
+      const end = src.indexOf("`", i + 1);
+      out.push({ op: "subst:" + src.slice(i + 1, end < 0 ? undefined : end) });
+      w().dynamic = true;
+      w().quoted = false;
+      w().text += "`…`";
+      i = end < 0 ? src.length : end + 1;
+    } else {
+      if (c === "$" || c === "*" || c === "?" || c === "[") {
+        if (c === "$") w().dynamic = true;
+      }
+      w().text += c;
+      w().quoted = false;
+      i++;
+    }
+  }
+  flush();
+  return out;
+}
+
+/** Simple commands (words up to an operator), each with its redirection targets. */
+function commands(tokens: Token[]): { words: Word[]; redirects: { op: string; target: Word }[]; subst: string[] }[] {
+  const cmds: { words: Word[]; redirects: { op: string; target: Word }[]; subst: string[] }[] = [];
+  let cur = { words: [] as Word[], redirects: [] as { op: string; target: Word }[], subst: [] as string[] };
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if ("word" in t) cur.words.push(t.word);
+    else if (t.op.startsWith("subst:")) cur.subst.push(t.op.slice(6));
+    else if (t.op === ">" || t.op === ">>" || t.op === "<" || t.op === "<<") {
+      const next = tokens[i + 1];
+      if (next && "word" in next) {
+        cur.redirects.push({ op: t.op, target: next.word });
+        i++;
+      }
+    } else {
+      cmds.push(cur);
+      cur = { words: [], redirects: [], subst: [] };
+    }
+  }
+  cmds.push(cur);
+  return cmds.filter((c) => c.words.length || c.redirects.length || c.subst.length);
+}
+
+/** Inline code that deletes or moves files, in the languages agents reach for. */
+const INLINE_DELETE = /\b(rmtree|rmSync|rmdirSync|unlinkSync|unlink|remove|removedirs|rmdir|rm_rf|rm_r|rename|renameSync|move|truncate|FileUtils\.rm|os\.system|subprocess|child_process|execSync|spawnSync|Deno\.remove)\b/;
+const INTERPRETERS = /^(python\d*(\.\d+)?|node|nodejs|deno|bun|perl|ruby|php|osascript|tclsh|lua)$/;
+const SHELLS = /^(sh|bash|zsh|dash|ksh|fish)$/;
+/** Programs that just run the rest of their arguments as a command. */
+const WRAPPERS = /^(env|command|builtin|exec|nohup|nice|time|timeout|caffeinate|xcrun|stdbuf|ionice|chronic|unbuffer)$/;
+
+const SAFE_DEVICES = /^\/dev\/(null|stdout|stderr|tty|fd\/\d+)$/;
+
+interface Finding {
+  outside: string[];
+  unknown: boolean;
 }
 
 /**
- * What a destructive shell command acts on, following `cd` between commands. Returns the paths, and
- * whether some target can't be known in advance (a variable, or names piped in from elsewhere).
+ * What a shell command line deletes, moves or overwrites, following `cd`, unwrapping `sh -c`, `eval`,
+ * `env`/`nohup`-style wrappers, `xargs`, `find -delete`/`-exec`, `git clean`, redirections and inline
+ * scripts (`python -c`, `node -e`...). Paths outside the roots are reported; so is anything whose
+ * target can't be known before it runs.
  */
-function targets(cmd: string, cwd: string): { paths: string[]; unknown: boolean } {
-  const paths: string[] = [];
-  let unknown = false;
+function inspect(cmd: string, cwd: string, roots: string[], depth = 0): Finding {
+  const f: Finding = { outside: [], unknown: false };
+  if (depth > 4) return { outside: [], unknown: true };
   let here = cwd;
-  for (const raw of cmd.split(/&&|\|\||;|\n/)) {
-    for (const seg of raw.split("|")) {
-      const words = seg.trim().split(/\s+/).filter(Boolean);
-      if (!words.length) continue;
-      if (words[0] === "cd") {
-        const to = words[1];
-        if (!to || to === "~") here = homedir();
-        else if (unknowable(to)) unknown = true;
-        else here = expand(to, here);
-        continue;
+  const target = (w: Word) => {
+    if (w.dynamic && !/^\$\{?HOME\}?(\/[^$`]*)?$/.test(w.text)) {
+      f.unknown = true;
+      return;
+    }
+    const p = expand(w.text, here);
+    if (!within(p, roots)) f.outside.push(p);
+  };
+  const merge = (g: Finding) => {
+    f.outside.push(...g.outside);
+    f.unknown ||= g.unknown;
+  };
+  for (const c of commands(tokenize(cmd))) {
+    for (const s of c.subst) merge(inspect(s, here, roots, depth + 1));
+    // Truncating redirections overwrite files: check where they point.
+    for (const r of c.redirects) if (r.op === ">" && !SAFE_DEVICES.test(r.target.text)) target(r.target);
+    let words = c.words.filter((w, i) => !(i === 0 && /^\w+=/.test(w.text) && !w.quoted));
+    while (words.length && /^\w+=/.test(words[0].text)) words = words.slice(1);
+    // Unwrap programs that only run the rest of their arguments.
+    while (words.length && WRAPPERS.test(base(words[0].text))) {
+      words = words.slice(1);
+      while (words.length && (words[0].text.startsWith("-") || /^\w+=/.test(words[0].text) || /^\d+[smhd]?$/.test(words[0].text))) words = words.slice(1);
+    }
+    if (!words.length) continue;
+    const prog = base(words[0].text);
+    const args = words.slice(1);
+    if (prog === "cd") {
+      const to = args[0];
+      if (!to) here = homedir();
+      else if (to.dynamic && !/^\$\{?HOME\}?/.test(to.text)) f.unknown = true;
+      else here = expand(to.text, here);
+      continue;
+    }
+    if (prog === "eval") {
+      merge(inspect(args.map((a) => a.text).join(" "), here, roots, depth + 1));
+      if (args.some((a) => a.dynamic)) f.unknown = true;
+      continue;
+    }
+    if (SHELLS.test(prog)) {
+      const ci = args.findIndex((a) => /^-[a-z]*c[a-z]*$/.test(a.text));
+      if (ci >= 0 && args[ci + 1]) merge(inspect(args[ci + 1].text, here, roots, depth + 1));
+      else if (args[0] && !args[0].text.startsWith("-")) f.unknown ||= false; // runs a script file: its own permission requests are checked
+      continue;
+    }
+    if (INTERPRETERS.test(prog)) {
+      const ci = args.findIndex((a) => /^-(c|e|E|-eval|-command|p)$/.test(a.text) || a.text === "-");
+      const code = ci >= 0 ? args[ci + 1]?.text ?? "" : "";
+      if (code && INLINE_DELETE.test(code)) {
+        // Every path the code mentions must be inside the roots; one we can't read makes it unknown.
+        const lits = [...code.matchAll(/(["'`])((?:~|\/|\.\.?\/|\$HOME|\$\{HOME\})[^"'`]*)\1/g)].map((m) => m[2]);
+        const mentionsHome = /\b(homedir|expanduser|os\.environ|process\.env|Path\.home|ENV\[|getenv|HOME)\b/.test(code);
+        for (const l of lits) target({ text: l, dynamic: false, quoted: true });
+        if (mentionsHome || /\b(subprocess|child_process|os\.system|execSync|spawnSync)\b/.test(code)) f.unknown = true;
       }
-      const i = words.findIndex((w) => DESTRUCTIVE_WORD.test(w.replace(/^.*\//, "")));
-      if (i >= 0) {
-        const args = words.slice(i + 1).filter((w) => w && !w.startsWith("-"));
-        if (!args.length && (words.slice(0, i).some((w) => w === "xargs") || /^\s*xargs\b/.test(seg))) unknown = true;
-        for (const w of args) unknowable(w) ? (unknown = true) : paths.push(expand(w, here));
+      continue;
+    }
+    if (prog === "xargs") {
+      // The paths come from its input: never knowable here.
+      const rest = args.filter((a) => !a.text.startsWith("-"));
+      if (rest.some((a) => DESTRUCTIVE_WORD.test(base(a.text)) || SHELLS.test(base(a.text)))) f.unknown = true;
+      continue;
+    }
+    if (DESTRUCTIVE_WORD.test(prog)) {
+      for (const a of args) {
+        if (a.text.startsWith("-") && !a.quoted) continue;
+        target(a);
       }
-      // find <paths> ... -delete / -exec rm: what it deletes lies under the paths it searches.
-      if (words[0] === "find" && (words.includes("-delete") || words.some((w, j) => (w === "-exec" || w === "-execdir") && DESTRUCTIVE_WORD.test((words[j + 1] ?? "").replace(/^.*\//, ""))))) {
-        const roots = [];
-        for (const w of words.slice(1)) {
-          if (w.startsWith("-") || w === "(" || w === "!") break;
-          roots.push(w);
-        }
-        if (!roots.length) roots.push(".");
-        for (const w of roots) unknowable(w) ? (unknown = true) : paths.push(expand(w, here));
+      continue;
+    }
+    if (prog === "find") {
+      const deletes = args.some((a) => a.text === "-delete") || args.some((a, j) => (a.text === "-exec" || a.text === "-execdir" || a.text === "-ok") && (DESTRUCTIVE_WORD.test(base(args[j + 1]?.text ?? "")) || SHELLS.test(base(args[j + 1]?.text ?? ""))));
+      if (!deletes) continue;
+      const starts: Word[] = [];
+      for (const a of args) {
+        if (a.text.startsWith("-") || a.text === "(" || a.text === "!") break;
+        starts.push(a);
       }
-      // git clean deletes untracked files in the repo it runs in.
-      if (/^git$/.test(words[0]) && words.includes("clean")) {
-        const c = words.indexOf("-C");
-        paths.push(c >= 0 && words[c + 1] ? expand(words[c + 1], here) : here);
+      if (!starts.length) starts.push({ text: ".", dynamic: false, quoted: false });
+      for (const s of starts) target(s);
+      continue;
+    }
+    if (prog === "git") {
+      let dir = here;
+      let k = 0;
+      while (k < args.length && args[k].text.startsWith("-")) {
+        if (args[k].text === "-C" && args[k + 1]) {
+          dir = expand(args[k + 1].text, here);
+          k += 2;
+        } else k++;
       }
+      const sub = args[k]?.text;
+      if (sub === "clean" || (sub === "checkout" && args.slice(k + 1).some((a) => a.text === "--" || a.text === ".")) || (sub === "reset" && args.some((a) => a.text === "--hard"))) {
+        if (!within(dir, roots)) f.outside.push(dir);
+      }
+      continue;
     }
   }
-  return { paths, unknown };
+  return f;
+}
+
+function base(p: string): string {
+  return p.replace(/^.*\//, "");
 }
 
 /**
@@ -133,11 +339,10 @@ export function judge(req: PermissionRequest, given: PermissionScope, cwd: strin
   const shell = command || (tc?.kind === "execute" && typeof tc?.title === "string" ? tc.title : "");
   for (const h of HARD_STOPS) if (h.pattern.test(shell)) return { allowed: false, reason: h.reason };
   if (badForcePush(shell)) return { allowed: false, reason: "force-pushes to a main branch (or without naming the branch), which rewrites shared history. Ask the person first." };
-  if (shell && DESTRUCTIVE.test(shell)) {
-    const t = targets(shell, cwd);
-    const outside = t.paths.filter((p) => !within(p, scope.roots));
-    if (outside.length) return { allowed: false, reason: `deletes or moves something outside your folder and workspace (${outside.slice(0, 3).join(", ")}). Ask the person first.` };
-    if (t.unknown) return { allowed: false, reason: "deletes or moves files whose paths aren't known until it runs (a variable or piped names). Write the paths out in full so they can be checked, or ask the person." };
+  if (shell) {
+    const f = inspect(shell, cwd, scope.roots);
+    if (f.outside.length) return { allowed: false, reason: `deletes, moves or overwrites something outside your folder and workspace (${[...new Set(f.outside)].slice(0, 3).join(", ")}). Ask the person first.` };
+    if (f.unknown) return { allowed: false, reason: "deletes, moves or overwrites files whose paths aren't known until it runs (a variable, piped names, or code that builds paths). Write the paths out in full so they can be checked, or ask the person." };
   }
   // File edits/deletes reported as structured tool calls (not shell).
   const paths: string[] = [];

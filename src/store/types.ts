@@ -15,6 +15,8 @@ export interface ThreadMeta {
   category?: string;
   /** ACP session id of this thread's chat session, so a reply continues it. */
   chatSessionId?: string | null;
+  /** Fingerprints of AGENT.md and INDEX.md when this thread's chat session last ended. */
+  chatFiles?: { agent: string; index: string };
 }
 
 export interface ThreadEntry {
@@ -96,7 +98,7 @@ export interface HelperRecord {
   /** Who started it: "main" or another helper's id. */
   parent: string;
   depth: number;
-  status: "running" | "done" | "failed" | "cancelled";
+  status: "running" | "done" | "failed" | "cancelled" | "stopped";
   startedAt: string;
   finishedAt?: string;
   /** When its folder was removed (a week after it finished). */

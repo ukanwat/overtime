@@ -60,13 +60,12 @@ describe("stopping an agent", () => {
     await rt.send("stoppy", "PASS SLOW", g.id);
     await until(async () => (await loadAgent("stoppy")).state.status === "working", 30_000, "working");
     await rt.stopAgent("stoppy");
-    await new Promise((r) => setTimeout(r, 3000));
+    // The interrupted turn hands its message back; on a slow machine that takes a moment.
+    await until(async () => (await rt.store("stoppy").inbox()).some((i) => i.text.includes("PASS SLOW")), 30_000, "message kept");
     const a = await loadAgent("stoppy");
     expect(a.state.status).toBe("stopped");
     expect(a.state.nextWake).toBeNull();
-    expect((await rt.store("stoppy").inbox()).some((i) => i.text.includes("PASS SLOW"))).toBe(true);
-    const ps = execFileSync("ps", ["-eo", "command"]).toString();
-    expect(ps.split("\n").filter((l) => l.includes("fake-agent.ts") && l.includes(home))).toHaveLength(0);
+    await until(async () => execFileSync("ps", ["-eo", "command"]).toString().split("\n").every((l) => !(l.includes("fake-agent.ts") && l.includes(home))), 30_000, "backend gone");
     // Started again, it picks the message up.
     await rt.startAgent("stoppy");
     expect((await loadAgent("stoppy")).state.status).not.toBe("stopped");
@@ -123,5 +122,86 @@ describe("budgets and settings", () => {
   it("won't wake a new agent that hasn't been given a job", async () => {
     await rt.create("fresh");
     await expect(rt.wakeNow("fresh")).rejects.toThrow(/doesn't have a job/);
+  });
+});
+
+describe("schedules, models and settings", () => {
+  it("starts a repeating wake-up at the time it was given", async () => {
+    const { Store } = await import("../src/store/store.js");
+    const s = new Store("crashy");
+    const first = new Date(Date.now() + 5 * 3600_000);
+    const loop = await s.addLoop(24 * 3600_000, "daily", first);
+    expect(new Date(loop.nextAt).getTime()).toBe(first.getTime());
+    const past = await s.addLoop(24 * 3600_000, "daily", new Date(Date.now() - 3600_000));
+    expect(new Date(past.nextAt).getTime()).toBeGreaterThan(Date.now() + 22 * 3600_000);
+  });
+
+  it("changes settings from the app, clears the model when the backend changes, and rejects bad ones", async () => {
+    await rt.create("tuned");
+    await rt.setAgentSettings("tuned", { model: "some-model", dailyBudgetUsd: 3 });
+    let a = await loadAgent("tuned");
+    expect(a.settings.model).toBe("some-model");
+    expect(a.settings.dailyBudgetUsd).toBe(3);
+    expect(readFileSync(join(home, "agents", "tuned", "AGENT.md"), "utf8")).toContain("dailyBudgetUsd: 3");
+    await rt.setAgentSettings("tuned", { backend: "fake" });
+    a = await loadAgent("tuned");
+    expect(a.settings.model).toBeUndefined();
+    await expect(rt.setAgentSettings("tuned", { backend: "nope" })).rejects.toThrow(/Unknown backend/);
+  });
+
+  it("lifts a budget pause as soon as the budget is raised", async () => {
+    await until(async () => (await loadAgent("thrifty")).state.status !== "working", 30_000, "idle");
+    rt.wakeMain("thrifty", "test");
+    await until(async () => (await loadAgent("thrifty")).state.status === "paused", 30_000, "paused");
+    await rt.setAgentSettings("thrifty", { dailyBudgetUsd: 50 });
+    await until(async () => (await loadAgent("thrifty")).state.status !== "paused", 30_000, "unpaused");
+  });
+
+  it("closes threads, reopens them on a new message, and archives agents without deleting them", async () => {
+    await rt.create("tidy");
+    const [g] = await rt.store("tidy").threads();
+    await rt.closeThread("tidy", g.id);
+    expect((await rt.store("tidy").thread(g.id))!.meta.status).toBe("closed");
+    await rt.send("tidy", "Your job is testing.", g.id);
+    expect((await rt.store("tidy").thread(g.id))!.meta.status).not.toBe("closed");
+    await until(async () => (await loadAgent("tidy")).state.status === "asleep", 30_000, "settled");
+    const dir = await rt.archive("tidy");
+    expect(existsSync(join(dir, "AGENT.md"))).toBe(true);
+    expect(existsSync(join(home, "agents", "tidy"))).toBe(false);
+  });
+
+  it("lists backends, including custom ones", async () => {
+    expect(await rt.backends()).toEqual(expect.arrayContaining(["claude", "codex", "gemini", "fake"]));
+  });
+});
+
+describe("what turns cost and see", () => {
+  it("counts what a failed turn spent", async () => {
+    await rt.create("spender");
+    const [g] = await rt.store("spender").threads();
+    await rt.send("spender", "COSTLY_FAIL", g.id);
+    await until(async () => ((await loadAgent("spender")).state.failures ?? 0) >= 1, 30_000, "failure");
+    const { usageToday } = await import("../src/runtime/usage.js");
+    expect((await usageToday("spender")).usd).toBeCloseTo(0.25, 5);
+  });
+
+  it("tells a resumed session that the person edited AGENT.md", async () => {
+    await employ("noticer");
+    const f = join(home, "agents", "noticer", "AGENT.md");
+    writeFileSync(f, readFileSync(f, "utf8") + "\n- New rule: always say hello.\n");
+    rt.wakeMain("noticer", "test");
+    const { readdirSync } = await import("node:fs");
+    const runs = join(meta("noticer"), "runs");
+    await until(async () => readdirSync(runs).some((x) => readFileSync(join(runs, x), "utf8").includes("AGENT.md changed since your last turn")), 30_000, "edit notice");
+  });
+
+  it("doesn't add an hourly wake-up when a watch already wakes it", async () => {
+    await employ("watcher");
+    const [g] = await rt.store("watcher").threads();
+    await rt.send("watcher", "PASS WATCH_REPEAT NOSLEEP", g.id);
+    await until(async () => (await rt.store("watcher").monitors()).length > 0, 30_000, "watch set");
+    await until(async () => (await loadAgent("watcher")).state.status === "asleep", 30_000, "turn over");
+    const s = await rt.store("watcher").schedule();
+    expect(s.wakeReason ?? "").not.toMatch(/default wake-up/);
   });
 });

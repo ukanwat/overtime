@@ -36,6 +36,12 @@ export interface AgentState {
   mainSessionId: string | null;
   /** Backend the main session belongs to; a backend change forces a fresh session. */
   mainSessionBackend: string | null;
+  /** The model the main session was started on; a different model means a fresh session. */
+  mainSessionModel?: string | null;
+  /** Fingerprints of AGENT.md and INDEX.md when the main session last ended. */
+  mainSessionFiles?: { agent: string; index: string };
+  /** The backend/model a "model isn't available" alert was already raised for. */
+  modelIssueFor?: string;
   createdAt: string;
   lastRunAt: string | null;
   lastError: string | null;
@@ -234,4 +240,20 @@ export async function effectiveSettings(agent: Agent): Promise<EffectiveSettings
     workspace: agent.settings.workspace ? expandHome(agent.settings.workspace) : agent.dir,
     mcpServers: [...shared, ...(agent.settings.mcpServers ?? [])],
   };
+}
+
+/** The person changed an agent's settings (from the app or the CLI): update the copy that counts and AGENT.md. */
+export async function setSettings(name: string, patch: Partial<AgentSettings>): Promise<AgentSettings> {
+  return withLock(`settings:${name}`, async () => {
+    const cur = (await readSettingsSnapshot(name)) ?? {};
+    const next: AgentSettings = { ...cur };
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === undefined) continue;
+      if (v === null || v === "") delete (next as any)[k];
+      else (next as any)[k] = v;
+    }
+    await writeSettingsSnapshot(name, next);
+    await restoreSettings(name);
+    return next;
+  });
 }

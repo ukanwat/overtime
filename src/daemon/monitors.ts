@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { home } from "../paths.js";
 import type { Store } from "../store/store.js";
@@ -36,22 +37,38 @@ const FAILURES_BEFORE_REPORT = 3;
  */
 const pidFile = () => join(home(), "monitor-pids.json");
 
-/** Long-running monitor processes, by process group, so a crashed daemon's leftovers can be cleaned up. */
-const livePids = new Set<number>();
+/**
+ * Long-running monitor processes, by process group, with the command each runs, so a crashed daemon's
+ * leftovers can be cleaned up without ever touching a process that merely reused the number.
+ */
+const livePids = new Map<number, string>();
 function savePids() {
   try {
-    writeFileSync(pidFile(), JSON.stringify([...livePids]));
+    writeFileSync(pidFile(), JSON.stringify([...livePids].map(([pid, cmd]) => ({ pid, cmd }))));
   } catch {}
+}
+
+/** The command line of a running process, or null if there is none. */
+function commandOf(pid: number): string | null {
+  try {
+    return execFileSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: 5_000 }).trim() || null;
+  } catch {
+    return null;
+  }
 }
 
 /** Kill monitor processes left behind by a previous daemon that didn't shut down cleanly. */
 export function reapStaleMonitors(): number {
-  let pids: number[] = [];
+  let saved: { pid: number; cmd: string }[] = [];
   try {
-    pids = JSON.parse(readFileSync(pidFile(), "utf8"));
+    const raw = JSON.parse(readFileSync(pidFile(), "utf8"));
+    saved = Array.isArray(raw) ? raw.filter((x) => x && typeof x.pid === "number" && typeof x.cmd === "string") : [];
   } catch {}
   let n = 0;
-  for (const pid of pids) {
+  for (const { pid, cmd } of saved) {
+    // Only if that pid is still our shell running that exact watch.
+    const now = commandOf(pid);
+    if (!now || !now.startsWith("/bin/sh -c") || !now.includes(cmd.slice(0, 200))) continue;
     try {
       process.kill(-pid, "SIGKILL");
       n++;
@@ -106,6 +123,9 @@ export class MonitorRunner {
 
   stopAll(): void {
     for (const r of [...this.running.values()]) this.stop(r.agent, r.id);
+    // Everything was just killed: nothing is left for a later daemon to reap.
+    livePids.clear();
+    savePids();
   }
 
   private async current(r: Running): Promise<Monitor | null> {
@@ -150,7 +170,7 @@ export class MonitorRunner {
       const proc = spawn("/bin/sh", ["-c", m.run], { cwd: this.cwdFor(r.agent), stdio: ["ignore", "pipe", "pipe"], detached: true });
       r.proc = proc;
       if (proc.pid) {
-        livePids.add(proc.pid);
+        livePids.set(proc.pid, m.run);
         savePids();
       }
       let stderr = "";

@@ -1,5 +1,6 @@
 import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
 import { DaemonClient } from "./client.js";
+import { execFileSync } from "node:child_process";
 import { paths, home } from "../paths.js";
 import { Runtime } from "./runtime.js";
 import { ControlServer } from "./control.js";
@@ -48,7 +49,7 @@ async function main() {
 }
 
 async function takeLock(lock: string): Promise<boolean> {
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 5; attempt++) {
     try {
       const fd = openSync(lock, "wx");
       writeSync(fd, String(process.pid));
@@ -61,29 +62,41 @@ async function takeLock(lock: string): Promise<boolean> {
     try {
       pid = Number(readFileSync(lock, "utf8"));
     } catch {}
-    let alive = false;
-    try {
-      if (pid && pid !== process.pid) {
-        process.kill(pid, 0);
-        alive = true;
-      }
-    } catch {}
-    // A live pid might be an unrelated process that reused the number: only a daemon that answers counts.
-    if (alive && (await daemonAnswers())) return false;
-    if (!alive && !pid) {
+    if (!pid) {
       // Just created by another daemon that hasn't written its pid yet.
       await new Promise((r) => setTimeout(r, 300));
-      try {
-        if (Number(readFileSync(lock, "utf8"))) continue;
-      } catch {
-        continue;
-      }
+      continue;
     }
+    if (pid !== process.pid && isOvertimeDaemon(pid)) {
+      // A live daemon, possibly still starting up: give it time to answer before deciding anything.
+      for (let i = 0; i < 20; i++) {
+        if (await daemonAnswers()) return false;
+        if (!isOvertimeDaemon(pid)) break;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      if (isOvertimeDaemon(pid)) return false; // alive but silent: never take its place
+    }
+    // The pid is gone, or belongs to some unrelated process that reused the number: the lock is stale.
     try {
       unlinkSync(lock);
     } catch {}
   }
   return false;
+}
+
+/** Whether a pid is a running Overtime daemon (not just any process with that number). */
+function isOvertimeDaemon(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  try {
+    const cmd = execFileSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: 5_000 });
+    return /daemon[\/\\]main\.(js|ts)|overtime.* daemon/.test(cmd);
+  } catch {
+    return true;
+  }
 }
 
 async function daemonAnswers(): Promise<boolean> {

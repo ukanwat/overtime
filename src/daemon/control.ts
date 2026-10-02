@@ -25,6 +25,19 @@ export interface AgentSummary {
   dir: string;
 }
 
+/** One running session's live output: the text it is writing and the step it is on. */
+export interface LiveState {
+  agent: string;
+  kind: string;
+  threadId?: string;
+  helperId?: string;
+  text: string;
+  step: string | null;
+  startedAt: string;
+}
+
+const liveKey = (e: { agent: string; kind: string; threadId?: string; helperId?: string }) => `${e.agent}|${e.kind}|${e.threadId ?? e.helperId ?? ""}`;
+
 type Handler = (params: any, sock: Socket) => Promise<unknown>;
 
 /**
@@ -35,8 +48,41 @@ export class ControlServer {
   private server: Server | null = null;
   private subscribers = new Set<Socket>();
 
+  /** What each running session is writing and doing right now, streamed to the app as it happens. */
+  private live = new Map<string, LiveState & { timer?: NodeJS.Timeout }>();
+
   constructor(private readonly rt: Runtime, private readonly log: (s: string) => void, private readonly onShutdown: () => void) {
     rt.on("change", (e: ChangeEvent) => this.broadcast({ event: "change", ...e }));
+    rt.on("update", (e: { agent: string; kind: string; threadId?: string; helperId?: string; update: any }) => this.onUpdate(e));
+    rt.on("turnEnd", (e: { agent: string; kind: string; threadId?: string; helperId?: string }) => {
+      const key = liveKey(e);
+      const cur = this.live.get(key);
+      if (cur?.timer) clearTimeout(cur.timer);
+      this.live.delete(key);
+      this.broadcast({ event: "live", ...e, text: "", step: null, done: true });
+    });
+  }
+
+  private onUpdate(e: { agent: string; kind: string; threadId?: string; helperId?: string; update: any }): void {
+    const u = e.update;
+    const key = liveKey(e);
+    let cur = this.live.get(key);
+    if (!cur) this.live.set(key, (cur = { agent: e.agent, kind: e.kind, threadId: e.threadId, helperId: e.helperId, text: "", step: null, startedAt: new Date().toISOString() }));
+    if (u.sessionUpdate === "agent_message_chunk" && u.content?.type === "text") cur.text = (cur.text + u.content.text).slice(-6000);
+    else if (u.sessionUpdate === "tool_call" && typeof u.title === "string") {
+      // What it is doing, in a few words. A reply it sends starts a fresh paragraph of streamed text.
+      cur.step = u.title.replace(/^mcp__overtime__/, "").slice(0, 120);
+      if (cur.text && !cur.text.endsWith("\n\n")) cur.text += "\n\n";
+    } else return;
+    // At most ~12 updates a second per session, so a fast model can't flood the app.
+    if (cur.timer) return;
+    cur.timer = setTimeout(() => {
+      const c = this.live.get(key);
+      if (!c) return;
+      c.timer = undefined;
+      const { timer, ...rest } = c;
+      this.broadcast({ event: "live", ...rest, done: false });
+    }, 80);
   }
 
   private methods: Record<string, Handler> = {
@@ -89,6 +135,18 @@ export class ControlServer {
       return { ok: true };
     },
     limits: async () => readLimits(),
+    live: async () => [...this.live.values()].map(({ timer, ...rest }) => rest),
+    backends: async () => this.rt.backends(),
+    models: async ({ backend }) => this.rt.models(String(backend)),
+    set: async ({ name, backend, model, dailyBudgetUsd }) => {
+      await this.rt.setAgentSettings(name, { backend: backend || undefined, model, dailyBudgetUsd: dailyBudgetUsd === undefined ? undefined : Number(dailyBudgetUsd) });
+      return { ok: true };
+    },
+    close: async ({ name, id }) => {
+      await this.rt.closeThread(name, id);
+      return { ok: true };
+    },
+    archive: async ({ name }) => ({ dir: await this.rt.archive(name) }),
     subscribe: async (_p, sock) => {
       this.subscribers.add(sock);
       sock.on("close", () => this.subscribers.delete(sock));

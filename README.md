@@ -93,7 +93,8 @@ everything else meanwhile. It's fully autonomous otherwise. It asks first only b
 destroying things outside its folders, spending money, or acting publicly or as you. A small
 fixed check in Overtime itself blocks the few actions that must never slip through (wiping your
 home folder, force-pushing a main branch, erasing a disk), instantly and without a model, so no
-session can ever hang on a permission prompt.
+session can ever hang on a permission prompt. It sees every action the backend asks permission
+for, and looks inside `bash -c`, `eval`, `xargs` and inline scripts.
 
 **Trust grows.** Overtime notices when you keep giving the same answer to the same kind of
 question and tells the agent, which can then propose deciding those itself. If you agree, the rule
@@ -125,9 +126,10 @@ Everything else is plain files the agent reads and writes with the tools its bac
 
 ## Backends, models and MCP
 
-New agents use your default backend and model; you can change them per agent, or just ask the
-agent ("use Codex for this one"). The model list comes from each backend through ACP, so new models
-appear without an Overtime update. Built in: `claude` (bundled, uses your Claude Code login),
+New agents use your default backend and model. Change them per agent in the app (`Ctrl+T` picks a
+backend, then one of its models) or with `overtime set <name> backend=codex model=…`. The model list
+comes from each backend through ACP, so new models appear without an Overtime update. If a backend
+won't use the model you chose, the agent runs on its default and Overtime tells you. Built in: `claude` (bundled, uses your Claude Code login),
 `codex`, `gemini`. Anything else that speaks ACP goes under `customBackends` in
 `~/overtime/settings.json`.
 

@@ -41,8 +41,8 @@ export function registerTools(mcp: McpServer, ctx: ToolContext, host: ToolHost):
       {
         description: `Decide when you wake up next. One of:
 - at / in: once, at a time ("2026-10-04T09:00:00Z") or after a delay ("20m", "6h", "2d"). Between ${MIN_SLEEP_MS / 60000} minute and ${MAX_SLEEP_MS / 86400000} days. Set this before ending a turn.
-- every: repeatedly, e.g. "1d". Minimum 1 minute.
-- watch: a shell command Overtime runs for you, without the model, that wakes you when something happens. Alone, it keeps running and every line it prints wakes you (e.g. "tail -F app.log | grep --line-buffered ERROR"). With every, it runs on that schedule and wakes you when its output changes.
+- every: repeatedly, e.g. "1d". Minimum 1 minute. With at, the first time it fires (every "1d" at "2026-10-04T09:00:00+05:30" is every day at 9).
+- watch: a shell command Overtime runs for you in your folder, without the model, that wakes you when something happens. Alone, it keeps running and every line it prints wakes you (e.g. "tail -F app.log | grep --line-buffered ERROR"). With every, it runs on that schedule and wakes you when its output changes.
 Messages, answers and finished helpers always wake you early.`,
         inputSchema: {
           reason: z.string().describe("Why: a note to your future self, shown when it fires."),
@@ -62,7 +62,9 @@ Messages, answers and finished helpers always wake you early.`,
           return ok(`Watching (${m.id}), ${everyMs ? `every ${every}, waking you when the output changes` : "continuously, waking you on each line"}.`);
         }
         if (every) {
-          const loop = await store.addLoop(parseDuration(every), reason);
+          const firstAt = at ? new Date(at) : undefined;
+          if (firstAt && Number.isNaN(firstAt.getTime())) return fail(`Couldn't read "${at}" as a time.`);
+          const loop = await store.addLoop(parseDuration(every), reason, firstAt);
           host.changed(ctx.agent, "schedule");
           return ok(`Repeating (${loop.id}) every ${every}; first at ${when(new Date(loop.nextAt))}.`);
         }
@@ -167,7 +169,7 @@ Messages, answers and finished helpers always wake you early.`,
       "spawn",
       {
         description:
-          "Start a helper: a separate session that does one task in parallel and hands the result back to you. It starts clean, so put everything it needs in task. For a helper you'll want again, write its role (what it does, what done means) to a file in your folder and pass role_file; optional settings at the top of that file (backend, model) choose what it runs on. Parallel helpers each get their own copy of the workspace (a git worktree for repos); you review and merge their work.",
+          "Start a helper: a separate session that does one task in parallel and hands the result back to you. It starts clean, so put everything it needs in task. For a helper you'll want again, write its role (what it does, what done means) to a file in your folder and pass role_file; optional settings at the top of that file (backend, model) choose what it runs on. Parallel helpers each get their own copy of the workspace: for a git repo, a worktree of the last commit (commit first if they need your uncommitted changes); otherwise a copy of a small workspace. You review and merge their work.",
         inputSchema: {
           task: z.string(),
           role_file: z.string().optional().describe("Path of a role you wrote, inside your folder (relative to it, or absolute)."),
