@@ -25,6 +25,8 @@ export interface Settings {
   turnTimeoutMinutes: number;
   /** MCP servers given to every agent. */
   mcpServers: McpServerConfig[];
+  /** Whether the person has been asked about starting the daemon at login (asked once). */
+  autostartAsked?: boolean;
   /** Extra ACP backends: name -> command line that speaks ACP on stdio. */
   customBackends: Record<string, { command: string; args?: string[] }>;
 }
