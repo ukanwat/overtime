@@ -1,5 +1,5 @@
-import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { mkdirSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { DaemonClient } from "./client.js";
 import { paths, home } from "../paths.js";
 import { Runtime } from "./runtime.js";
 import { ControlServer } from "./control.js";
@@ -15,23 +15,13 @@ async function main() {
     if (process.stdout.isTTY) process.stdout.write(l);
   };
 
-  // Single instance: a lock file with our pid; a stale lock from a dead process is taken over.
+  // Single instance. The lock is created exclusively, so two daemons starting at once can't both win.
+  // A lock left by a dead process is taken over; one held by a live daemon that answers means we exit.
   const lock = paths.daemonLock();
-  if (existsSync(lock)) {
-    const pid = Number(readFileSync(lock, "utf8"));
-    let alive = false;
-    try {
-      if (pid) {
-        process.kill(pid, 0);
-        alive = true;
-      }
-    } catch {}
-    if (alive && pid !== process.pid) {
-      log(`another daemon is running (pid ${pid}); exiting`);
-      process.exit(0);
-    }
+  if (!(await takeLock(lock))) {
+    log("another daemon is running; exiting");
+    process.exit(0);
   }
-  writeFileSync(lock, String(process.pid));
 
   const rt = new Runtime(log);
   let shuttingDown = false;
@@ -55,6 +45,59 @@ async function main() {
   await rt.start();
   await control.start();
   log(`overtimed ready (pid ${process.pid}, home ${home()})`);
+}
+
+async function takeLock(lock: string): Promise<boolean> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const fd = openSync(lock, "wx");
+      writeSync(fd, String(process.pid));
+      closeSync(fd);
+      return true;
+    } catch (e: any) {
+      if (e?.code !== "EEXIST") throw e;
+    }
+    let pid = 0;
+    try {
+      pid = Number(readFileSync(lock, "utf8"));
+    } catch {}
+    let alive = false;
+    try {
+      if (pid && pid !== process.pid) {
+        process.kill(pid, 0);
+        alive = true;
+      }
+    } catch {}
+    // A live pid might be an unrelated process that reused the number: only a daemon that answers counts.
+    if (alive && (await daemonAnswers())) return false;
+    if (!alive && !pid) {
+      // Just created by another daemon that hasn't written its pid yet.
+      await new Promise((r) => setTimeout(r, 300));
+      try {
+        if (Number(readFileSync(lock, "utf8"))) continue;
+      } catch {
+        continue;
+      }
+    }
+    try {
+      unlinkSync(lock);
+    } catch {}
+  }
+  return false;
+}
+
+async function daemonAnswers(): Promise<boolean> {
+  try {
+    const c = await DaemonClient.connect();
+    try {
+      await c.call("ping", {}, 3_000);
+      return true;
+    } finally {
+      c.close();
+    }
+  } catch {
+    return false;
+  }
 }
 
 main().catch((e) => {

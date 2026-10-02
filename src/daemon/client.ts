@@ -13,11 +13,13 @@ export class DaemonClient {
   private nextId = 1;
   private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
   private listeners = new Set<(e: any) => void>();
+  private closedFlag = false;
   readonly closed: Promise<void>;
 
   private constructor(sock: Socket) {
     this.sock = sock;
     sock.setEncoding("utf8");
+    sock.on("error", () => {}); // "close" follows and rejects what's pending
     sock.on("data", (c: string) => {
       this.buf += c;
       let nl: number;
@@ -42,6 +44,7 @@ export class DaemonClient {
     });
     this.closed = new Promise((r) =>
       sock.on("close", () => {
+        this.closedFlag = true;
         for (const p of this.pending.values()) p.reject(new Error("The Overtime daemon disconnected."));
         this.pending.clear();
         r();
@@ -57,12 +60,31 @@ export class DaemonClient {
     });
   }
 
-  call<T = any>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+  /** One request. Fails if the daemon is gone or doesn't answer within the timeout. */
+  call<T = any>(method: string, params: Record<string, unknown> = {}, timeoutMs = 30_000): Promise<T> {
+    if (this.isClosed) return Promise.reject(new Error("The Overtime daemon disconnected."));
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`The Overtime daemon didn't answer "${method}" in ${Math.round(timeoutMs / 1000)}s.`));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (v) => {
+          clearTimeout(timer);
+          resolve(v);
+        },
+        reject: (e) => {
+          clearTimeout(timer);
+          reject(e);
+        },
+      });
       this.sock.write(JSON.stringify({ id, method, params }) + "\n");
     });
+  }
+
+  get isClosed(): boolean {
+    return this.closedFlag || this.sock.destroyed;
   }
 
   async subscribe(fn: (e: any) => void): Promise<void> {
@@ -71,6 +93,7 @@ export class DaemonClient {
   }
 
   close(): void {
+    this.closedFlag = true;
     this.sock.end();
   }
 }

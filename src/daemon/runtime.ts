@@ -1,21 +1,23 @@
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdir, readFile } from "node:fs/promises";
+import { cp, lstat, mkdir, readdir, rm } from "node:fs/promises";
 import { execFile } from "node:child_process";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { promisify } from "node:util";
-import { createAgent, effectiveSettings, listAgents, loadAgent, updateState, type Agent, type AgentState } from "../agent/agent.js";
+import { adoptSettingsEdit, createAgent, effectiveSettings, hasIdentity, listAgents, loadAgent, updateState, type Agent, type AgentState } from "../agent/agent.js";
 import { newId } from "../fsutil.js";
 import { paths } from "../paths.js";
 import { loadSettings } from "../settings.js";
+import { withLock } from "../store/mutex.js";
 import { Store, clampWake } from "../store/store.js";
 import type { HelperRecord, InboxItem, Monitor, ThreadEntry } from "../store/types.js";
 import type { ToolContext, ToolHost } from "../tools/host.js";
 import { ToolServer } from "../tools/server.js";
-import { runTurn, sessionPreamble, UsageLimitError, type TurnResult } from "../runtime/turn.js";
+import { AcpSession } from "../acp/session.js";
+import { runTurn, sessionPreamble, TurnIncompleteError, UsageLimitError, type TurnResult } from "../runtime/turn.js";
 import { blockedUntil, usageToday, type TurnUsage } from "../runtime/usage.js";
 import { workingInstructions } from "../runtime/instructions.js";
-import { MonitorRunner } from "./monitors.js";
+import { MonitorRunner, reapStaleMonitors } from "./monitors.js";
 
 const exec = promisify(execFile);
 
@@ -24,8 +26,30 @@ const DEFAULT_WAKE_MS = 60 * 60_000;
 /** Start a fresh main session (rebuilt from the agent's files) once the context is this full. */
 const FRESH_SESSION_AT = 0.6;
 const BACKOFF_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000];
+const MAX_HELPERS = 6;
+/** Finished helpers' worktrees and copies are removed after this long (git branches are kept). */
+const HELPER_KEEP_MS = 7 * 24 * 3600_000;
+/** A non-git workspace is copied for a helper only below these sizes; above, the helper gets an empty folder. */
+const COPY_MAX_FILES = 5_000;
+const COPY_MAX_BYTES = 200 * 1024 * 1024;
 
 export type ChangeEvent = { agent: string; what: "threads" | "state" | "schedule" | "monitors" | "helpers" | "agents" };
+
+/** Why an agent can't spend right now (usage limit or daily budget), or null if it can. */
+type Blocked = { kind: "limit"; until: Date; backend: string } | { kind: "budget"; until: Date; text: string };
+
+/** An abort signal that fires when any of the given ones does. */
+function anySignal(signals: AbortSignal[]): AbortSignal {
+  const c = new AbortController();
+  for (const s of signals) {
+    if (s.aborted) {
+      c.abort();
+      break;
+    }
+    s.addEventListener("abort", () => c.abort(), { once: true });
+  }
+  return c.signal;
+}
 
 /** Everything that happens across all agents. Overtime's daemon. */
 export class Runtime extends EventEmitter implements ToolHost {
@@ -33,22 +57,29 @@ export class Runtime extends EventEmitter implements ToolHost {
   readonly monitors: MonitorRunner;
   private stores = new Map<string, Store>();
   /** Agents whose main session is running right now. */
-  private mainRunning = new Map<string, Promise<void>>();
+  private mainRunning = new Map<string, Promise<boolean>>();
   /** Wake reasons that arrived while a main turn was running. */
   private pendingWake = new Map<string, string[]>();
   /** One chat turn at a time per thread. */
   private chatQueues = new Map<string, Promise<void>>();
   private helperRuns = new Map<string, Promise<void>>();
+  /** Cancels a single helper. */
+  private helperAborts = new Map<string, AbortController>();
+  /** Cancels everything one agent is running (stopping it). */
+  private agentAborts = new Map<string, AbortController>();
+  /** Everything (daemon shutdown). */
   private abort = new AbortController();
   private timer: NodeJS.Timeout | null = null;
+  private ticking = false;
+  private lastCleanup = 0;
   private stopping = false;
 
   constructor(private readonly log: (line: string) => void) {
     super();
     this.monitors = new MonitorRunner(
       {
-        fire: (agent, m, output) => void this.monitorFired(agent, m, output),
-        failing: (agent, m, detail) => void this.monitorFailing(agent, m, detail),
+        fire: (agent, m, output) => void this.monitorFired(agent, m, output).catch((e) => this.log(`[${agent}] monitor: ${e?.message ?? e}`)),
+        failing: (agent, m, detail) => void this.monitorFailing(agent, m, detail).catch((e) => this.log(`[${agent}] monitor: ${e?.message ?? e}`)),
         log,
       },
       (a) => this.store(a),
@@ -60,14 +91,46 @@ export class Runtime extends EventEmitter implements ToolHost {
 
   async start(): Promise<void> {
     await mkdir(paths.agentsDir(), { recursive: true });
+    const reaped = reapStaleMonitors();
+    if (reaped) this.log(`killed ${reaped} watch process(es) left by an earlier daemon`);
     await this.tools.start();
     for (const a of await listAgents()) {
-      if (a.state.status === "working") await updateState(a.name, { status: "asleep" }); // a turn interrupted by a restart
-      if (a.state.status !== "stopped") await this.monitors.startAll(a.name);
+      try {
+        await this.recover(a);
+      } catch (e: any) {
+        this.log(`[${a.name}] recovery: ${e?.stack ?? e}`);
+      }
     }
     this.timer = setInterval(() => void this.tick(), TICK_MS);
     void this.tick();
     this.log("runtime started");
+  }
+
+  /** Pick up where an earlier daemon left off: nothing the person sent or the agent was due is lost. */
+  private async recover(a: Agent): Promise<void> {
+    const store = this.store(a.name);
+    if (a.state.status === "working") await updateState(a.name, { status: hasIdentity(a) ? "asleep" : "new" });
+    const returned = await store.recoverInflight();
+    if (returned) this.log(`[${a.name}] ${returned} inbox item(s) from an interrupted turn are back in its inbox`);
+    // Helpers that were running when the daemon died can't be resumed: tell the agent, with where their work is.
+    for (const h of await store.helpers()) {
+      if (h.status !== "running") continue;
+      h.status = "failed";
+      h.finishedAt = new Date().toISOString();
+      h.result = "Overtime was restarted while this helper was running, so it was cut off.";
+      await store.saveHelper(h);
+      await store.pushInbox({ type: "helper", text: helperInboxText(h), data: { helperId: h.id } });
+    }
+    if (a.state.status !== "stopped") await this.monitors.startAll(a.name);
+    // Conversation messages whose chat turn never ran: answer them now.
+    if (a.state.status === "new" || a.state.status === "stopped") return;
+    const inboxThreads = new Set((await store.inbox()).map((i) => i.threadId).filter(Boolean));
+    for (const t of await store.threads()) {
+      if (t.kind !== "conversation" || t.status === "closed" || inboxThreads.has(t.id)) continue;
+      const th = await store.thread(t.id);
+      const last = th?.entries.at(-1);
+      if (last?.from === "you") this.queueChat(a.name, t.id, last.text);
+    }
   }
 
   async stop(): Promise<void> {
@@ -76,9 +139,18 @@ export class Runtime extends EventEmitter implements ToolHost {
     this.monitors.stopAll();
     this.abort.abort();
     const all = [...this.mainRunning.values(), ...this.chatQueues.values(), ...this.helperRuns.values()];
-    await Promise.race([Promise.allSettled(all), new Promise((r) => setTimeout(r, 15_000))]);
+    await Promise.race([Promise.allSettled(all), new Promise((r) => setTimeout(r, 25_000))]);
+    // Whatever didn't stop politely is killed, so no backend outlives the daemon.
+    await AcpSession.closeAll();
     await this.tools.stop();
     this.log("runtime stopped");
+  }
+
+  /** The signal for anything an agent runs: fires on shutdown or when the agent is stopped. */
+  private signalFor(agent: string, extra?: AbortSignal): AbortSignal {
+    let c = this.agentAborts.get(agent);
+    if (!c || c.signal.aborted) this.agentAborts.set(agent, (c = new AbortController()));
+    return anySignal([this.abort.signal, c.signal, ...(extra ? [extra] : [])]);
   }
 
   // ---------- ToolHost ----------
@@ -95,19 +167,21 @@ export class Runtime extends EventEmitter implements ToolHost {
 
   changed(agent: string, what: ChangeEvent["what"]): void {
     this.emit("change", { agent, what } satisfies ChangeEvent);
+    if (what === "schedule") void this.refreshNextWake(agent).catch(() => {});
   }
 
   async setActivity(agent: string, text: string): Promise<void> {
-    await updateState(agent, { activity: text.slice(0, 80) });
+    await updateState(agent, { activity: text.replace(/\s+/g, " ").trim().slice(0, 80) });
     this.changed(agent, "state");
   }
 
   notify(title: string, body: string): void {
-    const esc = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').slice(0, 200);
+    // Passed as arguments to a fixed script, never spliced into code, so no text can run as AppleScript.
+    const clean = (s: string) => s.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 200);
     if (process.platform === "darwin") {
-      execFile("osascript", ["-e", `display notification "${esc(body)}" with title "${esc(title)}"`], () => {});
+      execFile("osascript", ["-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run", clean(title), clean(body)], () => {});
     } else if (process.platform === "linux") {
-      execFile("notify-send", [title, body], () => {});
+      execFile("notify-send", ["--", clean(title), clean(body)], () => {});
     }
   }
 
@@ -126,12 +200,19 @@ export class Runtime extends EventEmitter implements ToolHost {
       this.pendingWake.set(agent, q);
       return;
     }
-    const run = this.runMain(agent, reason).finally(() => {
-      this.mainRunning.delete(agent);
-      const pending = this.pendingWake.get(agent);
-      this.pendingWake.delete(agent);
-      if (pending?.length && !this.stopping) this.wakeMain(agent, pending.join("; "));
-    });
+    const run = this.runMain(agent, reason)
+      .catch((e) => {
+        this.log(`[${agent}] main: ${e?.stack ?? e}`);
+        return false;
+      })
+      .then((ok) => {
+        this.mainRunning.delete(agent);
+        const pending = this.pendingWake.get(agent);
+        this.pendingWake.delete(agent);
+        // After a failure, the back-off decides when to try again; the clock picks up anything waiting.
+        if (ok && pending?.length && !this.stopping) this.wakeMain(agent, pending.join("; "));
+        return ok;
+      });
     this.mainRunning.set(agent, run);
   }
 
@@ -150,150 +231,201 @@ export class Runtime extends EventEmitter implements ToolHost {
   // ---------- the clock ----------
 
   private async tick(): Promise<void> {
-    if (this.stopping) return;
-    let agents: Agent[];
+    if (this.stopping || this.ticking) return;
+    this.ticking = true;
     try {
-      agents = await listAgents();
-    } catch (e: any) {
-      this.log(`tick: ${e?.message ?? e}`);
-      return;
-    }
-    const now = new Date();
-    for (const a of agents) {
+      let agents: Agent[];
       try {
-        await this.checkAgent(a, now);
+        agents = await listAgents();
       } catch (e: any) {
-        this.log(`[${a.name}] tick: ${e?.message ?? e}`);
+        this.log(`tick: ${e?.message ?? e}`);
+        return;
       }
+      const now = new Date();
+      for (const a of agents) {
+        try {
+          await this.checkAgent(a, now);
+        } catch (e: any) {
+          this.log(`[${a.name}] tick: ${e?.message ?? e}`);
+        }
+      }
+      if (now.getTime() - this.lastCleanup > 3600_000) {
+        this.lastCleanup = now.getTime();
+        for (const a of agents) await this.cleanupHelpers(a.name).catch((e) => this.log(`[${a.name}] cleanup: ${e?.message ?? e}`));
+      }
+    } finally {
+      this.ticking = false;
     }
   }
 
+  /** Whether any session of this agent is running (its AGENT.md may be mid-rewrite), other than `self`. */
+  private busy(agent: string, self?: "main" | string): boolean {
+    if (self !== "main" && this.mainRunning.has(agent)) return true;
+    for (const k of this.chatQueues.keys()) if (k.startsWith(`${agent}/`) && k !== self) return true;
+    return false;
+  }
+
+  /**
+   * A changed settings block in AGENT.md while none of the agent's sessions is running can only be the
+   * person's edit: adopt it. Checked on every tick and right before each turn, so an edit followed by a
+   * message takes effect for that message.
+   */
+  private async adoptEdits(agent: string, self?: "main" | string): Promise<void> {
+    if (!this.busy(agent, self) && (await adoptSettingsEdit(agent))) this.log(`[${agent}] adopted the settings you edited in AGENT.md`);
+  }
+
   private async checkAgent(a: Agent, now: Date): Promise<void> {
+    await this.adoptEdits(a.name);
+    a = await loadAgent(a.name);
     if (a.state.status === "stopped" || this.mainRunning.has(a.name)) return;
     const store = this.store(a.name);
     if (a.state.status === "paused") {
       if (a.state.pausedUntil && new Date(a.state.pausedUntil) > now) return;
-      await updateState(a.name, { status: "asleep", pausedUntil: null });
+      await updateState(a.name, { status: hasIdentity(a) ? "asleep" : "new", pausedUntil: null });
       this.changed(a.name, "state");
+      a = await loadAgent(a.name);
     }
     const sched = await store.schedule();
-    // After a failed turn, wait out the back-off even if there's work waiting (a new message from the person still retries at once).
+    // After a failed turn, wait out the back-off even if there's work waiting.
     if ((a.state.failures ?? 0) > 0 && sched.wakeAt && new Date(sched.wakeAt) > now) return;
-    // Loops that came due become inbox items, so they wake the agent like anything else.
-    for (const l of await store.takeDueLoops(now)) await store.pushInbox({ type: "loop", text: l.task, data: { loopId: l.id } });
-    const inbox = await store.inbox();
     if (a.state.status === "new") {
       // A new agent does nothing until it has been told what it's for.
-      if (inbox.length) this.wakeMain(a.name, "the person sent you your first message");
+      if ((await store.inbox()).length) this.wakeMain(a.name, "the person sent you your first message");
       return;
     }
+    // Loops that came due become inbox items, so they wake the agent like anything else.
+    const due = await store.takeDueLoops(now);
+    for (const l of due) await store.pushInbox({ type: "loop", text: l.task, data: { loopId: l.id } });
+    if (due.length) await this.refreshNextWake(a.name);
+    const inbox = await store.inbox();
     if (inbox.length) return this.wakeMain(a.name, describeInbox(inbox));
     if (sched.wakeAt && new Date(sched.wakeAt) <= now) return this.wakeMain(a.name, `your scheduled wake-up: ${sched.wakeReason ?? "no reason given"}`);
     if (!sched.wakeAt && a.state.status === "asleep") {
       // Never let an agent go quiet indefinitely.
       await store.setWake(clampWake(new Date(now.getTime() + DEFAULT_WAKE_MS)), "routine check-in (no wake-up was set)");
+      await this.refreshNextWake(a.name);
+      this.changed(a.name, "state");
     }
+  }
+
+  /** Usage limit or daily budget: whether this agent may spend right now. */
+  private async blocked(agentName: string, backend?: string): Promise<Blocked | null> {
+    const agent = await loadAgent(agentName);
+    const eff = await effectiveSettings(agent);
+    const b = backend ?? eff.backend;
+    const until = await blockedUntil(b);
+    if (until) return { kind: "limit", until, backend: b };
+    const today = await usageToday(agentName);
+    const overUsd = today.costReported && today.usd >= eff.dailyBudgetUsd;
+    const overTokens = eff.dailyTokenBudget != null && today.tokens >= eff.dailyTokenBudget;
+    if (!overUsd && !overTokens) return null;
+    const tomorrow = new Date();
+    tomorrow.setHours(24, 5, 0, 0);
+    const text = overUsd
+      ? `${agentName} has used $${today.usd.toFixed(2)} today (budget $${eff.dailyBudgetUsd.toFixed(2)}, as reported by ${eff.backend}). It will resume tomorrow. Raise dailyBudgetUsd in its AGENT.md settings if you want it to keep going.`
+      : `${agentName} has used ${today.tokens.toLocaleString()} tokens today (budget ${eff.dailyTokenBudget!.toLocaleString()}). It will resume tomorrow. Raise dailyTokenBudget in its AGENT.md settings if you want it to keep going.`;
+    return { kind: "budget", until: tomorrow, text };
+  }
+
+  private blockedLine(b: Blocked): string {
+    return b.kind === "limit" ? `paused by the ${b.backend} usage limit until ${b.until.toLocaleString()}` : `paused: today's budget is used, back ${b.until.toLocaleString()}`;
   }
 
   // ---------- main sessions ----------
 
-  private async runMain(agentName: string, reason: string): Promise<void> {
+  /** One main turn. Returns whether it completed. */
+  private async runMain(agentName: string, reason: string): Promise<boolean> {
     const store = this.store(agentName);
+    await this.adoptEdits(agentName, "main");
     let agent = await loadAgent(agentName);
-    if (agent.state.status === "stopped") return;
+    if (agent.state.status === "stopped") return true;
     const eff = await effectiveSettings(agent);
 
-    // Subscription limit: pause until the reset, without counting it as a failure.
-    const blocked = await blockedUntil(eff.backend);
-    if (blocked) {
-      await updateState(agentName, { status: "paused", pausedUntil: blocked.toISOString(), activity: `paused: ${eff.backend} usage limit` });
-      this.changed(agentName, "state");
-      return;
-    }
-
-    // Daily budget, from what the backend reported.
-    const today = await usageToday(agentName);
-    const overUsd = today.costReported && today.usd >= eff.dailyBudgetUsd;
-    const overTokens = eff.dailyTokenBudget != null && today.tokens >= eff.dailyTokenBudget;
-    if (overUsd || overTokens) {
-      const tomorrow = new Date();
-      tomorrow.setHours(24, 5, 0, 0);
-      const already = agent.state.pausedUntil && new Date(agent.state.pausedUntil) >= tomorrow;
-      await updateState(agentName, { status: "paused", pausedUntil: tomorrow.toISOString(), activity: "paused: daily budget used" });
-      if (!already) {
-        await store.startThread({
-          kind: "alert",
-          title: "Daily budget used",
-          from: "overtime",
-          text: overUsd
-            ? `${agentName} has used $${today.usd.toFixed(2)} today (budget $${eff.dailyBudgetUsd.toFixed(2)}, as reported by ${eff.backend}). It will resume tomorrow. Raise the budget in its AGENT.md settings if you want it to keep going.`
-            : `${agentName} has used ${today.tokens.toLocaleString()} tokens today (budget ${eff.dailyTokenBudget!.toLocaleString()}). It will resume tomorrow.`,
-          baseDir: agent.dir,
-        });
+    const b = await this.blocked(agentName);
+    if (b) {
+      const already = agent.state.status === "paused" && agent.state.pausedUntil && new Date(agent.state.pausedUntil) >= b.until;
+      await updateState(agentName, { status: "paused", pausedUntil: b.until.toISOString(), activity: b.kind === "limit" ? `paused: ${b.backend} usage limit` : "paused: daily budget used" });
+      if (b.kind === "budget" && !already) {
+        await store.startThread({ kind: "alert", title: "Daily budget used", from: "overtime", text: b.text, baseDir: agent.dir });
         this.changed(agentName, "threads");
       }
       this.changed(agentName, "state");
-      return;
+      return true;
     }
 
-    const items = await store.takeInbox();
-    const firstJob = agent.state.status === "new";
-    await updateState(agentName, { status: "working", activity: agent.state.activity && !firstJob ? agent.state.activity : firstJob ? "learning its job" : "working" });
-    this.changed(agentName, "state");
-
-    // Continue the main session unless the backend changed or its context is getting full.
-    const lastCtx = await lastContext(agentName, agent.state.mainSessionId);
-    const resume =
-      agent.state.mainSessionId && agent.state.mainSessionBackend === eff.backend && !(lastCtx && lastCtx.size > 0 && lastCtx.used / lastCtx.size >= FRESH_SESSION_AT)
-        ? agent.state.mainSessionId
-        : null;
-
+    const firstJob = !hasIdentity(agent);
+    const runId = newId("main");
+    const items = await store.takeInbox(runId);
     const { ctx, mcp } = this.tools.open({ agent: agentName, kind: "main", depth: 0 });
-    const settings = await loadSettings();
     let result: TurnResult | null = null;
     try {
+      await updateState(agentName, { status: "working", activity: firstJob ? "learning its job" : agent.state.activity && agent.state.activity !== "resting" ? agent.state.activity : "working" });
+      this.changed(agentName, "state");
+
+      // Continue the main session unless the backend changed or its context is getting full.
+      const lastCtx = await lastContext(agentName, agent.state.mainSessionId);
+      const resume =
+        agent.state.mainSessionId && agent.state.mainSessionBackend === eff.backend && !(lastCtx && lastCtx.size > 0 && lastCtx.used / lastCtx.size >= FRESH_SESSION_AT)
+          ? agent.state.mainSessionId
+          : null;
+      const settings = await loadSettings();
       result = await runTurn({
         agent: agentName,
         kind: "main",
         reason,
-        text: mainTurnText(items, firstJob, resume === null && !!agent.state.mainSessionId),
+        // If resuming fails, the backend starts fresh, and the agent is told so.
+        text: (fresh) => mainTurnText(items, firstJob, fresh && !!agent.state.mainSessionId),
         header: await this.turnHeader(agentName),
         resumeSessionId: resume,
         extraMcp: [mcp],
         timeoutMs: settings.turnTimeoutMinutes * 60_000,
-        signal: this.abort.signal,
+        signal: this.signalFor(agentName),
         onUpdate: (u) => this.emit("update", { agent: agentName, kind: "main", update: u }),
         log: this.log,
       });
+      await store.ackInbox(runId);
       agent = await loadAgent(agentName);
-      const patch: Partial<AgentState> = { status: "asleep", failures: 0, lastError: null };
+      const patch: Partial<AgentState> = { status: hasIdentity(agent) ? "asleep" : "new", failures: 0, lastError: null };
       // Keep whatever status line the agent set itself; only replace Overtime's own placeholder.
-      if (agent.state.activity === "learning its job" || agent.state.activity === "working") patch.activity = firstJob ? "settled in" : "resting";
+      if (agent.state.activity === "learning its job" || agent.state.activity === "working") patch.activity = hasIdentity(agent) ? "resting" : "waiting for its job";
       await updateState(agentName, patch);
-      if (!ctx.wakeChosen) {
+      if (!ctx.wakeChosen && hasIdentity(agent)) {
         await store.setWake(clampWake(new Date(Date.now() + DEFAULT_WAKE_MS)), "default wake-up: you didn't choose one last turn (use wake)");
       }
+      return true;
     } catch (e: any) {
-      if (items.length) await store.returnInbox(items);
+      await store.returnInbox(runId);
+      agent = await loadAgent(agentName);
+      const idle: AgentState["status"] = hasIdentity(agent) ? "asleep" : "new";
+      if (agent.state.status === "stopped") {
+        this.log(`[${agentName}] main turn ended because the agent was stopped`);
+        return true;
+      }
       if (e instanceof UsageLimitError) {
         const until = e.resetsAt ?? new Date(Date.now() + 15 * 60_000);
         await updateState(agentName, { status: "paused", pausedUntil: until.toISOString(), activity: `paused: ${e.backend} usage limit` });
         this.log(`[${agentName}] paused until ${until.toISOString()}: usage limit`);
-      } else {
-        const failures = (agent.state.failures ?? 0) + 1;
-        const wait = BACKOFF_MS[Math.min(BACKOFF_MS.length - 1, failures - 1)];
-        await updateState(agentName, { status: firstJob ? "new" : "asleep", failures, lastError: String(e?.message ?? e).slice(0, 500) });
-        await store.setWake(new Date(Date.now() + wait), `retry after an error: ${String(e?.message ?? e).slice(0, 200)}`);
-        this.log(`[${agentName}] main turn failed (${failures}): ${e?.stack ?? e}`);
-        if (failures === 3) {
-          await store.startThread({ kind: "alert", title: "Something keeps failing", from: "overtime", text: `${agentName}'s last ${failures} turns failed. Latest error:\n\n${String(e?.message ?? e)}\n\nOvertime keeps retrying with longer gaps.`, urgent: true, baseDir: agent.dir });
-          this.notify(`${agentName} keeps failing`, String(e?.message ?? e));
-          this.changed(agentName, "threads");
-        }
+        return true;
       }
+      if (e instanceof TurnIncompleteError && this.stopping) {
+        await updateState(agentName, { status: idle });
+        return true;
+      }
+      const failures = (agent.state.failures ?? 0) + 1;
+      const wait = BACKOFF_MS[Math.min(BACKOFF_MS.length - 1, failures - 1)];
+      const msg = String(e?.message ?? e);
+      await updateState(agentName, { status: idle, failures, lastError: msg.slice(0, 500) });
+      await store.setWake(new Date(Date.now() + wait), `retry after an error: ${msg.slice(0, 200)}`);
+      this.log(`[${agentName}] main turn failed (${failures}): ${e?.stack ?? e}`);
+      if (failures === 3) {
+        await store.startThread({ kind: "alert", title: "Something keeps failing", from: "overtime", text: `${agentName}'s last ${failures} turns failed. Latest error:\n\n${msg}\n\nOvertime keeps retrying with longer gaps. Its log is in ${join(paths.meta(agentName), "runs")}.`, urgent: true, baseDir: agent.dir });
+        this.notify(`${agentName} keeps failing`, msg);
+        this.changed(agentName, "threads");
+      }
+      return false;
     } finally {
       this.tools.close(ctx.token);
-      await this.refreshNextWake(agentName);
+      await this.refreshNextWake(agentName).catch(() => {});
       this.changed(agentName, "state");
     }
   }
@@ -311,7 +443,8 @@ export class Runtime extends EventEmitter implements ToolHost {
   private async refreshNextWake(agent: string): Promise<void> {
     const s = await this.store(agent).schedule();
     const times = [s.wakeAt, ...s.loops.map((l) => l.nextAt)].filter(Boolean).map((t) => new Date(t as string).getTime());
-    await updateState(agent, { nextWake: times.length ? new Date(Math.min(...times)).toISOString() : null });
+    const stopped = (await loadAgent(agent)).state.status === "stopped";
+    await updateState(agent, { nextWake: times.length && !stopped ? new Date(Math.min(...times)).toISOString() : null });
   }
 
   // ---------- people talking to agents ----------
@@ -382,10 +515,24 @@ export class Runtime extends EventEmitter implements ToolHost {
   }
 
   private async runChat(agentName: string, threadId: string, text: string): Promise<void> {
+    if (this.stopping) return;
     const store = this.store(agentName);
+    await this.adoptEdits(agentName, `${agentName}/${threadId}`);
     const agent = await loadAgent(agentName);
     const th = await store.thread(threadId);
     if (!th) return;
+    if (agent.state.status === "stopped") {
+      // Stopped while this was queued: it waits for the agent's main session instead.
+      await store.pushInbox({ type: "message", text, threadId });
+      return;
+    }
+    const b = await this.blocked(agentName);
+    if (b) {
+      await store.addToThread(threadId, { from: "overtime", text: `${agentName} is ${this.blockedLine(b)}. Your message is kept and it will pick it up then.`, baseDir: agent.dir });
+      await store.pushInbox({ type: "message", text, threadId });
+      this.changed(agentName, "threads");
+      return;
+    }
     const { ctx, mcp } = this.tools.open({ agent: agentName, kind: "chat", threadId, depth: 0 });
     const before = th.entries.length;
     try {
@@ -400,23 +547,32 @@ export class Runtime extends EventEmitter implements ToolHost {
         reason: "the person sent you a message in a conversation thread",
         preamble: chatPreamble(agent),
         resumeSessionId: th.meta.chatSessionId ?? null,
-        text: `${th.meta.chatSessionId ? "" : `What you are doing right now (from your main session):\n${state}\n\n${history ? `Earlier in this thread:\n${history}\n\n` : ""}`}The person just wrote:\n\n${text}\n\nAnswer them with send. If it changes your work or needs real work done, send it to: "main" and tell them you have.`,
+        // A fresh session (first message, or the old one couldn't be resumed) gets the thread so far.
+        text: (fresh) =>
+          `${fresh ? `What you are doing right now (from your main session):\n${state}\n\n${history ? `Earlier in this thread:\n${history}\n\n` : ""}` : ""}The person just wrote:\n\n${text}\n\nAnswer them with send. If it changes your work or needs real work done, send it to: "main" and tell them you have.`,
         extraMcp: [mcp],
         timeoutMs: 20 * 60_000,
-        signal: this.abort.signal,
+        signal: this.signalFor(agentName),
         onUpdate: (u) => this.emit("update", { agent: agentName, kind: "chat", threadId, update: u }),
         log: this.log,
       });
       await store.patchThread(threadId, { chatSessionId: r.sessionId });
-      // If it didn't use reply(), its final words are the reply, so the person always gets an answer.
+      // If it didn't use send, its final words are the reply, so the person always gets an answer.
       const after = (await store.thread(threadId))?.entries ?? [];
       const replied = after.slice(before).some((e) => e.from === "agent");
-      if (!replied && r.reply) await store.addToThread(threadId, { from: "agent", text: r.reply, baseDir: agent.dir });
+      if (!replied) await store.addToThread(threadId, { from: "agent", text: r.reply || "(I read this, but didn't write a reply.)", baseDir: agent.dir });
     } catch (e: any) {
-      const msg = e instanceof UsageLimitError ? `I'm paused by the ${e.backend} usage limit${e.resetsAt ? ` until ${e.resetsAt.toLocaleTimeString()}` : ""}. I've kept your message and will pick it up then.` : `I couldn't answer just now (${String(e?.message ?? e).slice(0, 200)}). I've passed your message to my main session.`;
+      const stoppedNow = (await loadAgent(agentName)).state.status === "stopped";
+      if (this.stopping && e instanceof TurnIncompleteError) return; // answered after the restart
+      const msg =
+        e instanceof UsageLimitError
+          ? `I'm paused by the ${e.backend} usage limit${e.resetsAt ? ` until ${e.resetsAt.toLocaleString()}` : ""}. I've kept your message and will pick it up then.`
+          : stoppedNow
+            ? "I was stopped before I could answer. I've kept your message for when I'm started again."
+            : `I couldn't answer just now (${String(e?.message ?? e).slice(0, 200)}). I've passed your message to my main session.`;
       await store.addToThread(threadId, { from: "overtime", text: msg, baseDir: agent.dir });
       await store.pushInbox({ type: "message", text, threadId });
-      if (!(e instanceof UsageLimitError)) this.wakeMain(agentName, "a chat session failed, so the person's message came to you");
+      if (!(e instanceof UsageLimitError) && !stoppedNow) this.wakeMain(agentName, "a chat session failed, so the person's message came to you");
     } finally {
       this.tools.close(ctx.token);
       this.changed(agentName, "threads");
@@ -441,53 +597,103 @@ export class Runtime extends EventEmitter implements ToolHost {
   // ---------- helpers ----------
 
   async spawnHelper(ctx: ToolContext, req: { role?: string; instructions?: string; task: string; backend?: string; model?: string }): Promise<{ id: string; workdir: string }> {
+    if (ctx.kind !== "main") throw new Error("Only your main session can start helpers.");
+    if (this.stopping) throw new Error("Overtime is shutting down; start the helper next turn.");
     const store = this.store(ctx.agent);
     const agent = await loadAgent(ctx.agent);
     const eff = await effectiveSettings(agent);
-    const running = (await store.helpers()).filter((h) => h.status === "running").length;
-    if (running >= 6) throw new Error("Six helpers are already running. Wait for some to finish.");
-    const id = newId("helper");
-    const base = join(paths.meta(ctx.agent), "helpers", id);
-    await mkdir(base, { recursive: true });
-    let workdir = join(base, "work");
-    let branch: string | undefined;
-    if (await isGitRepo(eff.workspace)) {
-      branch = `overtime/${ctx.agent}/${id}`;
-      try {
-        await exec("git", ["-C", eff.workspace, "worktree", "add", "-b", branch, workdir], { timeout: 60_000 });
-      } catch (e: any) {
-        this.log(`[${ctx.agent}] worktree failed, using a scratch folder: ${e?.message ?? e}`);
-        branch = undefined;
-        await mkdir(workdir, { recursive: true });
-      }
-    } else {
-      await mkdir(workdir, { recursive: true });
+    const b = await this.blocked(ctx.agent, req.backend);
+    if (b) throw new Error(`Can't start a helper: ${this.blockedLine(b)}.`);
+    // Checked and recorded under one lock, so two spawns at once can't both slip under the cap.
+    const rec = await withLock(`spawn:${ctx.agent}`, async () => {
+      const running = (await store.helpers()).filter((h) => h.status === "running").length;
+      if (running >= MAX_HELPERS) throw new Error(`${MAX_HELPERS} helpers are already running. Wait for some to finish.`);
+      const id = newId("helper");
+      const r: HelperRecord = {
+        id,
+        task: req.task,
+        role: req.role,
+        backend: req.backend,
+        model: req.model ?? null,
+        workdir: join(paths.meta(ctx.agent), "helpers", id, "work"),
+        parent: "main",
+        depth: 1,
+        status: "running",
+        startedAt: new Date().toISOString(),
+      };
+      await store.saveHelper(r);
+      return r;
+    });
+    let note = "";
+    try {
+      const prepared = await this.prepareWorkdir(ctx.agent, rec, eff.workspace);
+      rec.branch = prepared.branch;
+      note = prepared.note;
+      await store.saveHelper(rec);
+    } catch (e) {
+      rec.status = "failed";
+      rec.finishedAt = new Date().toISOString();
+      rec.result = `Couldn't set up its folder: ${String((e as any)?.message ?? e)}`;
+      await store.saveHelper(rec);
+      throw e;
     }
-    const rec: HelperRecord = {
-      id,
-      task: req.task,
-      role: req.role,
-      backend: req.backend,
-      model: req.model ?? null,
-      workdir,
-      branch,
-      parent: ctx.helperId ?? "main",
-      depth: ctx.depth + 1,
-      status: "running",
-      startedAt: new Date().toISOString(),
-    };
-    await store.saveHelper(rec);
-    const run = this.runHelper(ctx.agent, rec, req.instructions ?? "", eff.workspace)
-      .catch((e) => this.log(`[${ctx.agent}] helper ${id}: ${e?.stack ?? e}`))
-      .finally(() => this.helperRuns.delete(`${ctx.agent}/${id}`));
-    this.helperRuns.set(`${ctx.agent}/${id}`, run);
-    return { id, workdir };
+    const ctl = new AbortController();
+    const key = `${ctx.agent}/${rec.id}`;
+    this.helperAborts.set(key, ctl);
+    const run = this.runHelper(ctx.agent, rec, req.instructions ?? "", eff.workspace, note, ctl.signal)
+      .catch((e) => this.log(`[${ctx.agent}] helper ${rec.id}: ${e?.stack ?? e}`))
+      .finally(() => {
+        this.helperRuns.delete(key);
+        this.helperAborts.delete(key);
+      });
+    this.helperRuns.set(key, run);
+    return { id: rec.id, workdir: rec.workdir };
   }
 
-  private async runHelper(agentName: string, rec: HelperRecord, instructions: string, workspace: string): Promise<void> {
+  /** A folder of its own for each helper: a git worktree of the workspace, or a copy of a small workspace. */
+  private async prepareWorkdir(agentName: string, rec: HelperRecord, workspace: string): Promise<{ branch?: string; note: string }> {
+    await mkdir(join(rec.workdir, ".."), { recursive: true });
+    if (await isGitRepo(workspace)) {
+      const branch = `overtime/${agentName}/${rec.id}`;
+      try {
+        await exec("git", ["-C", workspace, "worktree", "add", "-b", branch, rec.workdir], { timeout: 120_000 });
+        return { branch, note: "" };
+      } catch (e: any) {
+        this.log(`[${agentName}] worktree failed, falling back to a copy: ${e?.message ?? e}`);
+      }
+    }
+    if (existsSync(workspace)) {
+      const exclude = [paths.meta(agentName)];
+      const size = await measure(workspace, exclude, COPY_MAX_FILES, COPY_MAX_BYTES);
+      if (size.ok) {
+        // Entry by entry: the workspace may be the agent's own folder, which holds the helper's folder too.
+        await mkdir(rec.workdir, { recursive: true });
+        for (const name of await readdir(workspace)) {
+          const src = join(workspace, name);
+          if (exclude.some((x) => src === x || x.startsWith(src + sep))) continue;
+          await cp(src, join(rec.workdir, name), { recursive: true, verbatimSymlinks: true });
+        }
+        return { note: `It is a copy of ${workspace}; copy back what should be kept.` };
+      }
+      await mkdir(rec.workdir, { recursive: true });
+      return { note: `It starts empty: ${workspace} is too large to copy (${size.why}). Read from ${workspace} directly; write your output here.` };
+    }
+    await mkdir(rec.workdir, { recursive: true });
+    return { note: "It starts empty." };
+  }
+
+  /** Stop a running helper (from the agent's cancel tool). */
+  async cancelHelper(agent: string, id: string): Promise<boolean> {
+    const ctl = this.helperAborts.get(`${agent}/${id}`);
+    if (!ctl) return false;
+    ctl.abort();
+    return true;
+  }
+
+  private async runHelper(agentName: string, rec: HelperRecord, instructions: string, workspace: string, note: string, cancel: AbortSignal): Promise<void> {
     const store = this.store(agentName);
     const { ctx, mcp } = this.tools.open({ agent: agentName, kind: "helper", helperId: rec.id, depth: rec.depth });
-    const preamble = helperPreamble(agentName, rec, instructions, workspace);
+    const preamble = helperPreamble(agentName, rec, instructions, workspace, note);
     try {
       const r = await runTurn({
         agent: agentName,
@@ -500,27 +706,46 @@ export class Runtime extends EventEmitter implements ToolHost {
         model: rec.model ?? undefined,
         extraMcp: [mcp],
         timeoutMs: (await loadSettings()).turnTimeoutMinutes * 60_000,
-        signal: this.abort.signal,
+        signal: this.signalFor(agentName, cancel),
         onUpdate: (u) => this.emit("update", { agent: agentName, kind: "helper", helperId: rec.id, update: u }),
         log: this.log,
       });
       rec.status = "done";
-      rec.result = ctx.result ?? r.reply ?? "(no result given)";
+      rec.result = ctx.result ?? (r.reply || "(It finished without describing its result. Check its folder.)");
     } catch (e: any) {
-      rec.status = "failed";
-      rec.result = `The helper failed: ${String(e?.message ?? e)}`;
+      if (cancel.aborted) {
+        rec.status = "cancelled";
+        rec.result = "Cancelled, as you asked.";
+      } else if (this.stopping) {
+        rec.status = "failed";
+        rec.result = "Overtime was shut down while this helper was running, so it was cut off.";
+      } else {
+        rec.status = "failed";
+        rec.result = `The helper failed: ${String(e?.message ?? e)}`;
+      }
+      if (ctx.result) rec.result += `\n\nBefore that, it reported:\n${ctx.result}`;
     } finally {
       this.tools.close(ctx.token);
     }
     rec.finishedAt = new Date().toISOString();
     await store.saveHelper(rec);
-    await store.pushInbox({
-      type: "helper",
-      text: `${rec.status === "done" ? "Finished" : "Failed"}: ${rec.task.split("\n")[0].slice(0, 120)}\n\n${rec.result}\n\nIts work is in ${rec.workdir}${rec.branch ? ` (git branch ${rec.branch}; review and merge it into the workspace, then remove the worktree with \`git worktree remove ${rec.workdir}\`)` : ""}.`,
-      data: { helperId: rec.id },
-    });
+    await store.pushInbox({ type: "helper", text: helperInboxText(rec), data: { helperId: rec.id } });
     this.changed(agentName, "helpers");
-    this.wakeMain(agentName, `helper ${rec.id} ${rec.status === "done" ? "finished" : "failed"}`);
+    if (!this.stopping) this.wakeMain(agentName, `helper ${rec.id} ${rec.status === "done" ? "finished" : rec.status}`);
+  }
+
+  /** Remove finished helpers' folders after a week. Git branches stay, so committed work is never lost. */
+  private async cleanupHelpers(agentName: string): Promise<void> {
+    const store = this.store(agentName);
+    const ws = (await effectiveSettings(await loadAgent(agentName))).workspace;
+    for (const h of await store.helpers()) {
+      if (h.status === "running" || !h.finishedAt || h.cleanedAt) continue;
+      if (Date.now() - new Date(h.finishedAt).getTime() < HELPER_KEEP_MS) continue;
+      if (h.branch) await exec("git", ["-C", ws, "worktree", "remove", "--force", h.workdir], { timeout: 60_000 }).catch(() => {});
+      await rm(join(h.workdir, ".."), { recursive: true, force: true });
+      if (h.branch) await exec("git", ["-C", ws, "worktree", "prune"], { timeout: 60_000 }).catch(() => {});
+      await store.saveHelper({ ...h, cleanedAt: new Date().toISOString() });
+    }
   }
 
   // ---------- monitors ----------
@@ -555,17 +780,33 @@ export class Runtime extends EventEmitter implements ToolHost {
   async stopAgent(name: string): Promise<void> {
     await updateState(name, { status: "stopped", nextWake: null, activity: "stopped" });
     this.monitors.stopAgent(name);
+    // Cancel whatever it's running now: main turn, chats and helpers.
+    this.agentAborts.get(name)?.abort();
+    this.agentAborts.delete(name);
+    this.pendingWake.delete(name);
     this.changed(name, "state");
   }
 
   async startAgent(name: string): Promise<void> {
     const a = await loadAgent(name);
     if (a.state.status !== "stopped" && a.state.status !== "paused") return;
-    const hadJob = (await readFile(join(a.dir, "AGENT.md"), "utf8")).indexOf("No identity yet.") === -1;
-    await updateState(name, { status: hadJob ? "asleep" : "new", pausedUntil: null, activity: hadJob ? "resuming" : "waiting for its job" });
+    const hadJob = hasIdentity(a);
+    await updateState(name, { status: hadJob ? "asleep" : "new", pausedUntil: null, failures: 0, activity: hadJob ? "resuming" : "waiting for its job" }, { allowStopped: true });
     await this.monitors.startAll(name);
     if (hadJob) this.wakeMain(name, "the person started you again");
+    else if ((await this.store(name).inbox()).length) this.wakeMain(name, "the person sent you your first message");
+    await this.refreshNextWake(name);
     this.changed(name, "state");
+  }
+
+  /** The person pressed wake. A new agent has nothing to do until it's been told its job. */
+  async wakeNow(name: string): Promise<void> {
+    const a = await loadAgent(name);
+    if (a.state.status === "stopped") throw new Error(`${name} is stopped. Start it first.`);
+    if (a.state.status === "new" && !(await this.store(name).inbox()).length) throw new Error(`${name} doesn't have a job yet. Send it a message saying what it's for.`);
+    if (a.state.status === "paused") await updateState(name, { status: hasIdentity(a) ? "asleep" : "new", pausedUntil: null });
+    await updateState(name, { failures: 0 });
+    this.wakeMain(name, "the person asked you to wake up");
   }
 }
 
@@ -618,7 +859,39 @@ function chatPreamble(agent: Agent): string {
   return `${sessionPreamble(agent)}\n\n---\n\n# This session\n\nThis is a conversation thread with the person, separate from your main work session. Answer from what you know and what's in your folder. Keep replies short and plain. Anything that changes your work or needs real work goes to your main session: send with to: "main".`;
 }
 
-function helperPreamble(agentName: string, rec: HelperRecord, instructions: string, workspace: string): string {
+function helperInboxText(h: HelperRecord): string {
+  const head = h.status === "done" ? "Finished" : h.status === "cancelled" ? "Cancelled" : "Failed";
+  const where = h.branch
+    ? `Its work is in ${h.workdir} (git branch ${h.branch}). Review it and merge it into the workspace; the folder is removed a week after it finished, the branch is kept.`
+    : `Its work is in ${h.workdir}. Copy what should be kept; the folder is removed a week after it finished.`;
+  return `${head} (${h.id}): ${h.task.split("\n")[0].slice(0, 120)}\n\n${h.result ?? ""}\n\n${where}`;
+}
+
+/** Whether a folder is small enough to copy, stopping early once it isn't. */
+async function measure(root: string, exclude: string[], maxFiles: number, maxBytes: number): Promise<{ ok: boolean; why?: string }> {
+  let files = 0;
+  let bytes = 0;
+  const walk = async (dir: string): Promise<string | null> => {
+    for (const ent of await readdir(dir, { withFileTypes: true })) {
+      const p = join(dir, ent.name);
+      if (exclude.some((x) => p === x || p.startsWith(x + sep))) continue;
+      if (ent.isDirectory()) {
+        const r = await walk(p);
+        if (r) return r;
+      } else {
+        files++;
+        if (ent.isFile()) bytes += (await lstat(p)).size;
+        if (files > maxFiles) return `more than ${maxFiles} files`;
+        if (bytes > maxBytes) return `more than ${Math.round(maxBytes / 1048576)} MB`;
+      }
+    }
+    return null;
+  };
+  const why = await walk(root);
+  return why ? { ok: false, why } : { ok: true };
+}
+
+function helperPreamble(agentName: string, rec: HelperRecord, instructions: string, workspace: string, note: string): string {
   return `${workingInstructions(`a helper working for ${agentName}`)}
 
 ---
@@ -627,7 +900,7 @@ function helperPreamble(agentName: string, rec: HelperRecord, instructions: stri
 
 You are a helper started by ${agentName} for one task. You start clean: everything you need is in your task, your instructions, and the files you're pointed to. You don't talk to the person; ${agentName} reviews your work.
 
-Work in: ${rec.workdir}${rec.branch ? ` (a git worktree of ${workspace}, on branch ${rec.branch}; commit your work there)` : ""}
+Work in: ${rec.workdir}${rec.branch ? ` (a git worktree of ${workspace}, on branch ${rec.branch}; commit your work there)` : ` (${note})`}
 The main workspace is ${workspace}; don't change it directly.
 
 When you're finished, call done with what you did, where the output is, what you checked, and anything left open. Then end your turn.

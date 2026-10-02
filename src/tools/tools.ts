@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { readFile } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
+import { realpath } from "node:fs/promises";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolContext, ToolHost } from "./host.js";
 import { clampWake, MAX_SLEEP_MS, MIN_SLEEP_MS, parseDuration } from "../store/store.js";
@@ -25,7 +26,7 @@ const when = (d: Date) => `${d.toISOString()} (${d.toString()})`;
 
 /**
  * Overtime's tools: deliberately few. Main sessions get wake, cancel, ask, send, spawn.
- * Chat sessions get ask and send. Helpers get done (and spawn, within the depth limit).
+ * Chat sessions get ask and send. Helpers get done; they hand results back and don't start their own.
  */
 export function registerTools(mcp: McpServer, ctx: ToolContext, host: ToolHost): void {
   const store = host.store(ctx.agent);
@@ -81,8 +82,11 @@ Messages, answers and finished helpers always wake you early.`,
 
     mcp.registerTool(
       "cancel",
-      { description: "Stop a repeating wake-up or a watch, by its id.", inputSchema: { id: z.string() } },
+      { description: "Stop a repeating wake-up, a watch or a running helper, by its id.", inputSchema: { id: z.string() } },
       safe(async ({ id }) => {
+        if (id.startsWith("helper_")) {
+          return (await host.cancelHelper(ctx.agent, id)) ? ok(`Cancelling ${id}. Its result (what it got done) will come to you.`) : fail(`No running helper ${id}.`);
+        }
         if (id.startsWith("mon_")) {
           host.stopMonitor(ctx.agent, id);
           const removed = await store.removeMonitor(id);
@@ -158,7 +162,7 @@ Messages, answers and finished helpers always wake you early.`,
     );
   }
 
-  if ((main || helper) && ctx.depth < 2) {
+  if (main) {
     mcp.registerTool(
       "spawn",
       {
@@ -166,7 +170,7 @@ Messages, answers and finished helpers always wake you early.`,
           "Start a helper: a separate session that does one task in parallel and hands the result back to you. It starts clean, so put everything it needs in task. For a helper you'll want again, write its role (what it does, what done means) to a file in your folder and pass role_file; optional settings at the top of that file (backend, model) choose what it runs on. Parallel helpers each get their own copy of the workspace (a git worktree for repos); you review and merge their work.",
         inputSchema: {
           task: z.string(),
-          role_file: z.string().optional().describe("Path (relative to your folder or absolute) of a role you wrote."),
+          role_file: z.string().optional().describe("Path of a role you wrote, inside your folder (relative to it, or absolute)."),
           backend: z.string().optional(),
           model: z.string().optional(),
         },
@@ -176,7 +180,7 @@ Messages, answers and finished helpers always wake you early.`,
         let roleBackend: string | undefined;
         let roleModel: string | undefined;
         if (role_file) {
-          const p = isAbsolute(role_file) ? role_file : join(dir, role_file);
+          const p = await insideFolder(dir, role_file);
           const { data, body } = parseFrontMatter(await readFile(p, "utf8"));
           instructions = body;
           roleBackend = typeof data.backend === "string" ? data.backend : undefined;
@@ -202,4 +206,15 @@ Messages, answers and finished helpers always wake you early.`,
       }),
     );
   }
+}
+
+/** Resolve a path the agent gave, and refuse it unless it is inside the agent's folder. */
+async function insideFolder(dir: string, p: string): Promise<string> {
+  const full = await realpath(isAbsolute(p) ? p : resolve(dir, p)).catch(() => {
+    throw new Error(`There is no file at ${p}.`);
+  });
+  const root = await realpath(dir);
+  const rel = relative(root, full);
+  if (rel.startsWith("..") || isAbsolute(rel)) throw new Error(`Role files must be inside your folder (${dir}).`);
+  return full;
 }

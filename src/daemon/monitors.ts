@@ -1,5 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { home } from "../paths.js";
 import type { Store } from "../store/store.js";
 import type { Monitor } from "../store/types.js";
 
@@ -31,6 +34,34 @@ const FAILURES_BEFORE_REPORT = 3;
  * Runs agents' monitor scripts without any model. Long-running scripts: each printed line is an event.
  * Repeating scripts: run on a schedule, fire when output changes (the first run only sets the baseline).
  */
+const pidFile = () => join(home(), "monitor-pids.json");
+
+/** Long-running monitor processes, by process group, so a crashed daemon's leftovers can be cleaned up. */
+const livePids = new Set<number>();
+function savePids() {
+  try {
+    writeFileSync(pidFile(), JSON.stringify([...livePids]));
+  } catch {}
+}
+
+/** Kill monitor processes left behind by a previous daemon that didn't shut down cleanly. */
+export function reapStaleMonitors(): number {
+  let pids: number[] = [];
+  try {
+    pids = JSON.parse(readFileSync(pidFile(), "utf8"));
+  } catch {}
+  let n = 0;
+  for (const pid of pids) {
+    try {
+      process.kill(-pid, "SIGKILL");
+      n++;
+    } catch {}
+  }
+  livePids.clear();
+  savePids();
+  return n;
+}
+
 export class MonitorRunner {
   private running = new Map<string, Running>();
 
@@ -118,6 +149,10 @@ export class MonitorRunner {
       const started = Date.now();
       const proc = spawn("/bin/sh", ["-c", m.run], { cwd: this.cwdFor(r.agent), stdio: ["ignore", "pipe", "pipe"], detached: true });
       r.proc = proc;
+      if (proc.pid) {
+        livePids.add(proc.pid);
+        savePids();
+      }
       let stderr = "";
       proc.stderr?.on("data", (c) => (stderr = (stderr + c.toString()).slice(-2000)));
       const rl = createInterface({ input: proc.stdout! });
@@ -127,6 +162,10 @@ export class MonitorRunner {
       proc.on("error", (e) => void this.failed(r, `could not start: ${e.message}`));
       proc.on("exit", (code, sig) => {
         rl.close();
+        if (proc.pid) {
+          livePids.delete(proc.pid);
+          savePids();
+        }
         if (r.stopped) return;
         const ranFor = Date.now() - started;
         // A long-running monitor that exits is restarted. Quick exits count as failures and back off.
@@ -176,13 +215,17 @@ export class MonitorRunner {
 }
 
 function killTree(p: ChildProcess): void {
-  try {
-    if (p.pid) process.kill(-p.pid, "SIGTERM");
-  } catch {
+  const sig = (s: NodeJS.Signals) => {
     try {
-      p.kill("SIGTERM");
-    } catch {}
-  }
+      if (p.pid) process.kill(-p.pid, s);
+    } catch {
+      try {
+        p.kill(s);
+      } catch {}
+    }
+  };
+  sig("SIGTERM");
+  setTimeout(() => sig("SIGKILL"), 2000).unref();
 }
 
 function runOnce(cmd: string, cwd: string, timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string }> {

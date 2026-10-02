@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { statSync } from "node:fs";
+import { dirname, extname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Input, Key, ProcessTerminal, TuiAltScreen, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Terminal } from "@earendil-works/pi-tui";
 import { ensureDaemon, type DaemonClient } from "../daemon/client.js";
 import type { AgentSummary } from "../daemon/control.js";
@@ -46,9 +47,58 @@ function until(iso: string | null | undefined): string {
   return new Date(iso).toLocaleDateString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
 }
 
-function openTarget(target: string): void {
-  const cmd = process.platform === "darwin" ? "open" : "xdg-open";
-  execFile(cmd, [target], () => {});
+/**
+ * Text from agents is shown as text, never as terminal commands: escape sequences and other control
+ * characters are removed, so an agent (or a web page it quoted) can't move the cursor, retitle the
+ * window or plant hidden links.
+ */
+export function clean(s: string | null | undefined): string {
+  return String(s ?? "").replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)?|\x1b.|[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "");
+}
+
+/** Every string in a daemon reply, cleaned. Names, titles, messages and links all come from agents. */
+export function cleanDeep<T>(v: T): T {
+  if (typeof v === "string") return clean(v) as T;
+  if (Array.isArray(v)) return v.map(cleanDeep) as T;
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, cleanDeep(x)])) as T;
+  return v;
+}
+
+/** Extensions that run something when opened, rather than show it. */
+const RUNNABLE = new Set([".app", ".command", ".tool", ".terminal", ".sh", ".bash", ".zsh", ".scpt", ".applescript", ".workflow", ".action", ".pkg", ".mpkg", ".dmg", ".jar", ".desktop", ".run", ".appimage", ".exe", ".bat", ".cmd", ".ps1", ".fileloc", ".webloc", ".inetloc"]);
+
+/** What opening a link should actually do, decided before anything is launched. Exported for tests. */
+export function openPlan(target: string): { args: string[]; note?: string } | { refuse: string } {
+  const mac = process.platform === "darwin";
+  let path: string | null = null;
+  if (/^https?:\/\//i.test(target)) return { args: [target] };
+  if (/^file:\/\//i.test(target)) {
+    try {
+      path = fileURLToPath(target);
+    } catch {
+      return { refuse: "That link isn't a valid file link." };
+    }
+  } else if (target.startsWith("/")) path = target;
+  else return { refuse: "Only web links and files are opened." };
+  let st;
+  try {
+    st = statSync(path);
+  } catch {
+    return { refuse: `There's nothing at ${path} any more.` };
+  }
+  if (st.isDirectory() && !RUNNABLE.has(extname(path).toLowerCase())) return { args: [path] };
+  // Anything that would run (an app, a script, an executable) is shown in its folder instead.
+  if (RUNNABLE.has(extname(path).toLowerCase()) || (st.mode & 0o111) !== 0) {
+    return mac ? { args: ["-R", path], note: "Shown in Finder, not run." } : { args: [dirname(path)], note: "Opened its folder, not run." };
+  }
+  return { args: [path] };
+}
+
+function openTarget(target: string): string | undefined {
+  const plan = openPlan(target);
+  if ("refuse" in plan) return plan.refuse;
+  execFile(process.platform === "darwin" ? "open" : "xdg-open", plan.args, () => {});
+  return plan.note;
 }
 
 type Overlay = null | "new" | "search" | "help" | "behind";
@@ -82,7 +132,12 @@ export class App implements Component {
   private inflight: Promise<void> | null = null;
   private again = false;
 
-  constructor(private readonly c: DaemonClient, private readonly tui: TuiAltScreen, private readonly term: Terminal, private readonly onQuit: () => void, private readonly opener: (t: string) => void = openTarget) {}
+  constructor(public c: DaemonClient, private readonly tui: TuiAltScreen, private readonly term: Terminal, private readonly onQuit: () => void, private readonly opener: (t: string) => string | void = openTarget) {}
+
+  /** A read from the daemon, with everything agent-written made safe to print. */
+  private async get<T = any>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+    return cleanDeep(await this.c.call<T>(method, params));
+  }
 
   get agent(): AgentSummary | undefined {
     return this.agents[this.agentIdx];
@@ -111,18 +166,18 @@ export class App implements Component {
   private async doRefresh(): Promise<void> {
     try {
       const prevName = this.agent?.name;
-      this.agents = await this.c.call("agents");
+      this.agents = await this.get("agents");
       const idx = this.agents.findIndex((a) => a.name === prevName);
       this.agentIdx = idx >= 0 ? idx : Math.min(this.agentIdx, Math.max(0, this.agents.length - 1));
       if (this.agent) {
         const prevThread = this.threads[this.threadIdx]?.id;
-        const fresh: ThreadMeta[] = await this.c.call("threads", { name: this.agent.name });
+        const fresh: ThreadMeta[] = await this.get("threads", { name: this.agent.name });
         const atEnd = this.threadIdx >= this.threads.length - 1;
         this.threads = fresh;
         const t = fresh.findIndex((x) => x.id === prevThread);
         this.threadIdx = t >= 0 && !(atEnd && this.agent.name === prevName) ? t : Math.max(0, fresh.length - 1);
         if (this.open) {
-          const th = await this.c.call("thread", { name: this.agent.name, id: this.open.meta.id, markRead: true });
+          const th = await this.get("thread", { name: this.agent.name, id: this.open.meta.id, markRead: true });
           const grew = th.entries.length > this.open.entries.length;
           this.open = th;
           if (grew) this.scroll = Number.MAX_SAFE_INTEGER;
@@ -142,7 +197,7 @@ export class App implements Component {
 
   private async openThread(meta: ThreadMeta): Promise<void> {
     if (!this.agent) return;
-    this.open = await this.c.call("thread", { name: this.agent.name, id: meta.id, markRead: true });
+    this.open = await this.get("thread", { name: this.agent.name, id: meta.id, markRead: true });
     this.scroll = Number.MAX_SAFE_INTEGER;
     this.linkIdx = -1;
     this.pane = "threads";
@@ -205,11 +260,12 @@ export class App implements Component {
       return this.tui.requestRender();
     }
     if (!typing && /^[1-9]$/.test(data) && this.open && this.open.meta.status === "waiting_on_you") {
-      const q = [...this.open.entries].reverse().find((e) => e.from === "agent" && e.options?.length);
+      // Only the question being asked now: its options are the latest thing the agent wrote.
+      const q = [...this.open.entries].reverse().find((e) => e.from === "agent");
       const n = Number(data);
-      if (q?.options && n <= q.options.length) {
+      if (q?.options?.length && n <= q.options.length) {
         await this.c.call("answer", { name: this.agent!.name, threadId: this.open.meta.id, choice: n });
-        this.say(`Answered: ${q.options[n - 1]}`);
+        this.say(`Answered: ${clean(q.options[n - 1])}`);
         return this.refresh();
       }
     }
@@ -217,7 +273,7 @@ export class App implements Component {
       if (typing) return this.submit();
       if (this.open && this.linkIdx >= 0) {
         const l = this.allLinks()[this.linkIdx];
-        if (l) this.opener(l.target);
+        if (l) this.openLink(l.target);
         return;
       }
       if (this.pane === "agents") {
@@ -263,6 +319,11 @@ export class App implements Component {
     await this.refresh();
   }
 
+  openLink(target: string): void {
+    const note = this.opener(target);
+    if (note) this.say(note);
+  }
+
   private allLinks() {
     return (this.open?.entries ?? []).flatMap((e) => e.links ?? []);
   }
@@ -284,7 +345,7 @@ export class App implements Component {
 
   private async showBehind(): Promise<void> {
     if (!this.agent) return;
-    const d = await this.c.call("agent", { name: this.agent.name });
+    const d = await this.get("agent", { name: this.agent.name });
     const items: BehindItem[] = [
       { label: "Agent folder", target: this.agent.dir },
       { label: "AGENT.md (who it is)", target: join(this.agent.dir, "AGENT.md") },
@@ -317,7 +378,7 @@ export class App implements Component {
       else if (matchesKey(data, Key.down)) this.behindIdx = Math.min(this.behind.length - 1, this.behindIdx + 1);
       else if (matchesKey(data, Key.enter)) {
         const it = this.behind[this.behindIdx];
-        if (it?.target) this.opener(it.target);
+        if (it?.target) this.openLink(it.target);
       }
       return this.tui.requestRender();
     }
@@ -366,10 +427,10 @@ export class App implements Component {
     const hits: { agent: string; thread: ThreadMeta }[] = [];
     for (const a of this.agents) {
       if (a.name.toLowerCase().includes(needle)) {
-        const ths: ThreadMeta[] = await this.c.call("threads", { name: a.name });
+        const ths: ThreadMeta[] = await this.get("threads", { name: a.name });
         if (ths.at(-1)) hits.push({ agent: a.name, thread: ths.at(-1)! });
       }
-      const ths: ThreadMeta[] = await this.c.call("threads", { name: a.name });
+      const ths: ThreadMeta[] = await this.get("threads", { name: a.name });
       for (const t of ths) if (t.title.toLowerCase().includes(needle)) hits.push({ agent: a.name, thread: t });
     }
     this.searchHits = hits.slice(-30).reverse();
@@ -387,24 +448,31 @@ export class App implements Component {
   private lastMaxScroll = 0;
 
   render(width: number): string[] {
-    const rows = Math.max(8, this.term.rows);
-    const bodyH = rows - 3;
-    const leftW = Math.min(34, Math.max(22, Math.floor(width * 0.3)));
-    const rightW = Math.max(10, width - leftW - 1);
+    const rows = Math.max(4, this.term.rows);
+    const bodyH = Math.max(1, rows - 3);
+    // Narrow terminals show one pane at a time: the agent list, or the conversation.
+    const narrow = width < 60;
+    const leftW = narrow ? width : Math.min(34, Math.max(22, Math.floor(width * 0.3)));
+    const rightW = narrow ? width : Math.max(1, width - leftW - 1);
 
     const waiting = this.agents.reduce((n, a) => n + a.waiting, 0);
     const head = ` ${bold("overtime")}  ${dim(`${this.agents.length} agent${this.agents.length === 1 ? "" : "s"}`)}${waiting ? "  " + yellow(`${waiting} waiting on you`) : ""}${this.connected ? "" : "  " + red("daemon not reachable")}`;
     const out: string[] = [fit(head, width)];
 
-    const left = this.renderAgents(leftW, bodyH);
-    const right = this.overlay ? this.renderOverlay(rightW, bodyH) : this.open ? this.renderThread(rightW, bodyH) : this.renderThreads(rightW, bodyH);
-    for (let i = 0; i < bodyH; i++) out.push(fit(left[i] ?? "", leftW) + dim("│") + fit(right[i] ?? "", rightW));
+    const showLeft = !narrow || (!this.overlay && !this.open && this.pane === "agents");
+    const showRight = !narrow || !showLeft;
+    const left = showLeft ? this.renderAgents(leftW, bodyH) : [];
+    const right = showRight ? (this.overlay ? this.renderOverlay(rightW, bodyH) : this.open ? this.renderThread(rightW, bodyH) : this.renderThreads(rightW, bodyH)) : [];
+    for (let i = 0; i < bodyH; i++) {
+      if (!narrow) out.push(fit(left[i] ?? "", leftW) + dim("│") + fit(right[i] ?? "", rightW));
+      else out.push(fit((showLeft ? left[i] : right[i]) ?? "", width));
+    }
 
     const target = this.overlay === "new" || this.overlay === "search" ? null : this.agent;
     const prompt = this.overlay === "new" ? "name" : this.overlay === "search" ? "search" : this.open ? (this.open.meta.status === "waiting_on_you" ? "answer" : "reply") : target ? `message ${target.name}` : "";
     const box = this.overlay === "new" || this.overlay === "search" ? this.overlayInput : this.input;
-    const boxLine = box.render(Math.max(4, width - visibleWidth(prompt) - 4))[0] ?? "";
-    out.push(fit(` ${cyan("❯")} ${dim(prompt)} ${boxLine}`, width));
+    const boxLine = box.render(Math.max(4, width - visibleWidth(clean(prompt)) - 4))[0] ?? "";
+    out.push(fit(` ${cyan("❯")} ${dim(clean(prompt))} ${boxLine}`, width));
     out.push(fit(this.flash ? ` ${yellow(this.flash)}` : ` ${dim(this.hints())}`, width));
     return out;
   }
@@ -538,30 +606,51 @@ export interface AppOptions {
   terminal?: Terminal;
   client?: DaemonClient;
   onQuit?: () => void;
-  /** How links and files are opened (tests replace this). */
-  opener?: (target: string) => void;
+  /** How links and files are opened (tests replace this). Returns a note to show, if any. */
+  opener?: (target: string) => string | void;
+  /** How to reach the daemon again after it went away (default: start it if needed). */
+  reconnect?: () => Promise<DaemonClient>;
 }
 
 export async function runApp(o: AppOptions = {}): Promise<{ app: App; tui: TuiAltScreen; stop: () => void }> {
-  const c = o.client ?? (await ensureDaemon());
+  const connectFn = o.reconnect ?? ensureDaemon;
+  const c = o.client ?? (await connectFn());
   const term = o.terminal ?? new ProcessTerminal();
   const opener = o.opener ?? openTarget;
-  const tui = new TuiAltScreen(term, false, undefined, { openUrl: (url) => opener(url), copyOnSelect: true });
+  const tui = new TuiAltScreen(term, false, undefined, { openUrl: (url) => void app.openLink(url), copyOnSelect: true });
   let tick: NodeJS.Timeout | undefined;
+  let quitting = false;
   const app = new App(c, tui, term, () => {
+    quitting = true;
     if (tick) clearInterval(tick);
     (o.onQuit ?? (() => process.exit(0)))();
   }, opener);
   tui.addChild(app);
   tui.setFocus(app);
   tui.start();
-  await c.subscribe(() => void app.refresh());
-  await app.refresh();
+
+  // If the daemon goes away (restarted, upgraded, crashed), keep the screen and reconnect when it's back.
+  const attach = async (client: DaemonClient): Promise<void> => {
+    app.c = client;
+    await client.subscribe(() => void app.refresh());
+    await app.refresh();
+    void client.closed.then(async () => {
+      if (quitting) return;
+      app.connected = false;
+      tui.requestRender();
+      for (let wait = 1000; !quitting; wait = Math.min(wait * 2, 10_000)) {
+        await new Promise((r) => setTimeout(r, wait));
+        if (quitting) return;
+        try {
+          const next = await connectFn();
+          if (quitting) return next.close();
+          await attach(next);
+          return;
+        } catch {}
+      }
+    });
+  };
+  await attach(c);
   tick = setInterval(() => void app.refresh(), 15_000);
-  void c.closed.then(() => {
-    if (tick) clearInterval(tick);
-    app.connected = false;
-    tui.requestRender();
-  });
   return { app, tui, stop: () => app.quit() };
 }

@@ -117,7 +117,7 @@ describe("an agent's life", () => {
     writeFileSync(agentMd, `---\nworkspace: ${ws}\n---\n\n` + readFileSync(agentMd, "utf8"));
     await rt.send("tester", "PASS SPAWN");
     const h = await until(async () => (await rt.store("tester").helpers()).find((x) => x.status !== "running"), 60_000, "helper done");
-    expect(h.status).toBe("done");
+    expect(h.status, h.result).toBe("done");
     expect(h.branch).toMatch(/^overtime\/tester\//);
     expect(existsSync(join(h.workdir, "result.txt"))).toBe(true);
     expect(h.result).toContain("result.txt");

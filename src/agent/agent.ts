@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../paths.js";
 import { readJson, writeJson } from "../fsutil.js";
+import { withLock } from "../store/mutex.js";
 import { parseFrontMatter } from "./frontmatter.js";
 import { loadSettings, type McpServerConfig } from "../settings.js";
 
@@ -89,6 +90,7 @@ export async function createAgent(name: string, settings: AgentSettings = {}): P
   await mkdir(paths.meta(name), { recursive: true });
   const { stringifyFrontMatter } = await import("./frontmatter.js");
   await writeFile(join(dir, "AGENT.md"), stringifyFrontMatter(settings as Record<string, unknown>, blankAgentMd(name)));
+  await writeSettingsSnapshot(name, settings);
   const state: AgentState = {
     formatVersion: FORMAT_VERSION,
     status: "new",
@@ -108,6 +110,7 @@ export async function loadAgent(name: string): Promise<Agent> {
   const dir = paths.agent(name);
   if (!existsSync(join(dir, "AGENT.md"))) throw new Error(`No agent called "${name}".`);
   const { data, body } = parseFrontMatter(await readFile(join(dir, "AGENT.md"), "utf8"));
+  const snapshot = await readSettingsSnapshot(name);
   let index = "";
   try {
     index = await readFile(join(dir, "INDEX.md"), "utf8");
@@ -123,7 +126,7 @@ export async function loadAgent(name: string): Promise<Agent> {
     lastRunAt: null,
     lastError: null,
   });
-  return { name, dir, settings: data as AgentSettings, identity: body, index, state };
+  return { name, dir, settings: snapshot ?? (data as AgentSettings), identity: body, index, state };
 }
 
 export async function listAgents(): Promise<Agent[]> {
@@ -144,34 +147,75 @@ export async function saveState(name: string, state: AgentState): Promise<void> 
   await writeJson(join(paths.meta(name), "state.json"), state);
 }
 
-export async function updateState(name: string, patch: Partial<AgentState>): Promise<AgentState> {
-  const cur = (await loadAgent(name)).state;
-  const next = { ...cur, ...patch };
-  await saveState(name, next);
-  return next;
+/**
+ * Change an agent's state. Serialised per agent. A stopped agent stays stopped: nothing but an explicit
+ * start (allowStopped) can move it out of "stopped", so a turn finishing late can't undo a stop.
+ */
+export async function updateState(name: string, patch: Partial<AgentState>, opts: { allowStopped?: boolean } = {}): Promise<AgentState> {
+  return withLock(`state:${name}`, async () => {
+    const cur = (await loadAgent(name)).state;
+    const p = { ...patch };
+    if (cur.status === "stopped" && !opts.allowStopped && p.status && p.status !== "stopped") delete p.status;
+    const next = { ...cur, ...p };
+    await saveState(name, next);
+    return next;
+  });
+}
+
+const settingsFile = (name: string) => join(paths.meta(name), "settings.json");
+
+/**
+ * The person's settings for an agent. AGENT.md's front matter shows them, but the agent rewrites
+ * AGENT.md, so the daemon keeps its own copy and that copy is what counts.
+ */
+export async function readSettingsSnapshot(name: string): Promise<AgentSettings | null> {
+  return readJson<AgentSettings | null>(settingsFile(name), null);
+}
+
+export async function writeSettingsSnapshot(name: string, s: AgentSettings): Promise<void> {
+  await writeJson(settingsFile(name), s);
+}
+
+async function frontMatterOf(name: string): Promise<{ data: AgentSettings; body: string } | null> {
+  try {
+    const { data, body } = parseFrontMatter(await readFile(join(paths.agent(name), "AGENT.md"), "utf8"));
+    return { data: data as AgentSettings, body };
+  } catch {
+    return null;
+  }
+}
+
+/** After a turn: make AGENT.md's settings block exactly the person's settings again. */
+export async function restoreSettings(name: string): Promise<boolean> {
+  const snap = (await readSettingsSnapshot(name)) ?? {};
+  const fm = await frontMatterOf(name);
+  if (!fm) return false;
+  if (JSON.stringify(sortKeys(fm.data as Record<string, unknown>)) === JSON.stringify(sortKeys(snap as Record<string, unknown>))) return false;
+  const { stringifyFrontMatter } = await import("./frontmatter.js");
+  await writeFile(join(paths.agent(name), "AGENT.md"), stringifyFrontMatter(snap as Record<string, unknown>, fm.body));
+  return true;
 }
 
 /**
- * The agent owns AGENT.md and rewrites it, but its settings (front matter) are the person's.
- * If a rewrite dropped or changed them, put the previous settings back.
+ * While no session is running: a changed settings block in AGENT.md is the person's edit, so adopt it.
+ * A block that disappeared entirely is never adopted (that is a rewrite that dropped it); it is put back.
  */
-export async function protectSettings(name: string, before: AgentSettings): Promise<boolean> {
-  if (!Object.keys(before).length) return false;
-  const file = join(paths.agent(name), "AGENT.md");
-  let text: string;
-  try {
-    text = await readFile(file, "utf8");
-  } catch {
+export async function adoptSettingsEdit(name: string): Promise<boolean> {
+  const fm = await frontMatterOf(name);
+  if (!fm) return false;
+  const snap = (await readSettingsSnapshot(name)) ?? {};
+  if (!Object.keys(fm.data ?? {}).length && Object.keys(snap).length) {
+    await restoreSettings(name);
     return false;
   }
-  const { data, body } = parseFrontMatter(text);
-  const same = JSON.stringify(sortKeys(data)) === JSON.stringify(sortKeys(before as Record<string, unknown>));
-  if (same) return false;
-  const { stringifyFrontMatter } = await import("./frontmatter.js");
-  // Keep any settings the agent added on its own only if the person hadn't set that key.
-  const merged = { ...data, ...before };
-  await writeFile(file, stringifyFrontMatter(merged, body));
+  if (JSON.stringify(sortKeys(fm.data as Record<string, unknown>)) === JSON.stringify(sortKeys(snap as Record<string, unknown>))) return false;
+  await writeSettingsSnapshot(name, fm.data);
   return true;
+}
+
+/** Whether the agent has been given its job yet (it rewrites the placeholder AGENT.md when it has). */
+export function hasIdentity(agent: Agent): boolean {
+  return !agent.identity.includes("No identity yet. This agent was just created.");
 }
 
 function sortKeys(o: Record<string, unknown>): Record<string, unknown> {

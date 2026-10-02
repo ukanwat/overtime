@@ -24,6 +24,8 @@ export interface ToolHost {
   /** Wake the agent's main session soon (coalesced if one is running). */
   wakeMain(agent: string, reason: string): void;
   spawnHelper(ctx: ToolContext, req: { role?: string; instructions?: string; task: string; backend?: string; model?: string }): Promise<{ id: string; workdir: string }>;
+  /** Stop a running helper. False if there is no such running helper. */
+  cancelHelper(agent: string, helperId: string): Promise<boolean>;
   startMonitor(agent: string, monitorId: string): void;
   stopMonitor(agent: string, monitorId: string): void;
   notify(title: string, body: string): void;

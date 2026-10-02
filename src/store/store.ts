@@ -1,4 +1,5 @@
 import { existsSync, statSync } from "node:fs";
+import { readdir, rm } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { paths } from "../paths.js";
 import { appendJsonl, newId, readJson, readJsonl, writeJson } from "../fsutil.js";
@@ -148,24 +149,53 @@ export class Store {
     });
   }
 
-  /** Take everything currently in the inbox, for delivery to a turn. Delivered items are kept in a log. */
-  async takeInbox(): Promise<InboxItem[]> {
+  /**
+   * Hand the inbox to a turn. Items move to an in-flight file first, so they survive a crash:
+   * a turn that finishes acknowledges them, one that doesn't gives them back.
+   */
+  async takeInbox(runId: string): Promise<InboxItem[]> {
     return this.lock(async () => {
       const all = await this.inbox();
       if (!all.length) return [];
+      await writeJson(this.p("inflight", `${runId}.json`), all);
       await writeJson(this.p("inbox.json"), []);
-      for (const i of all) await appendJsonl(this.p("inbox-delivered.jsonl"), i);
       return all;
     });
   }
 
-  /** Put items back if a turn failed before the agent saw them. */
-  async returnInbox(items: InboxItem[]): Promise<void> {
-    if (!items.length) return;
+  /** The turn finished: the items were delivered. */
+  async ackInbox(runId: string): Promise<void> {
     await this.lock(async () => {
-      const all = await this.inbox();
-      await writeJson(this.p("inbox.json"), [...items, ...all]);
+      const items = await readJson<InboxItem[]>(this.p("inflight", `${runId}.json`), []);
+      for (const i of items) await appendJsonl(this.p("inbox-delivered.jsonl"), { ...i, runId });
+      await rm(this.p("inflight", `${runId}.json`), { force: true });
     });
+  }
+
+  /** The turn didn't finish: put its items back at the front of the inbox. */
+  async returnInbox(runId: string): Promise<void> {
+    await this.lock(async () => {
+      const items = await readJson<InboxItem[]>(this.p("inflight", `${runId}.json`), []);
+      if (items.length) await writeJson(this.p("inbox.json"), [...items, ...(await this.inbox())]);
+      await rm(this.p("inflight", `${runId}.json`), { force: true });
+    });
+  }
+
+  /** After a crash: anything still in flight goes back to the inbox. Returns how many items. */
+  async recoverInflight(): Promise<number> {
+    let files: string[] = [];
+    try {
+      files = (await readdir(this.p("inflight"))).filter((f) => f.endsWith(".json"));
+    } catch {
+      return 0;
+    }
+    let n = 0;
+    for (const f of files) {
+      const runId = f.replace(/\.json$/, "");
+      n += (await readJson<InboxItem[]>(this.p("inflight", f), [])).length;
+      await this.returnInbox(runId);
+    }
+    return n;
   }
 
   // ---------- schedule ----------
