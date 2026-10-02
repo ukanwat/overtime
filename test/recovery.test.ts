@@ -202,7 +202,10 @@ describe("common problems", () => {
     const alert = await until(async () => (await rt.store("unsigned").messages()).find((m) => m.kind === "alert"), 30_000, "alert");
     expect(alert.text).toMatch(/isn't signed in/);
     // It retries slowly, not every minute.
-    const s = await rt.store("unsigned").schedule();
+    const s = await until(async () => {
+      const x = await rt.store("unsigned").schedule();
+      return x.wakeAt ? x : null;
+    }, 20_000, "retry scheduled");
     expect(new Date(s.wakeAt!).getTime() - Date.now()).toBeGreaterThan(30 * 60_000);
   });
 
