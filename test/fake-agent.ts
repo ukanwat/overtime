@@ -1,0 +1,100 @@
+/**
+ * A scripted ACP backend for tests: speaks real ACP on stdio and calls Overtime's real tools over MCP,
+ * so the daemon can be tested end to end without a model. Behaviour is driven by words in the prompt.
+ */
+import * as acp from "@agentclientprotocol/sdk";
+import { Readable, Writable } from "node:stream";
+import { randomUUID } from "node:crypto";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+
+interface S {
+  cwd: string;
+  tools?: string;
+  cost: number;
+}
+const sessions = new Map<string, S>();
+
+async function tools(url: string) {
+  const c = new Client({ name: "fake-agent", version: "1" });
+  await c.connect(new StreamableHTTPClientTransport(new URL(url)));
+  return {
+    list: async () => (await c.listTools()).tools.map((t) => t.name),
+    call: async (name: string, args: Record<string, unknown>) => {
+      const r: any = await c.callTool({ name, arguments: args });
+      const text = (r.content ?? []).map((x: any) => x.text).join("");
+      if (r.isError) throw new Error(`${name}: ${text}`);
+      return text;
+    },
+    close: () => c.close(),
+  };
+}
+
+async function turn(sessionId: string, text: string, cx: any): Promise<acp.PromptResponse> {
+  const s = sessions.get(sessionId)!;
+  const say = (t: string) => cx.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: t } } });
+  if (/FAIL_TURN/.test(text) && !/RECOVERED/.test(text)) throw new acp.RequestError(-32603, "Internal error", { message: "scripted failure" });
+  if (!s.tools) {
+    await say("no overtime tools");
+    return { stopReason: "end_turn" };
+  }
+  const t = await tools(s.tools);
+  const names = await t.list();
+  const folder = /# Your folder\n\n(.+)/.exec(text)?.[1];
+  const threads = [...new Set([...text.matchAll(/\(thread (th_[a-z0-9_]+)\)/g)].map((m) => m[1]))];
+  try {
+    if (/You are a helper/.test(text) || /a helper working for/.test(text)) {
+      writeFileSync(join(s.cwd, "result.txt"), "helper output\n");
+      await t.call("done", { result: `wrote ${join(s.cwd, "result.txt")}` });
+      await say("helper done");
+    } else if (/conversation thread with the person/.test(text)) {
+      const msg = /The person just wrote:\n\n([\s\S]*?)\n\nAnswer them/.exec(text)?.[1] ?? text.split("\n").pop();
+      if (/PASS/.test(msg ?? "")) await t.call("pass_to_main", { text: `do this: ${msg}` });
+      if (!/NOREPLYTOOL/.test(msg ?? "")) await t.call("reply", { text: `chat reply to: ${msg}` });
+      else await say(`final words as reply to: ${msg}`);
+    } else {
+      if (/This is your first conversation/.test(text) && folder) {
+        writeFileSync(join(folder, "AGENT.md"), "# fake\n\n## Job\nTest job.\n\n## Rules\n- Ask before publishing.\n");
+        mkdirSync(join(folder, "notes"), { recursive: true });
+        writeFileSync(join(folder, "INDEX.md"), "# Index\n\n- notes/: what I learned\n");
+      }
+      for (const th of threads) await t.call("reply", { thread_id: th, text: `main reply in ${th}` });
+      if (/SPAWN/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "write result.txt", instructions: "Be brief." });
+      if (/WATCH_LONG/.test(text)) await t.call("watch", { run: "for i in 1 2 3; do echo tick $i; sleep 1; done; sleep 600", why: "long test", cooldown: "1s" });
+      if (/WATCH_REPEAT/.test(text)) await t.call("watch", { run: "cat watched.txt 2>/dev/null || echo none", every: "10s", why: "repeat test", cooldown: "1s" });
+      if (/ASK/.test(text) && !/answered one of your questions/.test(text)) await t.call("ask", { question: "Bridge or ferry?", why: "test", recommendation: "Bridge", options: ["Bridge", "Ferry"], category: "test-choice" });
+      if (/LOOP/.test(text)) await t.call("every", { interval: "1m", task: "loop task" });
+      await t.call("report", { status: "fake is working", text: "Did a fake thing.", notify: /NOTIFY/.test(text) });
+      if (!/NOSLEEP/.test(text)) await t.call("sleep_until", { in: "30m", reason: "fake rest" });
+      await say("main turn done");
+    }
+  } finally {
+    await t.close();
+  }
+  s.cost += 0.01;
+  await cx.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "usage_update", used: 1000, size: 100000, cost: { amount: s.cost, currency: "USD" } } as any });
+  return { stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } as any };
+}
+
+const stream = acp.ndJsonStream(Writable.toWeb(process.stdout) as WritableStream<Uint8Array>, Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>);
+acp
+  .agent({ name: "fake-agent" })
+  .onRequest("initialize", () => ({ protocolVersion: acp.PROTOCOL_VERSION, agentCapabilities: { loadSession: true } }))
+  .onRequest("session/new", (ctx: any) => {
+    const id = randomUUID();
+    const http = (ctx.params.mcpServers ?? []).find((m: any) => m.type === "http" && m.name === "overtime");
+    sessions.set(id, { cwd: ctx.params.cwd, tools: http?.url, cost: 0 });
+    return { sessionId: id, modes: { availableModes: [{ id: "default", name: "Default" }, { id: "bypassPermissions", name: "Bypass" }], currentModeId: "default" } } as any;
+  })
+  .onRequest("session/load", (ctx: any) => {
+    const http = (ctx.params.mcpServers ?? []).find((m: any) => m.type === "http" && m.name === "overtime");
+    const prev = sessions.get(ctx.params.sessionId);
+    sessions.set(ctx.params.sessionId, { cwd: ctx.params.cwd, tools: http?.url, cost: prev?.cost ?? 0.05 });
+    return {} as any;
+  })
+  .onRequest("session/set_mode", () => ({}) as any)
+  .onRequest("session/prompt", (ctx: any) => turn(ctx.params.sessionId, ctx.params.prompt.map((p: any) => p.text ?? "").join("\n"), ctx.client))
+  .onNotification("session/cancel", () => {})
+  .connect(stream);

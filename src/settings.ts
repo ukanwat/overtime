@@ -17,8 +17,12 @@ export interface Settings {
   backend: string;
   /** Model id, or null for the backend's own default. */
   model: string | null;
-  /** Daily budget per agent, in US dollars (estimated from tokens when the backend reports no cost). */
+  /** Daily spend cap per agent, in US dollars, counted from the cost the backend itself reports. */
   dailyBudgetUsd: number;
+  /** Daily token cap per agent, for backends that report no cost (null = no token cap). Exact counts from the backend. */
+  dailyTokenBudget: number | null;
+  /** Longest a single turn may run before Overtime cancels it, in minutes. */
+  turnTimeoutMinutes: number;
   /** MCP servers given to every agent. */
   mcpServers: McpServerConfig[];
   /** Extra ACP backends: name -> command line that speaks ACP on stdio. */
@@ -29,6 +33,8 @@ export const DEFAULT_SETTINGS: Settings = {
   backend: "claude",
   model: null,
   dailyBudgetUsd: 10,
+  dailyTokenBudget: null,
+  turnTimeoutMinutes: 180,
   mcpServers: [],
   customBackends: {},
 };

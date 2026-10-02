@@ -1,0 +1,97 @@
+import { join } from "node:path";
+import { paths } from "../paths.js";
+import { appendJsonl, readJson, readJsonl, writeJson } from "../fsutil.js";
+import { withLock } from "../store/mutex.js";
+
+/** Exactly what the backend reported for one turn. Nothing here is estimated by Overtime. */
+export interface TurnUsage {
+  t: string;
+  runId: string;
+  kind: string;
+  backend: string;
+  sessionId: string;
+  /** Tokens for this turn, from the prompt response. */
+  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number } | null;
+  /** The session's cumulative cost as the backend reported it at the end of the turn (null if it reports none). */
+  sessionCostUsd: number | null;
+  /** This turn's cost: the change in the session's cumulative cost. */
+  turnCostUsd: number | null;
+  /** Context window after the turn. */
+  context: { used: number; size: number } | null;
+}
+
+/** The latest subscription limit status a backend reported (e.g. Claude's 5-hour and 7-day limits). */
+export interface LimitStatus {
+  backend: string;
+  status: "allowed" | "allowed_warning" | "rejected";
+  rateLimitType?: string;
+  utilization?: number;
+  /** Epoch seconds when the limit resets. */
+  resetsAt?: number;
+  updatedAt: string;
+}
+
+const usagePath = (agent: string) => join(paths.meta(agent), "usage.jsonl");
+
+export async function lastSessionCost(agent: string, sessionId: string): Promise<number | null> {
+  const rows = await readJsonl<TurnUsage>(usagePath(agent));
+  for (let i = rows.length - 1; i >= 0; i--) if (rows[i].sessionId === sessionId && rows[i].sessionCostUsd != null) return rows[i].sessionCostUsd;
+  return null;
+}
+
+export async function recordTurnUsage(agent: string, u: Omit<TurnUsage, "t" | "turnCostUsd">): Promise<TurnUsage> {
+  return withLock(`usage:${agent}`, async () => {
+    let turnCostUsd: number | null = null;
+    if (u.sessionCostUsd != null) {
+      const prev = await lastSessionCost(agent, u.sessionId);
+      // A fresh session starts at zero; a resumed one continues from its last recorded total.
+      turnCostUsd = Math.max(0, u.sessionCostUsd - (prev ?? 0));
+    }
+    const row: TurnUsage = { t: new Date().toISOString(), turnCostUsd, ...u };
+    await appendJsonl(usagePath(agent), row);
+    return row;
+  });
+}
+
+function sameLocalDay(a: Date, b: Date): boolean {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+/** Today's totals for one agent (local day), from what backends reported. */
+export async function usageToday(agent: string, now = new Date()): Promise<{ usd: number; costReported: boolean; tokens: number; turns: number }> {
+  const rows = (await readJsonl<TurnUsage>(usagePath(agent))).filter((r) => sameLocalDay(new Date(r.t), now));
+  let usd = 0;
+  let costReported = false;
+  let tokens = 0;
+  for (const r of rows) {
+    if (r.turnCostUsd != null) {
+      usd += r.turnCostUsd;
+      costReported = true;
+    }
+    tokens += r.tokens?.total ?? 0;
+  }
+  return { usd, costReported, tokens, turns: rows.length };
+}
+
+const limitsPath = () => join(paths.agentsDir(), "..", "limits.json");
+
+export async function readLimits(): Promise<Record<string, LimitStatus>> {
+  return readJson<Record<string, LimitStatus>>(limitsPath(), {});
+}
+
+export async function writeLimit(l: LimitStatus): Promise<void> {
+  await withLock("limits", async () => {
+    const all = await readLimits();
+    all[l.backend] = l;
+    await writeJson(limitsPath(), all);
+  });
+}
+
+/** If this backend is currently over a subscription limit, when it resets. */
+export async function blockedUntil(backend: string, now = Date.now()): Promise<Date | null> {
+  const l = (await readLimits())[backend];
+  if (!l || l.status !== "rejected") return null;
+  if (l.resetsAt && l.resetsAt * 1000 > now) return new Date(l.resetsAt * 1000);
+  if (!l.resetsAt && now - new Date(l.updatedAt).getTime() < 15 * 60_000) return new Date(new Date(l.updatedAt).getTime() + 15 * 60_000);
+  return null;
+}
