@@ -46,7 +46,6 @@ jobs:
         run: |
           npm install -g ./ukanwat-overtime-*.tgz
           echo "$(npm prefix -g)/bin" >> "$GITHUB_PATH"
-          ls -la "$(npm prefix -g)/bin"
       - name: Run it
         env:
           OVERTIME_HOME: ${{ runner.temp }}/overtime-home
