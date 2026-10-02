@@ -41,28 +41,37 @@ npm install -g @ukanwat/overtime
 overtime
 ```
 
-`overtime` opens a full-screen app in your terminal. Press `Ctrl+N`, give the agent a name, and
-tell it in plain words what it's for. That's the whole setup: it writes its own job description
-and gets to work.
+`overtime` opens a full-screen app in your terminal. Arrow down to **+ New agent**, type a name,
+and tell it in plain words what it's for. That's the whole setup: it writes its own job
+description and gets to work.
 
 ```
-┌ overtime ──────────────────┬──────────────────────────────────────────────────┐
-│  + New agent       Ctrl+N  │  repo-keeper            ○ asleep · $1.20/$10      │
-│                            │ ──────────────────────────────────────────────── │
-│▸ ○ repo-keeper          1  │  ? Merge the dependency fix?          waiting    │
-│    wakes 18:00             │  ▪ CI is green again on main                2h    │
-│  ● game-builder            │  › You: keep PRs small please               1d    │
-│    lighting the harbour    │                                                  │
-│                            ├──────────────────────────────────────────────────┤
-│                            │ ❯ message repo-keeper                            │
-└────────────────────────────┴──────────────────────────────────────────────────┘
- ↑↓ move   → threads   Enter open   Ctrl+N new agent   Ctrl+F search   ? keys
+ ◆ overtime                                               3 agents  ·  1 working  ·  1 needs you
+─────────────────────────────────────────────────────────────────────────────────────────────────
+                            │  repo-keeper  ○ asleep · wakes 18:00                     ⚙ Settings
+▌ repo-keeper             1 │  CI green; watching the dependency PR      $1.20 of $10 today
+▌   ○ asleep · wakes 18:00  │──────────────────────────────────────────────────────────────────
+  game-builder              │  ▣ CI is green again on main
+    ● working · lighting th…│  The flaky test was a timing race; fixed in 3f2a1c.
+  scout                     │
+    ◇ new · waiting for its…│  ┃ ? Merge the dependency fix?
+                            │  ┃ Recommended: merge it now and release tomorrow.
+  + New agent               │  ┃  1  Merge it      2  Wait for 1.35      3  Close it
+                            │
+  › Press 1–3 to answer, or type a message
+ claude                        1–3 answer  ·  ↑↓ agents  ·  tab settings  ·  ? keys
 ```
 
-Your agents are on the left, like DMs. On the right is only the conversation between you and the
-selected agent: its questions, its reports, your messages, each as a thread. No tool calls, no
-logs. Press `Ctrl+O` on any thread to look behind it: the agent's folder, its schedule, its
-watches, its helpers, and the full transcript of exactly what it was sent and did.
+Your agents are on the left, like DMs. On the right is your conversation with the selected agent,
+and nothing else: its messages, its reports, its questions (answer with a number key), and yours.
+No tool calls, no logs. While it's answering you, its reply streams in as it writes.
+
+- **Move** with ↑↓; the conversation follows. Just type to message the selected agent.
+- **Attach** a file or image by dragging it into the terminal. It's copied into the agent's folder,
+  and the agent opens it with its own tools when it needs to.
+- **Settings** (Tab): backend and model (picked from what the backend offers), daily budget,
+  token budget, workspace, plus wake, stop, archive, and its folder and transcripts.
+- The mouse works too: click agents, options, links and files.
 
 Quitting the app changes nothing. A small background process keeps your agents running; on first
 run, Overtime asks whether to start it when you log in.
@@ -118,7 +127,7 @@ Deliberately few, because every tool costs context on every turn:
 | `wake` | when to wake next: at a time, after a delay, repeatedly, or on a watch |
 | `cancel` | stop a repeating wake-up or a watch |
 | `ask` | a question for you, without stopping work |
-| `send` | reply in a thread, start a thread, or set the one-line status next to its name |
+| `send` | message you (a reply, a report, files to share), or set the one-line status next to its name |
 | `spawn` | start a helper |
 | `done` | (helpers only) hand the result back |
 
@@ -126,8 +135,8 @@ Everything else is plain files the agent reads and writes with the tools its bac
 
 ## Backends, models and MCP
 
-New agents use your default backend and model. Change them per agent in the app (`Ctrl+T` picks a
-backend, then one of its models) or with `overtime set <name> backend=codex model=…`. The model list
+New agents use your default backend and model. Change them per agent in the app (Tab opens its settings,
+where you pick a backend and then one of its models) or with `overtime set <name> backend=codex model=…`. The model list
 comes from each backend through ACP, so new models appear without an Overtime update. If a backend
 won't use the model you chose, the agent runs on its default and Overtime tells you. Built in: `claude` (bundled, uses your Claude Code login),
 `codex`, `gemini`. Anything else that speaks ACP goes under `customBackends` in
@@ -140,21 +149,24 @@ Claude Code settings, instructions or MCP servers: they get exactly what Overtim
 ## In your editor
 
 Overtime is also an ACP agent. Add `overtime acp` as an external agent in Zed, JetBrains, VS Code
-(ACP extensions) or Neovim, and your agents appear as modes; each editor chat is a thread with that
-agent.
+(ACP extensions) or Neovim, and your agents appear as modes; an editor chat talks to that agent's
+conversation.
 
 ## Command line
 
 ```
-overtime                         the live terminal app
-overtime new <name>              create an agent
-overtime ls                      list agents
-overtime send <name> "message"   start a thread
-overtime thread <name> <id>      read a thread
-overtime reply <name> <id> "…"   reply in a thread
-overtime answer <name> <id> <n>  answer a question with option n
+overtime                            the live app
+overtime new <name>                 create an agent
+overtime ls                         list agents
+overtime send <name> "…"            message an agent (--attach <file>, repeatable)
+overtime messages <name>            read your conversation with it
+overtime answer <name> <n> [note]   answer its open question with option n
+overtime settings <name>            show its backend, model, budgets and workspace
+overtime set <name> key=value…      backend=  model=  budget=  tokens=  workspace=
+overtime models [backend]           the models a backend offers
 overtime stop|start|wake <name>
-overtime acp                     ACP on stdio, for editors
+overtime archive <name>             stop an agent and move its folder away
+overtime acp                        ACP on stdio, for editors
 overtime daemon [stop|install|uninstall]
 ```
 
