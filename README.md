@@ -1,4 +1,4 @@
-<h1 align="center">SelfStarter</h1>
+<h1 align="center">Overtime</h1>
 
 <p align="center">
   <strong>Give an agent a brief, not a chat. Then it works on its own.</strong>
@@ -13,12 +13,14 @@
   Built by <a href="https://utkarshkanwat.com">Utkarsh Kanwat</a> · <a href="https://x.com/ukanwat">𝕏</a>
 </p>
 
+<p align="center"><sub>Formerly AAABench, then SelfStarter. Old links redirect here.</sub></p>
+
 Chat is how you manage a junior. A brief is how you manage a senior: the goal, the constraints,
-what "done" looks like, and a budget. SelfStarter gives a coding agent a brief and then stays out
+what "done" looks like, and a budget. Overtime gives a coding agent a brief and then stays out
 of the way. The agent plans its own work across many sessions, writes its own status reports, and
 asks for a decision only when it really needs one.
 
-SelfStarter is in early development. What's here today is an example run: one agent, one brief,
+Overtime is in early development. What's here today is an example run: one agent, one brief,
 a real game engine, and no human help.
 
 ## Example run: Agent City
@@ -40,7 +42,7 @@ the traffic, the weather, the game's own screens, and what to fix when it doesn'
 points at anything for it.
 
 ```bash
-git clone https://github.com/ukanwat/selfstarter && cd selfstarter
+git clone https://github.com/ukanwat/overtime && cd overtime
 cp -R project AgentCity        # the project skeleton
 ./bin/setup-capabilities.sh    # plugins, renderer features, python libraries
 ./bin/run-agent.sh             # boots the editor, hands over the brief, keeps it going
@@ -193,7 +195,7 @@ override with `UE_ROOT`.
 ## Running a session
 
 ```bash
-git clone https://github.com/ukanwat/selfstarter && cd selfstarter
+git clone https://github.com/ukanwat/overtime && cd overtime
 cp -R project AgentCity && mv AgentCity/AgentCity.uproject AgentCity/   # project skeleton
 ./bin/run-agent.sh
 ```
