@@ -5,6 +5,8 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/ukanwat/overtime/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/ukanwat/overtime/ci.yml?branch=main&style=flat-square&label=CI"></a>
+  <a href="https://www.npmjs.com/package/@ukanwat/overtime"><img alt="npm" src="https://img.shields.io/npm/v/@ukanwat/overtime?style=flat-square&color=black"></a>
   <img alt="licence: MIT" src="https://img.shields.io/badge/licence-MIT-black?style=flat-square">
   <img alt="status: early" src="https://img.shields.io/badge/status-early-black?style=flat-square">
   <img alt="protocol: ACP" src="https://img.shields.io/badge/protocol-ACP-black?style=flat-square">

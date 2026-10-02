@@ -1,0 +1,45 @@
+name: Release
+
+# Publishes to npm when a version tag (v0.2.1, v1.0.0, ...) is pushed, after the tests pass.
+# Uses npm trusted publishing (OIDC): no npm token is stored in GitHub, and every release carries
+# a provenance statement linking it to this workflow run.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm 11.5.1 or newer.
+      - run: npm install -g npm@latest
+
+      - run: npm ci
+
+      - name: Check the tag matches package.json
+        run: |
+          v="$(node -p 'require("./package.json").version')"
+          test "v$v" = "$GITHUB_REF_NAME" || { echo "Tag $GITHUB_REF_NAME doesn't match package.json version $v"; exit 1; }
+
+      - run: npm run typecheck
+      - run: npm test
+
+      - run: npm publish --provenance --access public
+
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
