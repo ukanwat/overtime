@@ -4,6 +4,7 @@ import { extname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   Editor,
+  truncateToWidth,
   getKeybindings,
   Input,
   Key,
@@ -37,6 +38,7 @@ import {
   hasTints,
   inverse,
   box,
+  shimmer,
   italic,
   link,
   money,
@@ -949,7 +951,9 @@ export class App implements Component {
       const p = statusParts(a);
       const detail = this.agentDetail(a);
       const l1 = bar + " " + spread(on ? bold(a.name) : a.name, badge + " ", w - 2);
-      const l2 = bar + "   " + fit(`${p.color(p.dot)} ${muted(p.word + (detail ? ` · ${detail}` : ""))}`, w - 4);
+      const words = p.word + (detail ? ` · ${detail}` : "");
+      // A working agent's line shimmers, so you can see at a glance that it's busy right now.
+      const l2 = bar + "   " + fit(`${p.color(p.dot)} ${a.status === "working" ? shimmer(truncateToWidth(words, Math.max(1, w - 6))) : muted(words)}`, w - 4);
       lines.push(this.selRow(l1, w, on), this.selRow(l2, w, on), "");
     }
     if (count > visible) lines.push(muted(`   ${Math.min(this.sel + 1, count)} of ${count}`));
@@ -996,7 +1000,7 @@ export class App implements Component {
   private renderAgentHeader(a: AgentSummary, w: number, x: number, narrow: boolean): string[] {
     const p = statusParts(a);
     const detail = this.agentDetail(a);
-    const state = `${p.color(`${p.dot} ${p.word}`)}${detail ? muted(` · ${detail}`) : ""}`;
+    const state = `${p.color(`${p.dot} ${p.word}`)}${detail ? (a.status === "working" ? muted(" · ") + shimmer(detail) : muted(` · ${detail}`)) : ""}`;
     const open = this.overlay?.kind === "settings";
     const btn = open ? inverse(" Settings ") : `${muted("⚙")} Settings ${muted("→")}`;
     const btnW = visibleWidth(btn) + 1;
@@ -1129,7 +1133,7 @@ export class App implements Component {
     const waitingOnIt = [...this.messages].reverse().find((m) => !m.closes)?.from === "you";
     if (live && waitingOnIt) {
       if (body.length && body.at(-1) !== "") body.push("");
-      body.push(`  ${accent(bold(a.name))}  ${muted(`${spinner()} ${live.step ?? "thinking…"}`)}`);
+      body.push(`  ${accent(bold(a.name))}  ${muted(spinner())} ${shimmer(live.step ?? "thinking…")}`);
     }
     body.push("");
 
@@ -1557,7 +1561,7 @@ export async function runApp(o: AppOptions = {}): Promise<{ app: App; tui: TuiAl
   };
   await attach(c);
   // Spinners move while anything is live; relative times and counts stay current.
-  timers.push(setInterval(() => app.live.size && tui.requestRender(), 120));
+  timers.push(setInterval(() => (app.live.size || app.agents.some((a) => a.status === "working")) && tui.requestRender(), 80));
   timers.push(setInterval(() => void app.refresh(), 15_000));
   return { app, tui, stop: () => app.quit() };
 }

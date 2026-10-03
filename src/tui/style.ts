@@ -97,6 +97,36 @@ export const faint = wrapFg(() => pal.faint);
 export const accent = wrapFg(() => pal.accent);
 export const yellow = wrapFg(() => pal.yellow);
 export const red = wrapFg(() => pal.red);
+/**
+ * Text with a soft light sweeping across it, for "this is happening right now" (an agent working).
+ * A band moves left to right every couple of seconds: its centre in the accent colour, its edges in the
+ * normal text colour, the rest muted. Plain text without colour support.
+ */
+export function shimmer(text: string, now = Date.now()): string {
+  if (noColor() || !text) return text;
+  const chars = Array.from(text);
+  const span = chars.length + 16;
+  const pos = (Math.floor(now / 60) % span) - 8;
+  const tone = (i: number) => (Math.abs(i - pos) <= 1 ? 2 : Math.abs(i - pos) <= 4 ? 1 : 0);
+  let out = "";
+  let run = "";
+  let cur = tone(0);
+  const flush = () => {
+    if (run) out += cur === 2 ? accent(run) : cur === 1 ? run : muted(run);
+    run = "";
+  };
+  chars.forEach((ch, i) => {
+    const t = tone(i);
+    if (t !== cur) {
+      flush();
+      cur = t;
+    }
+    run += ch;
+  });
+  flush();
+  return out;
+}
+
 /** Secondary text. */
 export const gray = muted;
 /** "Working" and success use the accent; there is no separate green. */
