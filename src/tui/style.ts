@@ -3,6 +3,7 @@ import { statSync } from "node:fs";
 import { dirname, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { DaemonTimeoutError, isDaemonGone } from "../daemon/client.js";
 
 /**
  * The look of Overtime, shared by the full-screen app and the plain command line.
@@ -235,6 +236,7 @@ export function stamp(iso: string): string {
 export interface StatusLike {
   status: string;
   activity: string;
+  pauseReason?: "budget" | "limit" | null;
   nextWake: string | null;
   pausedUntil: string | null;
   lastError: string | null;
@@ -247,7 +249,7 @@ export function statusParts(a: StatusLike): { dot: string; word: string; detail:
     case "working":
       return { dot: "●", word: "working", detail: a.helpersRunning ? `${a.helpersRunning} helper${a.helpersRunning === 1 ? "" : "s"}` : "", color: accent };
     case "paused": {
-      const why = /budget/.test(a.activity) ? "budget used" : /limit/.test(a.activity) ? "usage limit" : "paused";
+      const why = a.pauseReason === "budget" ? "budget used" : a.pauseReason === "limit" ? "usage limit" : "paused";
       return { dot: "◌", word: "paused", detail: `${why}${a.pausedUntil ? `, back ${when(a.pausedUntil)}` : ""}`, color: muted };
     }
     case "stopped":
@@ -330,9 +332,8 @@ export function openTarget(target: string): string | undefined {
 
 /** Errors as a person should read them: no "Error:" prefixes, no stack, our own words for lost connections. */
 export function friendly(e: unknown): string {
-  let m = String((e as any)?.message ?? e ?? "Something went wrong.");
-  m = m.replace(/^(Error|RequestError|TypeError):\s*/i, "").split("\n")[0];
-  if (/daemon disconnected|ECONNREFUSED|ENOENT.*sock|EPIPE/i.test(m)) return "Can't reach Overtime's background process. Reconnecting…";
-  if (/didn't answer/.test(m)) return "Overtime's background process is busy and didn't answer. Try again in a moment.";
-  return m;
+  if (isDaemonGone(e)) return "Can't reach Overtime's background process. Reconnecting…";
+  if (e instanceof DaemonTimeoutError) return "Overtime's background process is busy and didn't answer. Try again in a moment.";
+  // The message itself, first line only (no stack); errors from the daemon arrive as plain messages.
+  return String((e as any)?.message ?? e ?? "Something went wrong.").split("\n")[0];
 }

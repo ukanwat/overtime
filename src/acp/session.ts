@@ -6,7 +6,11 @@ import { sandboxLaunch } from "../runtime/sandbox.js";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import type { McpServerConfig } from "../settings.js";
-import { backendCommand } from "./backends.js";
+import { backendCommand, commandExists, type BackendCommand } from "./backends.js";
+import { BackendError, BackendExitedError } from "../runtime/errors.js";
+
+/** Per backend, the arguments that worked last (when it has alternatives for older versions). */
+const workingArgs = new Map<string, string[]>();
 
 export type SessionUpdate = acp.SessionNotification["update"];
 export type PermissionRequest = acp.RequestPermissionRequest;
@@ -100,6 +104,13 @@ function isolationMeta(backend: string): Record<string, unknown> | undefined {
 // outside its sandbox; its "agent" mode would have its own reviewer decide instead, unseen by Overtime).
 // A backend with none of these keeps its own default mode.
 const ASKING_MODES = ["default", "ask", "workspace-write"];
+/**
+ * Inside Overtime's own macOS sandbox (protected paths are set), a backend that runs its commands in a
+ * sandbox of its own can't: macOS refuses a sandbox inside a sandbox, so every command would fail.
+ * There, such a backend runs in its mode without that inner sandbox (Codex: "agent-full-access"), and
+ * Overtime's sandbox is what keeps the protected paths read-only.
+ */
+const UNSANDBOXED_MODES = ["agent-full-access"];
 
 /** Every open backend session, so a shutdown can close them all. */
 const open = new Set<AcpSession>();
@@ -125,10 +136,34 @@ export class AcpSession {
     public newSessionInfo: acp.NewSessionResponse | null = null,
     /** While loading an old session the backend replays history; don't treat that as new activity. */
     private replaying = false,
+    /** Running inside Overtime's macOS sandbox, where a second sandbox can't be applied. */
+    private readonly inSeatbelt = false,
   ) {}
 
   static async open(opts: OpenOptions): Promise<AcpSession> {
     const base = await backendCommand(opts.backend);
+    // Checked before starting, so a missing backend is reported as missing even when it would be
+    // started inside the sandbox (where the sandbox itself, not the backend, is what gets spawned).
+    if (!commandExists(base.command)) {
+      throw new BackendError(`Could not start backend "${opts.backend}": ${base.command} isn't installed or isn't on your PATH.`, opts.backend, "ENOENT", undefined, true);
+    }
+    const all = [base.args, ...(base.fallbackArgs ?? [])];
+    const known = workingArgs.get(opts.backend);
+    const tries = known ? [known, ...all.filter((x) => x.join("\0") !== known.join("\0"))] : all;
+    for (let i = 0; ; i++) {
+      try {
+        const s = await AcpSession.start(opts, { command: base.command, args: tries[i] });
+        if (tries.length > 1) workingArgs.set(opts.backend, tries[i]);
+        return s;
+      } catch (e) {
+        // Exited straight away: an older version that doesn't know these arguments. Try the next ones.
+        if (e instanceof BackendExitedError && i + 1 < tries.length) continue;
+        throw e;
+      }
+    }
+  }
+
+  private static async start(opts: OpenOptions, base: BackendCommand): Promise<AcpSession> {
     const protect = opts.protect ?? [];
     const cmd = sandboxLaunch(base.command, base.args, protect);
     if (protect.length && !cmd.sandboxed) throw new SandboxUnavailableError(cmd.why ?? "the sandbox can't start here");
@@ -153,7 +188,7 @@ export class AcpSession {
       proc.once("spawn", () => resolve(null));
       proc.once("error", (e) => resolve(e));
     });
-    if (spawned) throw new Error(`Could not start backend "${opts.backend}" (${cmd.command}): ${spawned.message}`);
+    if (spawned) throw new BackendError(`Could not start backend "${opts.backend}" (${cmd.command}): ${spawned.message}`, opts.backend, (spawned as NodeJS.ErrnoException).code, undefined, true);
 
     let self: AcpSession | undefined;
     const app = acp
@@ -186,7 +221,7 @@ export class AcpSession {
       killGroup(proc, "SIGKILL");
       throw e;
     }
-    self = new AcpSession(proc, conn, init, opts.backend, opts);
+    self = new AcpSession(proc, conn, init, opts.backend, opts, "", null, false, cmd.sandboxed && process.platform === "darwin");
     open.add(self);
     self.stderrTail = stderrTail;
     self.exited = exited;
@@ -204,9 +239,10 @@ export class AcpSession {
       await Promise.race([exited, new Promise((r) => setTimeout(r, 500))]);
       if (proc.exitCode !== null || proc.signalCode) {
         const last = tail.filter((l) => !/^\s+at /.test(l)).slice(-6).join(" | ");
-        throw new Error(`The ${backend} backend stopped (${proc.signalCode ?? `exit ${proc.exitCode}`})${last ? `: ${last}` : ""}`);
+        throw new BackendExitedError(`The ${backend} backend stopped (${proc.signalCode ?? `exit ${proc.exitCode}`})${last ? `: ${last}` : ""}`, backend);
       }
-      throw new Error(describeAcpError(e, backend));
+      // Keep the error's code and data: they say what kind of trouble it is, better than its wording.
+      throw new BackendError(describeAcpError(e, backend), backend, e?.code, e?.data);
     }
   }
 
@@ -257,6 +293,8 @@ export class AcpSession {
         INIT_TIMEOUT_MS,
         "Loading the session",
       );
+      // The model options come with a loaded session too; keep them, so the model can be changed on it.
+      this.newSessionInfo = { sessionId, ...(res ?? {}) };
       await this.goAutonomous(res?.modes, res?.configOptions);
       return true;
     } catch {
@@ -268,8 +306,9 @@ export class AcpSession {
   }
 
   private async goAutonomous(modes: { availableModes?: { id: string }[]; currentModeId?: string } | undefined, configOptions?: any[]): Promise<void> {
+    const wanted = this.inSeatbelt ? [...UNSANDBOXED_MODES, ...ASKING_MODES] : ASKING_MODES;
     const ids = modes?.availableModes?.map((m) => m.id) ?? [];
-    const target = ASKING_MODES.find((m) => ids.includes(m));
+    const target = wanted.find((m) => ids.includes(m));
     if (target && modes?.currentModeId !== target) {
       try {
         await this.conn.agent.request(acp.methods.agent.session.setMode, { sessionId: this.sessionId, modeId: target });
@@ -279,14 +318,17 @@ export class AcpSession {
     if (target) return;
     // Backends that offer the mode as a config option instead of session modes.
     const opt = configOptions?.find((o: any) => o?.category === "mode" && Array.isArray(o.options));
-    const value = opt && ASKING_MODES.find((m) => opt.options.some((x: any) => (x.value ?? x.id) === m));
+    const value = opt && wanted.find((m) => opt.options.some((x: any) => (x.value ?? x.id) === m));
     if (!opt || !value || opt.currentValue === value) return;
     try {
       await this.conn.agent.request(acp.methods.agent.session.setConfigOption, { sessionId: this.sessionId, configId: opt.id, value } as any);
     } catch {}
   }
 
-  /** Pick a model through the backend's own config options (falls back to the older set_model call). */
+  /**
+   * Pick a model through the backend's own config options; the older set_model call only for a backend
+   * that offers models that way (or says nothing about them).
+   */
   async setModel(model: string): Promise<boolean> {
     const opt = this.newSessionInfo?.configOptions?.find((o: any) => o.category === "model");
     try {

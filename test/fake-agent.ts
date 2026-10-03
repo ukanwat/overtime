@@ -53,7 +53,7 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
     await cx.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "usage_update", used: 1000, size: 100000, cost: { amount: s.cost, currency: "USD" } } as any });
     throw new acp.RequestError(-32603, "Internal error", { message: "scripted costly failure" });
   }
-  if (/OVERLOADED_TURN/.test(text)) throw new acp.RequestError(-32603, "Internal error", { message: "API Error: 529 overloaded_error" });
+  if (/OVERLOADED_TURN/.test(text)) throw new acp.RequestError(-32603, "Internal error", { errorKind: "overloaded", message: "API Error: 529" }); // Claude's shape
   if (/FAIL_TURN/.test(text) && !/RECOVERED/.test(text)) throw new acp.RequestError(-32603, "Internal error", { message: "scripted failure" });
   if (!s.tools) {
     await say("no overtime tools");
@@ -69,7 +69,7 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
         const mark = join(s.cwd, ".flaky-once");
         if (!existsSync(mark)) {
           writeFileSync(mark, "1");
-          throw new acp.RequestError(-32603, "Internal error", { message: "API Error: 502 Bad Gateway" });
+          throw new acp.RequestError(-32603, "Internal error", { message: "stream error", codexErrorInfo: { responseStreamConnectionFailed: { httpStatusCode: 502 } } }); // Codex's shape
         }
       }
       if (/SLOW/.test(text)) {

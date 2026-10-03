@@ -7,6 +7,23 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { paths, home } from "../paths.js";
 
+/** The daemon went away (or isn't running): the connection is lost, not a request failed. */
+export class DaemonGoneError extends Error {
+  constructor() {
+    super("The Overtime daemon disconnected.");
+  }
+}
+
+/** The daemon is there but didn't answer in time. */
+export class DaemonTimeoutError extends Error {}
+
+/** Whether an error means there's no daemon to talk to: lost, or the socket can't be reached. */
+export function isDaemonGone(e: unknown): boolean {
+  if (e instanceof DaemonGoneError) return true;
+  const code = (e as NodeJS.ErrnoException | null)?.code;
+  return (e as any)?.syscall === "connect" || code === "EPIPE" || code === "ECONNRESET";
+}
+
 /** A connection to the daemon. */
 export class DaemonClient {
   private sock: Socket;
@@ -46,7 +63,7 @@ export class DaemonClient {
     this.closed = new Promise((r) =>
       sock.on("close", () => {
         this.closedFlag = true;
-        for (const p of this.pending.values()) p.reject(new Error("The Overtime daemon disconnected."));
+        for (const p of this.pending.values()) p.reject(new DaemonGoneError());
         this.pending.clear();
         r();
       }),
@@ -63,12 +80,12 @@ export class DaemonClient {
 
   /** One request. Fails if the daemon is gone or doesn't answer within the timeout. */
   call<T = any>(method: string, params: Record<string, unknown> = {}, timeoutMs = 30_000): Promise<T> {
-    if (this.isClosed) return Promise.reject(new Error("The Overtime daemon disconnected."));
+    if (this.isClosed) return Promise.reject(new DaemonGoneError());
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`The Overtime daemon didn't answer "${method}" in ${Math.round(timeoutMs / 1000)}s.`));
+        reject(new DaemonTimeoutError(`The Overtime daemon didn't answer "${method}" in ${Math.round(timeoutMs / 1000)}s.`));
       }, timeoutMs);
       this.pending.set(id, {
         resolve: (v) => {

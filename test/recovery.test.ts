@@ -141,6 +141,25 @@ describe("provider trouble (a 502, overloaded)", () => {
   });
 });
 
+describe("what an agent is doing, shown the same on every backend", () => {
+  it("Overtime reports its own tools' steps as they run, not from how a backend titles them", async () => {
+    const steps: string[] = [];
+    const on = (e: { agent: string; step: string }) => e.agent === "stepper" && steps.push(e.step);
+    rt.on("step", on);
+    await employ("stepper");
+    rt.off("step", on);
+    expect(steps).toContain("Writing to you");
+  });
+
+  it("an agent's own status line is kept apart from Overtime's", async () => {
+    await employ("statusy");
+    await rt.setActivity("statusy", "waiting: for the API key");
+    const a = await loadAgent("statusy");
+    expect(a.state.activityByAgent).toBe(true);
+    expect(a.state.activity).toBe("waiting: for the API key");
+  });
+});
+
 describe("talking to a busy agent", () => {
   it("interrupts its work to answer you within seconds, without counting it as a failure", async () => {
     await employ("busy");
@@ -305,10 +324,34 @@ describe("common problems", () => {
   });
 
   it("says so plainly when a backend isn't installed", async () => {
-    const { needsPerson } = await import("../src/runtime/errors.js");
-    expect(needsPerson('Could not start backend "gemini" (gemini): spawn gemini ENOENT', "gemini", "a")).toMatch(/isn't installed/);
-    expect(needsPerson("claude: Internal error: Your credit balance is too low", "claude", "a")).toMatch(/out of credit/);
-    expect(needsPerson("claude: Internal error: overloaded", "claude", "a")).toBeNull();
+    await rt.create("uninstalled", { backend: "missing" });
+    await rt.send("uninstalled", "hello");
+    const alert = await until(async () => (await rt.store("uninstalled").messages()).find((m) => m.kind === "alert"), 30_000, "alert");
+    expect(alert.text).toMatch(/isn't installed/);
+  });
+
+  it("reads what kind of trouble an error is from its structure, on every backend", async () => {
+    const { classify, needsPerson, BackendError } = await import("../src/runtime/errors.js");
+    const enoent = Object.assign(new Error("spawn gemini ENOENT"), { code: "ENOENT" });
+    expect(classify(new BackendError("could not start", "gemini", "ENOENT", undefined, true))).toBe("install");
+    expect(needsPerson(new BackendError("x", "gemini", "ENOENT", undefined, true), "gemini", "a")).toMatch(/isn't installed/);
+    expect(classify(enoent)).toBe(null); // a missing file inside a turn is not a missing backend
+    // ACP's auth-required code, whatever the words.
+    expect(classify(new BackendError("anything", "x", -32000))).toBe("signin");
+    // Claude: errorKind.
+    expect(classify(new BackendError("x", "claude", -32603, { errorKind: "billing_error" }))).toBe("credit");
+    expect(classify(new BackendError("x", "claude", -32603, { errorKind: "server_error", message: "boom" }))).toBe("transient");
+    expect(classify(new BackendError("rate limit mentioned", "claude", -32603, { errorKind: "invalid_request" }))).toBe(null);
+    // Codex: codexErrorInfo, by name or by HTTP status.
+    expect(classify(new BackendError("x", "codex", -32603, { codexErrorInfo: "usageLimitExceeded" }))).toBe("limit");
+    expect(classify(new BackendError("x", "codex", -32603, { codexErrorInfo: "serverOverloaded" }))).toBe("transient");
+    expect(classify(new BackendError("x", "codex", -32603, { codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 401 } } }))).toBe("signin");
+    expect(classify(new BackendError("x", "codex", -32603, { codexErrorInfo: "contextWindowExceeded" }))).toBe(null);
+    // Network drops, by the system's code.
+    expect(classify(Object.assign(new Error("read"), { code: "ECONNRESET" }))).toBe("transient");
+    // A backend that sends only text: its words, as a last resort.
+    expect(classify(new BackendError("custom: Internal error: Your credit balance is too low", "custom", -32603, { message: "Your credit balance is too low" }))).toBe("credit");
+    expect(classify(new Error("custom: upstream overloaded, try later"))).toBe("transient");
   });
 
   it("survives a damaged state file and keeps the damaged copy", async () => {

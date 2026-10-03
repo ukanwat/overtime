@@ -129,7 +129,7 @@ function agentRow(a: AgentSummary): string[] {
   const unread = a.unread && !a.waiting ? " " + accent(`${a.unread} new`) : "";
   const name = bold(a.name) + (a.waiting ? " " + yellow(`${a.waiting} need${a.waiting === 1 ? "s" : ""} you`) : unread);
   const state = p.color(`${p.dot} ${p.word}`) + (p.detail ? gray(` · ${p.detail}`) : "");
-  const doing = a.activity && !/^(paused|stopped|waiting for its job|resting|resuming)/.test(a.activity) ? a.activity : "";
+  const doing = a.ownStatus ?? "";
   return [name, state, gray(money(a)), doing || gray("—")];
 }
 

@@ -360,15 +360,18 @@ export function judge(req: PermissionRequest, given: PermissionScope, cwd: strin
   const scope = { roots: [...given.roots, tmpdir(), "/tmp", "/private/tmp"].filter(Boolean).map((r) => resolve(r)) };
   const tc = req.toolCall as any;
   const input = tc?.rawInput ?? {};
-  const command: string = typeof input.command === "string" ? input.command : typeof input.cmd === "string" ? input.cmd : Array.isArray(input.command) ? input.command.join(" ") : "";
-  // Shell tools sometimes only show the command in the title.
-  const shell = command || (tc?.kind === "execute" && typeof tc?.title === "string" ? tc.title : "");
+  const command: string = typeof input.command === "string" ? input.command : typeof input.cmd === "string" ? input.cmd : Array.isArray(input.command) ? commandLine(input.command) : "";
+  // A shell tool that sends no command shows it only in its title. Each backend words titles its own
+  // way (some add the folder or a description), so a title is checked for the never-ever actions and
+  // for paths outside, but not declined for having parts that can't be read as a command.
+  const fromTitle = !command && tc?.kind === "execute" && typeof tc?.title === "string";
+  const shell = command || (fromTitle ? tc.title : "");
   for (const h of HARD_STOPS) if (h.pattern.test(shell)) return { allowed: false, reason: h.reason };
   if (badForcePush(shell)) return { allowed: false, reason: "force-pushes to a main branch (or without naming the branch), which rewrites shared history. Ask the person first." };
   if (shell) {
     const f = inspect(shell, cwd, scope.roots);
     if (f.outside.length) return { allowed: false, reason: `deletes, moves or overwrites something outside your folder and workspace (${[...new Set(f.outside)].slice(0, 3).join(", ")}). Ask the person first.` };
-    if (f.unknown) return { allowed: false, reason: "deletes, moves or overwrites files whose paths aren't known until it runs (a variable, piped names, or code that builds paths). Write the paths out in full so they can be checked, or ask the person." };
+    if (f.unknown && !fromTitle) return { allowed: false, reason: "deletes, moves or overwrites files whose paths aren't known until it runs (a variable, piped names, or code that builds paths). Write the paths out in full so they can be checked, or ask the person." };
   }
   // File edits/deletes reported as structured tool calls (not shell).
   const paths: string[] = [];
@@ -379,6 +382,17 @@ export function judge(req: PermissionRequest, given: PermissionScope, cwd: strin
     return { allowed: false, reason: "deletes or moves a file outside your folder and workspace. Ask the person first." };
   }
   return { allowed: true, reason: "autonomous" };
+}
+
+/**
+ * A command sent as a list of arguments, as one shell line: a shell running a script (["zsh", "-lc",
+ * "…"]) is that script; anything else is its arguments, each quoted so spaces stay inside them.
+ */
+function commandLine(argv: unknown[]): string {
+  const args = argv.map(String);
+  const exe = args[0]?.split("/").pop() ?? "";
+  if (["sh", "bash", "zsh", "dash"].includes(exe) && args.length === 3 && (args[1] === "-c" || args[1] === "-lc")) return args[2];
+  return args.map((a) => (a && [...a].every((ch) => /[A-Za-z0-9_@%+=:,./-]/.test(ch)) ? a : `'${a.replaceAll("'", `'\\''`)}'`)).join(" ");
 }
 
 /** Answer immediately. Never "always": every request comes back here, so the guard sees every action. */

@@ -34,4 +34,6 @@ export interface ToolHost {
   /** Something visible changed; the terminal app refreshes. */
   changed(agent: string, what: "messages" | "state" | "schedule" | "monitors" | "helpers"): void;
   setActivity(agent: string, text: string): Promise<void>;
+  /** One of Overtime's tools started running in this session: what the agent is doing, for the app. */
+  toolStarted?(ctx: ToolContext, tool: string): void;
 }
