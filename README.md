@@ -58,7 +58,7 @@ description and gets to work.
   + New agent               │  ┃  1  Merge it      2  Wait for 1.35      3  Close it
                             │
   › Press 1–3 to answer, or type a message
- claude                        1–3 answer  ·  ↑↓ agents  ·  → settings  ·  ? keys
+ claude                        1–3 answer  ·  ↑↓ agents  ·  ⇧↑↓ scroll  ·  → settings  ·  ? keys
 ```
 
 Your agents are on the left, like DMs. On the right is your conversation with the selected agent,
