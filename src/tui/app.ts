@@ -305,6 +305,8 @@ export class App implements Component {
     if (matchesKey(data, Key.ctrl("o"))) return this.agent && !this.onNewRow ? this.openLink(this.agent.dir) : undefined;
     if (matchesKey(data, Key.tab) || matchesKey(data, Key.ctrl("p"))) return this.showSettings();
     const typing = this.typing();
+    // → moves right, into the selected agent's settings (← or Esc comes back), as long as you aren't typing.
+    if (!typing && !this.onNewRow && this.agent && matchesKey(data, Key.right)) return this.showSettings();
     if (!typing && data === "?") return this.show({ kind: "help" });
 
     if (matchesKey(data, Key.escape)) {
@@ -531,8 +533,9 @@ export class App implements Component {
       {
         label: "Protected",
         field: "protect",
-        value: d ? (d.protect.length ? d.protect.map(tilde).join(", ") : "nothing") : "…",
-        note: d?.protect.length ? "read-only for it, enforced by the system" : "it can write anywhere you can",
+        // An older background process doesn't send these: treat them as empty rather than crash.
+        value: d ? (d.protect?.length ? d.protect.map(tilde).join(", ") : "nothing") : "…",
+        note: d?.protect?.length ? "read-only for it, enforced by the system" : "it can write anywhere you can",
       },
       { label: "Control", heading: true },
       { label: "Wake now", stay: true, run: () => this.wake() },
@@ -862,7 +865,7 @@ export class App implements Component {
     const detail = this.agentDetail(a);
     const state = `${p.color(`${p.dot} ${p.word}`)}${detail ? muted(` · ${detail}`) : ""}`;
     const open = this.overlay?.kind === "settings";
-    const btn = open ? inverse(" Settings ") : `${muted("⚙")} Settings ${muted("tab")}`;
+    const btn = open ? inverse(" Settings ") : `${muted("⚙")} Settings ${muted("→")}`;
     const btnW = visibleWidth(btn) + 1;
     this.hits.push({ row: TOP, x0: x + w - btnW, x1: x + w, act: () => (open ? ((this.overlay = null), this.tui.requestRender()) : this.showSettings()) });
     const where = narrow && this.agents.length > 1 ? muted(`  ${this.sel + 1}/${this.agents.length} ↑↓`) : "";
@@ -1110,7 +1113,7 @@ export class App implements Component {
         row("1–9", "answer the open question with that option"),
         row("drag a file", "attach it to your next message"),
         row("PgUp PgDn", "scroll the messages (or use the mouse wheel)"),
-        row("Tab", "settings: backend, model, budget, workspace, stop, wake"),
+        row("→ or Tab", "settings: backend, model, budget, workspace, stop, wake (← or Esc to go back)"),
         row("Ctrl+L", "step through links and files; Enter opens one"),
         "",
         pad(muted("SHORTCUTS")),
@@ -1207,12 +1210,12 @@ export class App implements Component {
     }
     let hints: string[];
     const q = !this.onNewRow ? openQuestion(this.messages) : undefined;
-    if (this.overlay?.kind === "settings") hints = this.overlay.editing ? [keyHint("enter", "save"), keyHint("esc", "cancel")] : [keyHint("↑↓", "move"), keyHint("enter", "change"), keyHint("esc", "close")];
+    if (this.overlay?.kind === "settings") hints = this.overlay.editing ? [keyHint("enter", "save"), keyHint("esc", "cancel")] : [keyHint("↑↓", "move"), keyHint("enter", "change"), keyHint("←", "back")];
     else if (this.overlay?.kind === "help") hints = [keyHint("any key", "close")];
     else if (this.overlay) hints = [keyHint("↑↓", "move"), keyHint("enter", "choose"), keyHint("esc", "close")];
     else if (this.onNewRow) hints = [keyHint("enter", "create"), keyHint("↑↓", "agents"), keyHint("?", "keys")];
     else if (this.typing() || this.pending.length) hints = [keyHint("enter", "send"), keyHint("esc", "clear"), keyHint("↑↓", "agents")];
-    else hints = [q?.options?.length ? keyHint(`1–${q.options.length}`, "answer") : "", keyHint("↑↓", "agents"), keyHint("tab", "settings"), keyHint("pgup", "scroll"), this.targets().length ? keyHint("^L", "links") : "", keyHint("?", "keys")].filter(Boolean);
+    else hints = [q?.options?.length ? keyHint(`1–${q.options.length}`, "answer") : "", keyHint("↑↓", "agents"), keyHint("→", "settings"), keyHint("pgup", "scroll"), this.targets().length ? keyHint("^L", "links") : "", keyHint("?", "keys")].filter(Boolean);
     const left = this.agent && !this.onNewRow ? muted(` ${this.agent.backend}${this.agent.model ? ` · ${this.agent.model}` : ""}`) : "";
     while (hints.length > 1 && visibleWidth(hints.join(sep)) + visibleWidth(left) + 3 > w) hints.pop();
     return spread(left, hints.join(sep) + " ", w);

@@ -1,4 +1,5 @@
 import { connect, type Socket } from "node:net";
+import { buildId } from "./build.js";
 import { spawn } from "node:child_process";
 import { existsSync, openSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
@@ -98,10 +99,52 @@ export class DaemonClient {
   }
 }
 
+/**
+ * Whether to keep the running daemon. Only an older one is replaced (never a newer one), so two
+ * different installs talking to the same home can't keep replacing each other's daemon.
+ */
+async function sameBuild(c: DaemonClient): Promise<boolean> {
+  try {
+    const p = await c.call<{ build?: string }>("ping", {}, 5_000);
+    return !p.build || p.build === buildId() ? !!p.build : compareBuilds(p.build, buildId()) >= 0;
+  } catch {
+    return true; // busy or slow: keep it rather than restart on a guess
+  }
+}
+
+/** Order two build ids ("0.3.0+1696300000000"): by version, then by build time. */
+export function compareBuilds(a: string, b: string): number {
+  const [va, ta] = a.split("+");
+  const [vb, tb] = b.split("+");
+  const pa = va.split(/[.-]/).map((x) => (/^\d+$/.test(x) ? Number(x) : x));
+  const pb = vb.split(/[.-]/).map((x) => (/^\d+$/.test(x) ? Number(x) : x));
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] ?? 0;
+    const y = pb[i] ?? 0;
+    if (x === y) continue;
+    if (typeof x === "number" && typeof y === "number") return x - y;
+    return String(x) < String(y) ? -1 : 1;
+  }
+  return Number(ta ?? 0) - Number(tb ?? 0);
+}
+
 /** Start the daemon in the background if it isn't running, then connect. */
 export async function ensureDaemon(): Promise<DaemonClient> {
   try {
-    return await DaemonClient.connect();
+    const c = await DaemonClient.connect();
+    if (await sameBuild(c)) return c;
+    // An older (or newer) daemon from before an update: replace it. Agents carry on where they were.
+    await c.call("shutdown", {}, 5_000).catch(() => {});
+    c.close();
+    const until = Date.now() + 40_000;
+    while (Date.now() < until) {
+      await new Promise((r) => setTimeout(r, 250));
+      try {
+        (await DaemonClient.connect()).close();
+      } catch {
+        break;
+      }
+    }
   } catch {}
   await mkdir(home(), { recursive: true });
   const here = dirname(fileURLToPath(import.meta.url));
