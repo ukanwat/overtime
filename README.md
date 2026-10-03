@@ -46,11 +46,10 @@ and tell it in plain words what it's for. That's the whole setup: it writes its 
 description and gets to work.
 
 ```
- ◆ overtime                                               3 agents  ·  1 working  ·  1 needs you
-─────────────────────────────────────────────────────────────────────────────────────────────────
-                            │  repo-keeper  ○ asleep · wakes 18:00                     ⚙ Settings
-▌ repo-keeper             1 │  CI green; watching the dependency PR      $1.20 of $10 today
-▌   ○ asleep · wakes 18:00  │──────────────────────────────────────────────────────────────────
+ ◆ overtime    1 needs you  │  repo-keeper  ○ asleep · wakes 18:00                     ⚙ Settings
+                            │  CI green; watching the dependency PR     $1.20 of $100 today
+▌ repo-keeper             1 │──────────────────────────────────────────────────────────────────
+▌   ○ asleep · wakes 18:00  │
   game-builder              │  ▣ CI is green again on main
     ● working · lighting th…│  The flaky test was a timing race; fixed in 3f2a1c.
   scout                     │
@@ -114,7 +113,7 @@ each a separate session with only what it needs, in its own git worktree, on whi
 model suits it. The agent reviews what comes back before accepting it. Helpers are never black
 boxes: each one has its own transcript you can open.
 
-**It stays within a budget.** Spend is what the backend itself reports. On a Claude subscription
+**It stays within a budget**, $100 a day per agent unless you set another. Spend is what the backend itself reports. On a Claude subscription
 your real limit is the plan's usage window, so Overtime reads that too: when you hit it, agents on
 that backend pause until the exact reset time instead of failing.
 

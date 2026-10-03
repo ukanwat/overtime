@@ -34,7 +34,7 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   backend: "claude",
   model: null,
-  dailyBudgetUsd: 10,
+  dailyBudgetUsd: 100,
   dailyTokenBudget: null,
   turnTimeoutMinutes: 180,
   mcpServers: [],
