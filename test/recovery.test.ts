@@ -84,6 +84,17 @@ describe("helpers", () => {
     await until(async () => delivered("boss").includes(`Cancelled (${h.id})`), 30_000, "agent told");
   });
 
+  it("asking for a backend that can't run still runs, on the agent's own, and the agent is told why", async () => {
+    await employ("fallback");
+    await rt.send("fallback", "PASS SPAWN_MISSING");
+    const h = await until(async () => (await rt.store("fallback").helpers()).find((x) => x.status !== "running"), 60_000, "helper done");
+    expect(h.status, h.result).toBe("done");
+    expect(h.backend ?? null).toBeNull(); // ran on the agent's backend
+    const note = readFileSync(join(home, "agents", "fallback", "spawn-note.txt"), "utf8");
+    expect(note).toContain('asked for backend "not-installed-cli"');
+    expect(note).toContain("some-model");
+  });
+
   it("get a copy of a small non-git workspace, never the agent's own bookkeeping", async () => {
     const ws = join(home, "plainws");
     mkdirSync(ws, { recursive: true });
