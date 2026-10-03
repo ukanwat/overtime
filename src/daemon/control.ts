@@ -3,7 +3,7 @@ import { describeStep } from "./steps.js";
 import { buildId } from "./build.js";
 import { existsSync, unlinkSync } from "node:fs";
 import { paths } from "../paths.js";
-import { listAgents, loadAgent, effectiveSettings } from "../agent/agent.js";
+import { listAgents, loadAgent, effectiveSettings, allMcpServers } from "../agent/agent.js";
 import { readLimits, usageToday } from "../runtime/usage.js";
 import type { Runtime, ChangeEvent } from "./runtime.js";
 
@@ -12,6 +12,10 @@ export interface AgentSummary {
   name: string;
   status: string;
   activity: string;
+  /** The agent's own status line (set with send status), or "" when the line is one of Overtime's. */
+  ownStatus: string;
+  /** Why it's paused, when it is. */
+  pauseReason: "budget" | "limit" | null;
   nextWake: string | null;
   pausedUntil: string | null;
   waiting: number;
@@ -58,6 +62,7 @@ export class ControlServer {
   constructor(private readonly rt: Runtime, private readonly log: (s: string) => void, private readonly onShutdown: () => void) {
     rt.on("change", (e: ChangeEvent) => this.broadcast({ event: "change", ...e }));
     rt.on("update", (e: { agent: string; kind: string; threadId?: string; helperId?: string; update: any }) => this.onUpdate(e));
+    rt.on("step", (e: { agent: string; kind: string; helperId?: string; step: string }) => this.setStep(e, e.step));
     rt.on("turnEnd", (e: { agent: string; kind: string; threadId?: string; helperId?: string }) => {
       const key = liveKey(e);
       const cur = this.live.get(key);
@@ -67,21 +72,52 @@ export class ControlServer {
     });
   }
 
-  private onUpdate(e: { agent: string; kind: string; threadId?: string; helperId?: string; update: any }): void {
-    const u = e.update;
+  /** Each agent's MCP server names, to tell which server a tool call goes to (refreshed every 30s). */
+  private servers = new Map<string, { names: string[]; at: number }>();
+
+  private serverNames(agent: string): string[] {
+    const c = this.servers.get(agent);
+    if (!c || Date.now() - c.at > 30_000) {
+      this.servers.set(agent, { names: c?.names ?? [], at: Date.now() });
+      void loadAgent(agent)
+        .then((a) => allMcpServers(a))
+        .then((list) => this.servers.set(agent, { names: list.map((x) => x.server.name), at: Date.now() }))
+        .catch(() => {});
+    }
+    return this.servers.get(agent)!.names;
+  }
+
+  private liveFor(e: { agent: string; kind: string; threadId?: string; helperId?: string }) {
     const key = liveKey(e);
     let cur = this.live.get(key);
     if (!cur) this.live.set(key, (cur = { agent: e.agent, kind: e.kind, threadId: e.threadId, helperId: e.helperId, text: "", step: null, startedAt: new Date().toISOString() }));
+    return { key, cur };
+  }
+
+  private setStep(e: { agent: string; kind: string; helperId?: string }, step: string): void {
+    const { key, cur } = this.liveFor(e);
+    cur.step = step;
+    this.flushSoon(key);
+  }
+
+  private onUpdate(e: { agent: string; kind: string; threadId?: string; helperId?: string; update: any }): void {
+    const u = e.update;
+    const { key, cur } = this.liveFor(e);
     if (u.sessionUpdate === "agent_message_chunk" && u.content?.type === "text") cur.text = (cur.text + u.content.text).slice(-6000);
-    else if (u.sessionUpdate === "tool_call" || (u.sessionUpdate === "tool_call_update" && (u.title || u.rawInput))) {
-      // What it is doing, in plain words ("Running npm test", "Editing calc.py"), never a tool's name.
-      const step = describeStep(u);
+    else if (u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update") {
+      if (u.sessionUpdate === "tool_call" && cur.text && !cur.text.endsWith("\n\n")) cur.text += "\n\n";
+      // What it is doing, in plain words ("Running a command", "Editing files"), never a tool's name.
+      const step = describeStep(u, this.serverNames(e.agent));
       if (!step) return;
       cur.step = step;
-      if (u.sessionUpdate === "tool_call" && cur.text && !cur.text.endsWith("\n\n")) cur.text += "\n\n";
     } else return;
-    // At most ~12 updates a second per session, so a fast model can't flood the app.
-    if (cur.timer) return;
+    this.flushSoon(key);
+  }
+
+  /** At most ~12 updates a second per session, so a fast model can't flood the app. */
+  private flushSoon(key: string): void {
+    const cur = this.live.get(key);
+    if (!cur || cur.timer) return;
     cur.timer = setTimeout(() => {
       const c = this.live.get(key);
       if (!c) return;
@@ -224,6 +260,8 @@ export class ControlServer {
       name,
       status: a.state.status,
       activity: a.state.activity,
+      ownStatus: a.state.activityByAgent ? a.state.activity : "",
+      pauseReason: a.state.status === "paused" ? (a.state.pauseReason ?? null) : null,
       nextWake: a.state.nextWake,
       pausedUntil: a.state.pausedUntil ?? null,
       waiting: open,

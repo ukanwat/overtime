@@ -71,11 +71,11 @@ const iso = (minAgo: number) => new Date(now - minAgo * 60000).toISOString();
 const home = "/Users/me/overtime/agents";
 
 export function fakeData() {
-  const summary = (name: string, o: any) => ({ name, status: "asleep", activity: "", nextWake: null, pausedUntil: null, waiting: 0, unread: 0, helpersRunning: 0, spentUsd: 0, costReported: true, tokensToday: 0, budgetUsd: 10, backend: "claude", model: null, lastError: null, dir: `${home}/${name}`, ...o });
+  const summary = (name: string, o: any) => ({ name, status: "asleep", activity: "", ownStatus: "", pauseReason: null, nextWake: null, pausedUntil: null, waiting: 0, unread: 0, helpersRunning: 0, spentUsd: 0, costReported: true, tokensToday: 0, budgetUsd: 10, backend: "claude", model: null, lastError: null, dir: `${home}/${name}`, ...o });
   const agents: any[] = [
-    summary("repo-keeper", { status: "asleep", activity: "CI green; watching the dependency PR", nextWake: new Date(now + 95 * 60000).toISOString(), waiting: 1, unread: 1, spentUsd: 1.2 }),
-    summary("game-builder", { status: "working", activity: "lighting the harbour district", spentUsd: 6.41, budgetUsd: 50, helpersRunning: 2, model: "opus" }),
-    summary("inbox-triage", { status: "paused", activity: "paused: daily budget used", pausedUntil: new Date(now + 9 * 60 * 60000).toISOString(), spentUsd: 10.02 }),
+    summary("repo-keeper", { status: "asleep", activity: "CI green; watching the dependency PR", ownStatus: "CI green; watching the dependency PR", nextWake: new Date(now + 95 * 60000).toISOString(), waiting: 1, unread: 1, spentUsd: 1.2 }),
+    summary("game-builder", { status: "working", activity: "lighting the harbour district", ownStatus: "lighting the harbour district", spentUsd: 6.41, budgetUsd: 50, helpersRunning: 2, model: "opus" }),
+    summary("inbox-triage", { status: "paused", activity: "paused: daily budget used", pauseReason: "budget", pausedUntil: new Date(now + 9 * 60 * 60000).toISOString(), spentUsd: 10.02 }),
     summary("scout", { status: "new", activity: "waiting for its job", unread: 1, costReported: false }),
     summary("old-bot", { status: "stopped", activity: "stopped" }),
   ];
@@ -176,7 +176,7 @@ export class FakeClient {
         return { ok: true };
       }
       case "new": {
-        d.agents.push({ name: params.name, status: "new", activity: "waiting for its job", nextWake: null, pausedUntil: null, waiting: 0, unread: 1, helpersRunning: 0, spentUsd: 0, costReported: true, tokensToday: 0, budgetUsd: 10, backend: "claude", model: null, lastError: null, dir: `${home}/${params.name}` });
+        d.agents.push({ name: params.name, status: "new", activity: "waiting for its job", ownStatus: "", pauseReason: null, nextWake: null, pausedUntil: null, waiting: 0, unread: 1, helpersRunning: 0, spentUsd: 0, costReported: true, tokensToday: 0, budgetUsd: 10, backend: "claude", model: null, lastError: null, dir: `${home}/${params.name}` });
         d.messages[params.name] = [{ id: "n1", t: new Date().toISOString(), from: "agent", kind: "message", text: `Hi, I'm ${params.name}. I don't have a job yet.` }];
         d.settings[params.name] = { backend: "claude", model: null, dailyBudgetUsd: 10, dailyTokenBudget: null, workspace: `${home}/${params.name}`, workspaceIsDefault: true, spentUsd: 0, costReported: true, tokensToday: 0 };
         return { name: params.name };

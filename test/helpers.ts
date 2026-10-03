@@ -18,7 +18,7 @@ export function fakeHome(extra: Record<string, unknown> = {}): string {
       backend: "fake",
       // On macOS (which can always enforce it), one protected path, so end-to-end tests run with protection on.
       protect: process.platform === "darwin" ? [join(dir, "protected")] : [],
-      customBackends: { fake: { command: join(here, "..", "node_modules", ".bin", "tsx"), args: [join(here, "fake-agent.ts")] } },
+      customBackends: { fake: { command: join(here, "..", "node_modules", ".bin", "tsx"), args: [join(here, "fake-agent.ts")] }, missing: { command: "overtime-test-no-such-cli" } },
       ...extra,
     }),
   );

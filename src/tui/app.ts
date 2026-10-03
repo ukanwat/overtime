@@ -22,7 +22,7 @@ import {
   type TuiMouseEvent,
   type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
-import { ensureDaemon, type DaemonClient } from "../daemon/client.js";
+import { ensureDaemon, isDaemonGone, type DaemonClient } from "../daemon/client.js";
 import type { AgentSummary } from "../daemon/control.js";
 import { validateName } from "../agent/agent.js";
 import { paths } from "../paths.js";
@@ -316,8 +316,7 @@ export class App implements Component {
       if (!this.connected) this.say("Reconnected.", "ok");
       this.connected = true;
     } catch (e) {
-      const lost = /disconnected|ECONNREFUSED|ENOENT|EPIPE/.test(String((e as any)?.message ?? e));
-      if (lost) this.connected = false;
+      if (isDaemonGone(e)) this.connected = false;
       else this.say(friendly(e), "err");
     } finally {
       this.tui.requestRender();
@@ -1044,7 +1043,7 @@ export class App implements Component {
     const p = statusParts(a);
     if (a.status === "working") return this.mainLive(a.name)?.step || a.activity || p.detail;
     // Waiting on its helpers: its own status line says what they're doing, if it set one.
-    if (a.helpersRunning && a.status === "asleep") return a.activity && !/^(resting|working)$/.test(a.activity) ? a.activity : p.detail;
+    if (a.helpersRunning && a.status === "asleep") return a.ownStatus || p.detail;
     return p.detail;
   }
 
@@ -1122,7 +1121,7 @@ export class App implements Component {
     const p = statusParts(a);
     // Each thing once: line one is its state and, while working, the step it's on right now; line two
     // is its own status line. (The list on the left has the short version for scanning.)
-    const own = a.activity && a.status !== "new" && !/^(paused|stopped|resting|resuming|working|waiting for its job|waiting: )/.test(a.activity) ? a.activity : "";
+    const own = a.status !== "new" ? a.ownStatus : "";
     const now = p.word === "working" ? this.mainLive(a.name)?.step ?? (a.helpersRunning ? `${a.helpersRunning} helper${a.helpersRunning === 1 ? "" : "s"}` : "") : own ? "" : p.detail;
     const state = `${p.color(`${p.dot} ${p.word}`)}${now ? muted(` · ${now}`) : p.word === "asleep" && p.detail ? muted(` · ${p.detail}`) : ""}`;
     const open = this.overlay?.kind === "settings";
@@ -1189,10 +1188,10 @@ export class App implements Component {
           // Answered: folded to the question and what you chose, so it never looks like it's still open.
           for (const l of paras(`${muted("?")} ${muted(hq.title)}  ${muted(stamp(m.t))}`, inner - 4)) body.push(line(l));
           const chosen = m.answer.choice && m.options?.[m.answer.choice - 1];
-          const said = (m.answer.text ?? "").replace(/^\d+\.\s*/, "");
+          const said = m.answer.note ?? m.answer.text ?? "";
           if (m.answer.closed) body.push(line(muted(m.answer.closed === "dismissed" ? "✕ You dismissed this question" : `✕ ${a.name} withdrew this question`)));
           else body.push(line(`${accent("✓")} ${chosen ? `You chose ${bold(optionLabel(chosen))}` : `You answered: ${said}`}`));
-          if (!m.answer.closed && chosen && said.includes(" — ")) for (const l of paras(muted(said.split(" — ").slice(1).join(" — ")), inner - 4)) body.push(line(l));
+          if (!m.answer.closed && chosen && m.answer.note) for (const l of paras(muted(m.answer.note), inner - 4)) body.push(line(l));
           t = this.pushExtras(m, body, bodyHits, w, t, line);
           body.push("");
           prev = m;

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readlink } from "node:fs/promises";
+import { readFile, readlink } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { promisify } from "node:util";
 import { join, sep } from "node:path";
@@ -15,11 +15,19 @@ const run = promisify(execFile);
  * them every turn (and can stop, restart or keep them) and you see them in its settings; they stop
  * when the agent is stopped or archived.
  *
- * Backends run each shell command in its own process group, so these are re-parented to init when
- * the shell that started them exits. A process counts as the agent's if all three hold: its parent is
- * gone (ppid 1), it started while the agent's sessions ran, and its working folder is the agent's own
- * folder or workspace. Apps and terminals you start yourself never match.
+ * Every backend Overtime starts carries OVERTIME_AGENT=<name> in its environment, and everything it
+ * starts inherits it. Where the system lets a process's environment be read (Linux), that marker is
+ * what counts: a process that has it and outlived the agent's sessions is the agent's.
+ *
+ * Elsewhere (macOS hides other processes' environments), backends run each shell command in its own
+ * process group, so these are re-parented to init when the shell that started them exits. A process
+ * counts as the agent's if all three hold: its parent is gone (ppid 1), it started while the agent's
+ * sessions ran, and its working folder is the agent's own folder or workspace. Apps and terminals you
+ * start yourself never match.
  */
+
+/** The environment variable that marks a backend, and everything it starts, as an agent's. */
+export const AGENT_MARKER = "OVERTIME_AGENT";
 export interface BackgroundProcess {
   pid: number;
   /** ps lstart, so a reused pid is never mistaken for this process. */
@@ -39,7 +47,8 @@ interface PsRow {
 
 async function ps(): Promise<PsRow[]> {
   try {
-    const { stdout } = await run("ps", ["-x", "-o", "pid=,ppid=,lstart=,command="], { timeout: 10_000, maxBuffer: 16 * 1024 * 1024 });
+    // The C locale, so lstart is always the same five English fields whatever the person's language.
+    const { stdout } = await run("ps", ["-x", "-o", "pid=,ppid=,lstart=,command="], { timeout: 10_000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, LC_ALL: "C" } });
     const rows: PsRow[] = [];
     for (const line of stdout.split("\n")) {
       // lstart is a fixed five-field date: "Sat Oct  3 23:26:41 2026".
@@ -63,6 +72,18 @@ async function cwdOf(pid: number): Promise<string | null> {
   }
 }
 
+/** The agent a process was started for, from its environment; undefined where that can't be read. */
+async function markerOf(pid: number): Promise<string | null | undefined> {
+  if (process.platform !== "linux") return undefined;
+  try {
+    const env = await readFile(`/proc/${pid}/environ`, "utf8");
+    const entry = env.split("\0").find((e) => e.startsWith(`${AGENT_MARKER}=`));
+    return entry ? entry.slice(AGENT_MARKER.length + 1) : null;
+  } catch {
+    return null;
+  }
+}
+
 function realOr(p: string): string {
   try {
     return realpathSync(p);
@@ -71,15 +92,21 @@ function realOr(p: string): string {
   }
 }
 
-/** Processes left running by sessions that ran since `since`, inside the given folders. */
-export async function findLeftovers(since: number, roots: string[]): Promise<BackgroundProcess[]> {
+/** Processes left running by the agent's sessions that ran since `since` (inside the given folders, where that's the test). */
+export async function findLeftovers(since: number, roots: string[], agent?: string): Promise<BackgroundProcess[]> {
   const real = roots.map(realOr);
   const inside = (p: string) => real.some((r) => p === r || p.startsWith(r.endsWith(sep) ? r : r + sep));
   const found: BackgroundProcess[] = [];
   for (const r of await ps()) {
-    if (r.ppid !== 1 || r.pid === process.pid) continue;
+    if (r.pid === process.pid) continue;
     const t = new Date(r.started).getTime();
     if (!Number.isFinite(t) || t < since - 1000) continue; // lstart has one-second resolution
+    const marker = agent ? await markerOf(r.pid) : undefined;
+    if (marker !== undefined) {
+      if (marker === agent) found.push({ pid: r.pid, started: r.started, command: r.command, cwd: (await cwdOf(r.pid)) ?? "" });
+      continue;
+    }
+    if (r.ppid !== 1) continue;
     const cwd = await cwdOf(r.pid);
     if (cwd && inside(cwd)) found.push({ pid: r.pid, started: r.started, command: r.command, cwd });
   }
@@ -100,7 +127,7 @@ export async function liveBackground(agent: string): Promise<BackgroundProcess[]
 
 /** After the agent's last session ended: remember what it left running. Returns what's new. */
 export async function recordLeftovers(agent: string, since: number, roots: string[]): Promise<BackgroundProcess[]> {
-  const found = await findLeftovers(since, roots);
+  const found = await findLeftovers(since, roots, agent);
   if (!found.length) return [];
   return withLock(`background:${agent}`, async () => {
     const saved = await readJson<BackgroundProcess[]>(file(agent), []);

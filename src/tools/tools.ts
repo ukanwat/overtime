@@ -37,7 +37,13 @@ const when = (d: Date) => `${d.toISOString()} (${d.toString()})`;
 export function registerTools(mcp: McpServer, ctx: ToolContext, host: ToolHost): void {
   // Always in the model's view, never hidden behind a tool search, so the agent reaches for Overtime's
   // send and wake rather than a backend's own look-alikes.
-  const reg: McpServer["registerTool"] = ((name: string, config: any, cb: any) => mcp.registerTool(name, { ...config, _meta: { ...(config._meta ?? {}), "anthropic/alwaysLoad": true } }, cb)) as any;
+  // Each call also tells the app what the agent is doing, from here rather than from how a backend
+  // happens to title the call.
+  const reg: McpServer["registerTool"] = ((name: string, config: any, cb: any) =>
+    mcp.registerTool(name, { ...config, _meta: { ...(config._meta ?? {}), "anthropic/alwaysLoad": true } }, (...args: any[]) => {
+      host.toolStarted?.(ctx, name);
+      return cb(...args);
+    })) as any;
   const store = host.store(ctx.agent);
   const dir = host.agentDir(ctx.agent);
   const main = ctx.kind === "main";

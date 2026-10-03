@@ -1,7 +1,8 @@
 import { join } from "node:path";
 import { listSkills, skillsBlock } from "../skills.js";
-import { recordLeftovers } from "./leftovers.js";
+import { AGENT_MARKER, recordLeftovers } from "./leftovers.js";
 import { paths } from "../paths.js";
+import { isolationEnv } from "../acp/backends.js";
 import { appendJsonl, newId } from "../fsutil.js";
 import { AcpSession, type SessionUpdate, type PromptResult } from "../acp/session.js";
 import { adoptSettingsEdit, effectiveSettings, loadAgent, restoreSettings, updateState, type Agent } from "../agent/agent.js";
@@ -107,8 +108,10 @@ export function touchesAgentMd(u: SessionUpdate, agentDir: string): boolean {
   const target = `${agentDir.replace(/\/+$/, "")}/AGENT.md`;
   const paths = [...(tc.locations ?? []).map((l: any) => l?.path), tc.rawInput?.file_path, tc.rawInput?.path, tc.rawInput?.notebook_path].filter((p) => typeof p === "string");
   if (paths.some((p: string) => p === target || p === "AGENT.md" || p.endsWith("/AGENT.md"))) return true;
-  const cmd = tc.rawInput?.command;
-  return typeof cmd === "string" && cmd.includes("AGENT.md");
+  // The command, however the backend sends it: a string, a list of arguments, or only in the title.
+  const cmd = tc.rawInput?.command ?? tc.rawInput?.cmd;
+  const text = typeof cmd === "string" ? cmd : Array.isArray(cmd) ? cmd.join(" ") : tc.kind === "execute" && typeof tc.title === "string" ? tc.title : "";
+  return text.includes("AGENT.md");
 }
 
 export async function runTurn(o: TurnOptions): Promise<TurnResult> {
@@ -160,6 +163,8 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
       backend: eff.backend,
       cwd: eff.workspace,
       protect: base.protect,
+      // Marks the backend and everything it starts as this agent's (see runtime/leftovers.ts).
+      env: { [AGENT_MARKER]: agent.name, ...(await isolationEnv(eff.backend, paths.meta(agent.name))) },
       mcpServers: [...eff.mcpServers, ...(o.extraMcp ?? [])],
       onUpdate: (u) => {
         if (o.kind !== "helper" && touchesAgentMd(u, agent.dir)) {
@@ -196,11 +201,9 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
         if (!d.allowed) o.log?.(`[${agent.name}/${o.kind}] declined: ${d.reason}`);
         return answer(req, d);
       },
-      // The backend's routine progress lines go to this run's log only; anything else (warnings, errors) to the daemon log too.
-      onStderr: (line) => {
-        void record("stderr", line);
-        if (!/^\[(session|acp|mcp|query)\/[\w-]+\]/.test(line)) o.log?.(`[${agent.name}/${o.kind}] ${line}`);
-      },
+      // Backend output goes to this run's log (each backend has its own chatter); when a backend fails,
+      // its last lines come with the error itself.
+      onStderr: (line) => void record("stderr", line),
     });
     if (stopped) throw new TurnIncompleteError(stopped);
 
@@ -273,6 +276,8 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
     if (killTimer) clearTimeout(killTimer);
     o.signal?.removeEventListener("abort", onAbort);
     if (session) await session.close();
+    // A sign-in the backend refreshed during the session goes back to the person's own.
+    await isolationEnv(eff.backend, paths.meta(agent.name)).catch(() => {});
     act.count--;
     if (act.count === 0) {
       activeSessions.delete(agent.name);

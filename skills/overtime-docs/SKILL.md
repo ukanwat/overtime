@@ -80,8 +80,10 @@ The person sees every server and controls it in the app (select the agent, press
 servers"), like Claude Code's /mcp: whether it's connected (✓), failed (✗, with why) or off, how many
 tools it has; connect or disconnect it for this agent, check it again, see its tools, or remove it.
 A server they disconnect stays off for you (it's in `disableMcp` in your settings block); don't re-add
-it under another name. Any change takes effect from your next turn, in the same session. Agents don't
-get the person's own Claude Code settings, instructions or MCP servers: only these. Overtime's own
+it under another name. Any change takes effect from your next turn, in the same session. On Claude and
+Codex, agents don't get the person's own CLI settings, instructions or MCP servers: only these (Codex
+agents get their own Codex home, sharing only the sign-in). Gemini and OpenCode have no way to switch
+that off, so agents on those also see whatever the person set up in those CLIs themselves. Overtime's own
 tools come from a server named `overtime`; backends that can't reach URL servers get them through a
 local bridge automatically.
 

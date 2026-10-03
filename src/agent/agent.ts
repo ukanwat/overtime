@@ -33,6 +33,10 @@ export interface AgentState {
   status: AgentStatus;
   /** One line on what it is doing right now, shown in the agent list. */
   activity: string;
+  /** Whether that line is the agent's own (set with send status), rather than one Overtime wrote. */
+  activityByAgent?: boolean;
+  /** Why it is paused: the daily budget is used, or the backend's usage limit was hit. */
+  pauseReason?: "budget" | "limit" | null;
   /** ISO time of the next wake-up, or null when stopped. */
   nextWake: string | null;
   /** ACP session id of the current main session, if any. */
@@ -45,6 +49,8 @@ export interface AgentState {
   mainSessionFiles?: { agent: string; index: string };
   /** The version of Overtime's instructions the main session started with (see promptVersion). */
   mainSessionPrompt?: string;
+  /** The backend a "doesn't report cost" alert was already raised for. */
+  noCostNoticeFor?: string;
   /** The backend/model a "model isn't available" alert was already raised for. */
   modelIssueFor?: string;
   createdAt: string;

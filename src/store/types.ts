@@ -36,10 +36,12 @@ export interface Message {
   /** For your answer to a question: which question, and the option picked (1-based). */
   replyTo?: string;
   choice?: number;
+  /** For your answer: what you wrote, on its own (text is the whole answer as the agent reads it). */
+  note?: string;
   /** A reply that closes a question without answering it: the agent withdrew it, or the person dismissed it. Not shown as a message. */
   closes?: "withdrawn" | "dismissed";
   /** On a question once answered (derived from the answer message when read). */
-  answer?: { choice?: number; text: string; t: string; closed?: "withdrawn" | "dismissed" };
+  answer?: { choice?: number; note?: string; text: string; t: string; closed?: "withdrawn" | "dismissed" };
   attachments?: Attachment[];
   /** Paths and URLs found in the text, checked to exist (paths) when written. */
   links?: Link[];
@@ -110,6 +112,8 @@ export interface Decision {
   category: string;
   question: string;
   answer: string;
+  /** The option picked, in its own words (absent when the person only wrote an answer). */
+  choice?: string;
 }
 
 export interface HelperRecord {

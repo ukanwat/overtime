@@ -12,7 +12,7 @@ import { paths } from "../paths.js";
 import { loadSettings, saveSettings } from "../settings.js";
 import { withLock } from "../store/mutex.js";
 import { Store, clampWake } from "../store/store.js";
-import type { Attachment, HelperRecord, InboxItem, Message, Monitor } from "../store/types.js";
+import type { Attachment, Decision, HelperRecord, InboxItem, Message, Monitor } from "../store/types.js";
 import { receiveAttachments } from "../store/attachments.js";
 import type { ToolContext, ToolHost } from "../tools/host.js";
 import { ToolServer } from "../tools/server.js";
@@ -21,15 +21,14 @@ import { runTurn, sessionPreamble, TurnIncompleteError, UsageLimitError, type Tu
 import { blockedUntil, usageToday, type TurnUsage } from "../runtime/usage.js";
 import { workingInstructions } from "../runtime/instructions.js";
 import { MonitorRunner, reapStaleMonitors } from "./monitors.js";
-import { isTransient, needsPerson } from "../runtime/errors.js";
+import { classify, isTransient, needsPerson } from "../runtime/errors.js";
+import { ownToolStep } from "./steps.js";
 
 const exec = promisify(execFile);
 
 const TICK_MS = 5_000;
 const DEFAULT_WAKE_MS = 60 * 60_000;
 const BACKOFF_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000];
-/** Status lines Overtime itself writes (as opposed to the agent's own): replaced when they stop being true. */
-const OVERTIME_ACTIVITY = /^(learning its job|working|resuming|resting|stopped|paused\b.*|waiting: .*)$/;
 /** How long a helper waits before retrying after a passing provider problem (tests shorten it). */
 const HELPER_RETRY_MS = process.env.OVERTIME_FAST_RETRY ? [200, 400] : [60_000, 5 * 60_000];
 
@@ -188,8 +187,12 @@ export class Runtime extends EventEmitter implements ToolHost {
     if (what === "schedule") void this.refreshNextWake(agent).catch(() => {});
   }
 
+  toolStarted(ctx: ToolContext, tool: string): void {
+    this.emit("step", { agent: ctx.agent, kind: ctx.kind, helperId: ctx.helperId, step: ownToolStep(tool) });
+  }
+
   async setActivity(agent: string, text: string): Promise<void> {
-    await updateState(agent, { activity: text.replace(/\s+/g, " ").trim().slice(0, 80) });
+    await updateState(agent, { activity: text.replace(/\s+/g, " ").trim().slice(0, 80), activityByAgent: true });
     this.changed(agent, "state");
   }
 
@@ -303,9 +306,9 @@ export class Runtime extends EventEmitter implements ToolHost {
     const store = this.store(a.name);
     if (a.state.status === "paused") {
       // A budget pause lifts as soon as the budget is raised; a limit pause when the limit resets.
-      const lifted = a.state.activity === "paused: daily budget used" && !(await this.blocked(a.name));
+      const lifted = a.state.pauseReason === "budget" && !(await this.blocked(a.name));
       if (!lifted && a.state.pausedUntil && new Date(a.state.pausedUntil) > now) return;
-      await updateState(a.name, { status: hasIdentity(a) ? "asleep" : "new", pausedUntil: null, ...(OVERTIME_ACTIVITY.test(a.state.activity ?? "") ? { activity: hasIdentity(a) ? "resting" : "waiting for its job" } : {}) });
+      await updateState(a.name, { status: hasIdentity(a) ? "asleep" : "new", pausedUntil: null, pauseReason: null, ...(a.state.activityByAgent ? {} : { activity: hasIdentity(a) ? "resting" : "waiting for its job" }) });
       this.changed(a.name, "state");
       a = await loadAgent(a.name);
     }
@@ -356,7 +359,7 @@ export class Runtime extends EventEmitter implements ToolHost {
   private async pauseFor(agentName: string, b: Blocked): Promise<void> {
     const agent = await loadAgent(agentName);
     const already = agent.state.status === "paused" && agent.state.pausedUntil && new Date(agent.state.pausedUntil) >= b.until;
-    await updateState(agentName, { status: "paused", pausedUntil: b.until.toISOString(), activity: b.kind === "limit" ? `paused: ${b.backend} usage limit` : "paused: daily budget used" });
+    await updateState(agentName, { status: "paused", pausedUntil: b.until.toISOString(), activity: b.kind === "limit" ? `paused: ${b.backend} usage limit` : "paused: daily budget used", activityByAgent: false, pauseReason: b.kind === "limit" ? "limit" : "budget" });
     if (b.kind === "budget" && !already) {
       await this.store(agentName).addMessage({ from: "overtime", kind: "alert", title: "Daily budget used", text: b.text, baseDir: agent.dir });
       this.notify(`${agentName} paused`, "Its daily budget is used. Raise it in its settings to keep it going today.");
@@ -394,7 +397,8 @@ export class Runtime extends EventEmitter implements ToolHost {
     const { ctx, mcp } = this.tools.open({ agent: agentName, kind: "main", depth: 0 });
     let result: TurnResult | null = null;
     try {
-      await updateState(agentName, { status: "working", activity: firstJob ? "learning its job" : agent.state.activity && agent.state.activity !== "resting" ? agent.state.activity : "working" });
+      // The agent's own status line stays while it works; Overtime's placeholder becomes "working".
+      await updateState(agentName, firstJob ? { status: "working", activity: "learning its job", activityByAgent: false } : agent.state.activityByAgent && agent.state.activity ? { status: "working" } : { status: "working", activity: "working", activityByAgent: false });
       this.changed(agentName, "state");
 
       // Continue the main session unless the backend or model changed, its context is getting full, or
@@ -441,9 +445,10 @@ export class Runtime extends EventEmitter implements ToolHost {
       }
       agent = await loadAgent(agentName);
       if (result.modelIssue) await this.modelIssue(agentName, result.modelIssue);
+      if (result.usage2 && result.usage2.turnCostUsd == null) await this.noCostNotice(agentName, result.backend);
       const patch: Partial<AgentState> = { status: hasIdentity(agent) ? "asleep" : "new", failures: 0, transientFailures: 0, troubleSince: null, lastError: null, mainSessionFiles: fileHashes(agent), mainSessionPrompt: promptVersion("main") };
       // Keep whatever status line the agent set itself; only replace Overtime's own placeholder.
-      if (OVERTIME_ACTIVITY.test(agent.state.activity ?? "")) patch.activity = hasIdentity(agent) ? "resting" : "waiting for its job";
+      if (!agent.state.activityByAgent) patch.activity = hasIdentity(agent) ? "resting" : "waiting for its job";
       await updateState(agentName, patch);
       // A watch or repeating wake already brings it back; otherwise make sure it never goes quiet.
       const sched = await store.schedule();
@@ -472,9 +477,10 @@ export class Runtime extends EventEmitter implements ToolHost {
         this.log(`[${agentName}] main turn ended because the agent was stopped`);
         return true;
       }
-      if (e instanceof UsageLimitError) {
-        const until = e.resetsAt ?? new Date(Date.now() + 15 * 60_000);
-        await updateState(agentName, { status: "paused", pausedUntil: until.toISOString(), activity: `paused: ${e.backend} usage limit` });
+      if (e instanceof UsageLimitError || classify(e) === "limit") {
+        const resetsAt = e instanceof UsageLimitError ? e.resetsAt : null;
+        const until = resetsAt ?? new Date(Date.now() + 15 * 60_000);
+        await updateState(agentName, { status: "paused", pausedUntil: until.toISOString(), activity: `paused: ${eff.backend} usage limit`, activityByAgent: false, pauseReason: "limit" });
         this.log(`[${agentName}] paused until ${until.toISOString()}: usage limit`);
         return true;
       }
@@ -483,12 +489,12 @@ export class Runtime extends EventEmitter implements ToolHost {
         return true;
       }
       const msg = String(e?.message ?? e);
-      if (isTransient(msg) && !needsPerson(msg, eff.backend, agentName)) {
+      if (isTransient(e)) {
         // The provider is having trouble: wait it out and carry on, in the same session. Not a failure,
         // and you only hear about it if it lasts.
         const n = (agent.state.transientFailures ?? 0) + 1;
         const since = agent.state.troubleSince ?? new Date().toISOString();
-        await updateState(agentName, { status: idle, transientFailures: n, troubleSince: since, activity: `waiting: ${eff.backend} is having trouble`, lastError: null });
+        await updateState(agentName, { status: idle, transientFailures: n, troubleSince: since, activity: `waiting: ${eff.backend} is having trouble`, activityByAgent: false, lastError: null });
         await store.setWake(new Date(Date.now() + BACKOFF_MS[Math.min(BACKOFF_MS.length - 1, n - 1)]), `retry: ${eff.backend} was having trouble (${msg.slice(0, 120)})`);
         this.log(`[${agentName}] ${eff.backend} is having trouble (${n}), retrying: ${msg.slice(0, 200)}`);
         if (n === 6) {
@@ -500,7 +506,7 @@ export class Runtime extends EventEmitter implements ToolHost {
       }
       const failures = (agent.state.failures ?? 0) + 1;
       // Some failures only the person can fix: say exactly what to do, once, and retry slowly meanwhile.
-      const hint = needsPerson(msg, eff.backend, agentName);
+      const hint = needsPerson(e, eff.backend, agentName);
       const wait = hint ? BACKOFF_MS[BACKOFF_MS.length - 1] : BACKOFF_MS[Math.min(BACKOFF_MS.length - 1, failures - 1)];
       if (hint && agent.state.lastError !== msg.slice(0, 500)) {
         await store.addMessage({ from: "overtime", kind: "alert", title: "Needs you to fix something", text: `${hint}\n\nThe error was: ${msg}`, urgent: true, baseDir: agent.dir });
@@ -532,6 +538,21 @@ export class Runtime extends EventEmitter implements ToolHost {
     if (a.state.modelIssueFor === key) return;
     await updateState(agentName, { modelIssueFor: key });
     await this.store(agentName).addMessage({ from: "overtime", kind: "alert", title: "The chosen model isn't available", text: `${text}\n\nChange the model for ${agentName} in its settings in the app, or with \`overtime set ${agentName} model=…\`.`, baseDir: a.dir });
+    this.changed(agentName, "messages");
+  }
+
+  /**
+   * The daily budget in dollars can only be kept on a backend that says what a turn cost. On one that
+   * doesn't, the person is told once (per backend), so the agent never runs uncapped without them knowing.
+   */
+  private async noCostNotice(agentName: string, backend: string): Promise<void> {
+    const a = await loadAgent(agentName);
+    if (a.state.noCostNoticeFor === backend) return;
+    await updateState(agentName, { noCostNoticeFor: backend });
+    const eff = await effectiveSettings(a);
+    const cap = eff.dailyTokenBudget != null ? `Its token budget (${eff.dailyTokenBudget.toLocaleString()} a day) is what limits it.` : `Nothing limits its spending yet: set a token budget in its settings in the app (→), or with \`overtime set ${agentName} tokens=2m\`.`;
+    await this.store(agentName).addMessage({ from: "overtime", kind: "alert", title: `${backend} doesn't report cost`, text: `${agentName} runs on ${backend}, which doesn't say what its turns cost, so its $${eff.dailyBudgetUsd} daily budget can't be kept. ${cap}`, urgent: eff.dailyTokenBudget == null, baseDir: a.dir });
+    if (eff.dailyTokenBudget == null) this.notify(`${agentName}'s spending isn't capped`, `${backend} doesn't report cost. Set a token budget in its settings.`);
     this.changed(agentName, "messages");
   }
 
@@ -585,8 +606,9 @@ export class Runtime extends EventEmitter implements ToolHost {
     const label = picked ? picked.replace(/^\s*(\d{1,2}|[a-zA-Z])\s*[—–\-.):]\s+/, "").trim() || picked : "";
     const answerText = [picked ? `${choice}. ${label}` : "", text ?? ""].filter(Boolean).join(" — ");
     if (!answerText) throw new Error("Pick an option or write an answer.");
-    const m = await store.addMessage({ from: "you", kind: "message", text: answerText, replyTo: q.id, choice, baseDir: agent.dir });
-    await store.recordDecision({ threadId: q.id, category: q.category ?? "uncategorised", question: q.text, answer: answerText });
+    const note = text?.trim() || undefined;
+    const m = await store.addMessage({ from: "you", kind: "message", text: answerText, replyTo: q.id, choice, note, baseDir: agent.dir });
+    await store.recordDecision({ threadId: q.id, category: q.category ?? "uncategorised", question: q.text, answer: answerText, ...(picked ? { choice: label } : {}) });
     await store.pushInbox({ type: "answer", text: answerText + (await this.autonomyHint(agentName, q.category)), messageId: m.id, data: { question: q.text } });
     this.changed(agentName, "messages");
     await this.deliver(agentName, "the person answered one of your questions");
@@ -718,10 +740,11 @@ export class Runtime extends EventEmitter implements ToolHost {
     const same = (await this.store(agentName).decisions()).filter((d) => d.category === category);
     const recent = same.slice(-5);
     if (recent.length < 3) return "";
-    const norm = (s: string) => s.replace(/^\d+\.\s*/, "").split(" — ")[0].trim().toLowerCase();
-    const first = norm(recent[0].answer);
-    if (!recent.every((d) => norm(d.answer) === first)) return "";
-    return `\n\n(Overtime: this is the ${same.length}th "${category}" question, and the last ${recent.length} answers were all "${recent[0].answer.replace(/^\d+\.\s*/, "").split(" — ")[0]}". If it fits, ask whether you can decide these yourself from now on; if they agree, add the rule to AGENT.md.)`;
+    // The option picked, compared as chosen; an answer without an option, by its whole text.
+    const said = (d: Decision) => (d.choice ?? d.answer).trim();
+    const first = said(recent[0]);
+    if (!recent.every((d) => said(d).toLowerCase() === first.toLowerCase())) return "";
+    return `\n\n(Overtime: this is the ${same.length}th "${category}" question, and the last ${recent.length} answers were all "${first}". If it fits, ask whether you can decide these yourself from now on; if they agree, add the rule to AGENT.md.)`;
   }
 
   private async stateSummary(agentName: string): Promise<string> {
@@ -895,7 +918,7 @@ export class Runtime extends EventEmitter implements ToolHost {
           });
         } catch (e: any) {
           const msg = String(e?.message ?? e);
-          if (attempt >= HELPER_RETRY_MS.length || cancel.aborted || this.stopping || !isTransient(msg) || needsPerson(msg, rec.backend ?? "", agentName)) throw e;
+          if (attempt >= HELPER_RETRY_MS.length || cancel.aborted || this.stopping || !isTransient(e)) throw e;
           this.log(`[${agentName}] helper ${rec.id}: provider trouble, retrying (${msg.slice(0, 120)})`);
           await sleep(HELPER_RETRY_MS[attempt++], cancel);
           if (cancel.aborted || this.stopping) throw e;
@@ -991,7 +1014,7 @@ export class Runtime extends EventEmitter implements ToolHost {
   }
 
   async stopAgent(name: string): Promise<void> {
-    await updateState(name, { status: "stopped", nextWake: null, activity: "stopped" });
+    await updateState(name, { status: "stopped", nextWake: null, activity: "stopped", activityByAgent: false });
     this.monitors.stopAgent(name);
     // Cancel whatever it's running now: its main turn and helpers.
     this.agentAborts.get(name)?.abort();
@@ -1008,7 +1031,7 @@ export class Runtime extends EventEmitter implements ToolHost {
     const a = await loadAgent(name);
     if (a.state.status !== "stopped" && a.state.status !== "paused") return;
     const hadJob = hasIdentity(a);
-    await updateState(name, { status: hadJob ? "asleep" : "new", pausedUntil: null, failures: 0, activity: hadJob ? "resuming" : "waiting for its job" }, { allowStopped: true });
+    await updateState(name, { status: hadJob ? "asleep" : "new", pausedUntil: null, pauseReason: null, failures: 0, activity: hadJob ? "resuming" : "waiting for its job", activityByAgent: false }, { allowStopped: true });
     await this.monitors.startAll(name);
     if (hadJob) this.wakeMain(name, "the person started you again");
     else if ((await this.store(name).inbox()).length) this.wakeMain(name, "the person sent you your first message");
@@ -1116,7 +1139,7 @@ export class Runtime extends EventEmitter implements ToolHost {
     const a = await loadAgent(name);
     if (a.state.status === "stopped") throw new Error(`${name} is stopped. Start it first.`);
     if (a.state.status === "new" && !(await this.store(name).inbox()).length) throw new Error(`${name} doesn't have a job yet. Send it a message saying what it's for.`);
-    if (a.state.status === "paused") await updateState(name, { status: hasIdentity(a) ? "asleep" : "new", pausedUntil: null, ...(OVERTIME_ACTIVITY.test(a.state.activity ?? "") ? { activity: hasIdentity(a) ? "resting" : "waiting for its job" } : {}) });
+    if (a.state.status === "paused") await updateState(name, { status: hasIdentity(a) ? "asleep" : "new", pausedUntil: null, pauseReason: null, ...(a.state.activityByAgent ? {} : { activity: hasIdentity(a) ? "resting" : "waiting for its job" }) });
     await updateState(name, { failures: 0 });
     this.wakeMain(name, "the person asked you to wake up");
   }

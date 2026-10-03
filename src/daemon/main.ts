@@ -4,9 +4,13 @@ import { execFileSync } from "node:child_process";
 import { paths, home } from "../paths.js";
 import { Runtime } from "./runtime.js";
 import { ControlServer } from "./control.js";
+import { AGENT_MARKER } from "../runtime/leftovers.js";
 
 /** overtimed: the always-on process. One per machine (per OVERTIME_HOME). */
 async function main() {
+  // Started from an agent's shell, the daemon would inherit that agent's marker and pass it to
+  // everything it starts (watches, other agents' tools). It belongs to no agent.
+  delete process.env[AGENT_MARKER];
   mkdirSync(home(), { recursive: true });
   // The log rotates at 10 MB (one older file kept), so it never grows without limit.
   let written = 0;
