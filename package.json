@@ -1,26 +1,52 @@
 {
-  "name": "overtime",
-  "version": "0.2.0-dev",
+  "name": "@ukanwat/overtime",
+  "version": "0.2.0",
   "description": "Agents that exist, not sessions. Brief a coding agent once; it works on its own, keeps its own folder, and checks in only when it needs you.",
-  "type": "module",
+  "keywords": [
+    "agents",
+    "autonomous-agents",
+    "acp",
+    "agent-client-protocol",
+    "claude",
+    "codex",
+    "gemini",
+    "mcp",
+    "daemon",
+    "cli",
+    "tui"
+  ],
+  "author": "Utkarsh Kanwat (https://utkarshkanwat.com)",
   "license": "MIT",
+  "homepage": "https://github.com/ukanwat/overtime",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ukanwat/overtime.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ukanwat/overtime/issues"
+  },
+  "type": "module",
   "bin": {
     "overtime": "dist/cli.js"
   },
   "engines": {
     "node": ">=20"
   },
-  "scripts": {
-    "build": "tsc -p .",
-    "dev": "tsx src/cli.ts",
-    "test": "vitest run",
-    "typecheck": "tsc -p . --noEmit"
-  },
   "files": [
     "dist",
     "README.md",
     "LICENSE"
   ],
+  "scripts": {
+    "build": "tsc -p .",
+    "dev": "tsx src/cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p . --noEmit",
+    "prepublishOnly": "rm -rf dist && npm run build"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "^0.85.1",
     "@agentclientprotocol/sdk": "^1.7.0",

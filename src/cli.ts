@@ -16,9 +16,10 @@ function rel(iso: string | null): string {
 function line(a: AgentSummary): string {
   const dot = a.status === "working" ? "●" : a.status === "paused" || a.status === "error" ? "◌" : "○";
   const when = a.status === "paused" ? `resumes ${rel(a.pausedUntil)}` : a.status === "stopped" ? "stopped" : a.status === "new" ? "waiting for its job" : `wakes ${rel(a.nextWake)}`;
-  const spend = a.costReported ? `$${a.spentUsd.toFixed(2)}/$${a.budgetUsd}` : `${Math.round(a.tokensToday / 1000)}k tok`;
+  const spend = a.costReported ? `$${a.spentUsd.toFixed(2)}/$${a.budgetUsd}` : a.tokensToday ? `${Math.round(a.tokensToday / 1000)}k tok` : "-";
+  const doing = a.activity && a.activity !== when ? a.activity : a.status === "new" ? "" : a.status;
   const badge = a.waiting || a.unread ? ` [${a.waiting + a.unread}]` : "";
-  return `${dot} ${(a.name + badge).padEnd(24)} ${(a.activity || a.status).slice(0, 40).padEnd(40)} ${when.padEnd(18)} ${spend}`;
+  return `${dot} ${(a.name + badge).padEnd(24)} ${doing.slice(0, 40).padEnd(40)} ${when.padEnd(18)} ${spend}`;
 }
 
 const HELP = `overtime: agents that exist, not sessions
