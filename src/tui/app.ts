@@ -953,7 +953,7 @@ export class App implements Component {
   private renderBrand(w: number): string {
     const title = ` ${accent("◆")} ${bold("overtime")}`;
     if (!this.connected) return spread(title, red("offline") + " ", w);
-    const working = this.agents.filter((a) => a.status === "working").length;
+    const working = this.agents.filter((a) => a.status === "working" || a.helpersRunning).length;
     const needs = this.agents.reduce((n, a) => n + a.waiting, 0);
     const right = needs ? yellow(`${needs} need${needs === 1 ? "s" : ""} you`) : working ? accent(`${working} working`) : "";
     return spread(title, right + " ", w);
@@ -962,6 +962,8 @@ export class App implements Component {
   private agentDetail(a: AgentSummary): string {
     const p = statusParts(a);
     if (a.status === "working") return this.mainLive(a.name)?.step || a.activity || p.detail;
+    // Waiting on its helpers: its own status line says what they're doing, if it set one.
+    if (a.helpersRunning && a.status === "asleep") return a.activity && !/^(resting|working)$/.test(a.activity) ? a.activity : p.detail;
     return p.detail;
   }
 
@@ -990,7 +992,7 @@ export class App implements Component {
       const detail = this.agentDetail(a);
       const l1 = bar + " " + spread(on ? bold(a.name) : a.name, badge + " ", w - 2);
       // Only the word "working" shines (enough to see it's busy at a glance); the rest stays quiet.
-      const word = a.status === "working" ? shimmer(p.word) : muted(p.word);
+      const word = p.word === "working" ? shimmer(p.word) : muted(p.word);
       const l2 = bar + "   " + fit(`${p.color(p.dot)} ${word}${detail ? muted(` · ${cut(detail, Math.max(1, w - 9 - p.word.length))}`) : ""}`, w - 4);
       lines.push(this.selRow(l1, w, on), this.selRow(l2, w, on), "");
     }
@@ -1619,7 +1621,7 @@ export async function runApp(o: AppOptions = {}): Promise<{ app: App; tui: TuiAl
   };
   await attach(c);
   // Spinners move while anything is live; relative times and counts stay current.
-  timers.push(setInterval(() => (app.live.size || app.agents.some((a) => a.status === "working")) && tui.requestRender(), 80));
+  timers.push(setInterval(() => (app.live.size || app.agents.some((a) => a.status === "working" || a.helpersRunning)) && tui.requestRender(), 80));
   timers.push(setInterval(() => void app.refresh(), 15_000));
   return { app, tui, stop: () => app.quit() };
 }
