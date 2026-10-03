@@ -116,6 +116,26 @@ type Overlay =
   | { kind: "pick"; title: string; items: PickItem[]; idx: number; loading?: string; back?: boolean }
   | { kind: "confirm"; title: string; body: string[]; yes: string; run: () => Promise<void>; danger?: boolean; focus: 0 | 1 };
 
+/**
+ * Links and paths in a message, clickable right where they're written (underlined), instead of a
+ * separate list under it. Longest first, through placeholders, so a link inside a longer one stays whole.
+ */
+export function linkify(text: string, links: { label: string; target: string; kind: string }[] | undefined, home = process.env.HOME): string {
+  if (!links?.length) return text;
+  const seen = new Set<string>();
+  const sorted = links.filter((l) => l.label && !seen.has(l.label) && seen.add(l.label)).sort((a, b) => b.label.length - a.label.length);
+  const slots: string[] = [];
+  let out = text;
+  for (const l of sorted) {
+    if (!out.includes(l.label)) continue;
+    const url = l.kind === "url" ? l.target : pathToFileURL(l.target).href;
+    const shown = l.kind !== "url" && home && l.label.startsWith(home + "/") ? "~" + l.label.slice(home.length) : l.label;
+    slots.push(link(url, underline(shown)));
+    out = out.split(l.label).join(`\u0000${slots.length - 1}\u0000`);
+  }
+  return out.replace(/\u0000(\d+)\u0000/g, (_, n) => slots[Number(n)]);
+}
+
 /** The bits of Markdown agents write most, shown as styling instead of raw symbols: headings, **bold**, `code`. */
 export function md(text: string): string {
   let inFence = false;
@@ -1075,7 +1095,7 @@ export class App implements Component {
           continue;
         }
         for (const l of paras(`${open ? yellow(bold("?")) : muted("?")} ${open ? bold(hq.title) : muted(hq.title)}  ${muted(stamp(m.t))}`, inner - 4)) body.push(line(l));
-        if (hq.body) for (const l of paras(md(hq.body), inner - 4)) body.push(line(l));
+        if (hq.body) for (const l of paras(linkify(md(hq.body), m.links), inner - 4)) body.push(line(l));
         if (m.why) for (const l of paras(muted(m.why), inner - 4)) body.push(line(l));
         // A recommendation that names an option is marked on it; anything else gets its own line.
         if (m.recommendation && rec < 0) for (const l of paras(`${bold("I'd suggest:")} ${m.recommendation}`, inner - 4)) body.push(line(l));
@@ -1109,7 +1129,7 @@ export class App implements Component {
         if (body.length && body.at(-1) !== "") body.push("");
         const ha = headed(m, "Something went wrong");
         body.push(line(`${red(bold(ha.title))}  ${muted(stamp(m.t))}${m.from === "overtime" ? muted("  · from Overtime") : ""}`));
-        if (ha.body) for (const l of paras(md(ha.body), inner - 4)) body.push(line(l));
+        if (ha.body) for (const l of paras(linkify(md(ha.body), m.links), inner - 4)) body.push(line(l));
         t = this.pushExtras(m, body, bodyHits, w, t, line);
         body.push("");
       } else {
@@ -1123,7 +1143,7 @@ export class App implements Component {
         const ind = (s: string) => "  " + faint("│") + " " + s;
         if (m.kind === "report" && m.title) body.push(ind(`${accent("▣")} ${bold(m.title)}`));
         const text = m.kind === "report" && m.title && m.text.startsWith(m.title) ? m.text.slice(m.title.length).trim() : m.text;
-        if (text) for (const l of paras(m.from === "overtime" ? muted(text) : md(text))) body.push(ind(l));
+        if (text) for (const l of paras(m.from === "overtime" ? linkify(muted(text), m.links) : linkify(md(text), m.links))) body.push(ind(l));
         t = this.pushExtras(m, body, bodyHits, w, t, ind);
       }
       prev = m;
@@ -1170,11 +1190,12 @@ export class App implements Component {
   private pushExtras(m: Message, body: Line[], hits: { line: number; act: () => void }[], w: number, t: number, wrapLine: (s: string) => string): number {
     for (const l of m.links ?? []) {
       const idx = t++;
-      const url = l.kind === "url" ? l.target : pathToFileURL(l.target).href;
+      // Links are clickable in the text itself; a line here only for the one picked with Ctrl+L.
+      if (idx !== this.linkIdx) continue;
       const label = l.kind === "url" ? l.label : tilde(l.label);
       const target = l.target;
       hits.push({ line: body.length, act: () => this.openLink(target) });
-      body.push(wrapLine(idx === this.linkIdx ? inverse(` ↗ ${label} `) + muted("  Enter opens") : accent(`↗ ${link(url, underline(label))}`)));
+      body.push(wrapLine(inverse(` ↗ ${label} `) + muted("  Enter opens")));
     }
     for (const att of m.attachments ?? []) {
       const idx = t++;
