@@ -75,14 +75,16 @@ describe("terminal app, against a real daemon", () => {
     await seen("main reply", 40_000);
   });
 
-  it("shows a question inline and answers it with one key", async () => {
+  it("shows a question inline; a number picks an option and Enter answers", async () => {
     t.type("PASS ASK");
     t.press(KEY.enter);
     await seen("Bridge or ferry?", 40_000);
-    await seen("Press 1–2 to answer");
+    await seen("Press 1–2 to choose");
     t.press("1");
+    await seen("Enter to answer, Esc to cancel"); // one key alone never answers
+    t.press(KEY.enter);
     await seen("Answered: Bridge");
-    await seen("✓ Bridge");
+    await seen("You chose Bridge");
   });
 
   it("opens links with the keyboard", async () => {
@@ -182,7 +184,7 @@ describe("terminal app, with a scripted daemon", () => {
     await seen("Merge the dependency fix?");
     const s = await t.screen();
     expect(s).toContain("1  Merge it");
-    expect(s).toContain("Press 1–3 to answer, or type a message");
+    expect(s).toContain("Press 1–3 to choose, or type a message");
     expect(s).toContain("▌ repo-keeper");
   });
 
@@ -214,7 +216,7 @@ describe("terminal app, with a scripted daemon", () => {
     t.press(KEY.down);
     await seen("Night or dusk");
     const s = await t.screen();
-    expect(s).toContain("✓ Dusk");
+    expect(s).toContain("✓ You chose Dusk");
     expect(s).not.toContain("Press 1–2");
   });
 

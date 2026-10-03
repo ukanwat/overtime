@@ -52,7 +52,7 @@ import {
   when,
   yellow,
 } from "./style.js";
-import { headed, humanBytes, openQuestion, type AgentSettingsView, type LiveState, type Message } from "./types.js";
+import { headed, humanBytes, openQuestion, optionLabel, recommendedOption, type AgentSettingsView, type LiveState, type Message } from "./types.js";
 
 export { clean, cleanDeep, openPlan } from "./style.js";
 export type { LiveState, Message } from "./types.js";
@@ -175,6 +175,8 @@ export class App implements Component {
   overlay: Overlay = null;
   flash: { text: string; tone: "ok" | "err" | "info" } | null = null;
   input: Composer;
+  /** An option picked with a number key, waiting for Enter (so one stray key never answers). */
+  choosing: { id: string; n: number } | null = null;
   fieldInput = new Input({ prompt: "", placeholderStyle: muted });
   pending: PendingAttachment[] = [];
   connected = true;
@@ -361,6 +363,7 @@ export class App implements Component {
 
     if (matchesKey(data, Key.escape)) {
       if (typing) this.input.setValue("");
+      else if (this.choosing) this.choosing = null;
       else if (this.linkIdx >= 0) this.linkIdx = -1;
       else if (this.pending.length) this.pending = [];
       return this.tui.requestRender();
@@ -381,7 +384,23 @@ export class App implements Component {
     if (!typing && !this.onNewRow && /^[1-9]$/.test(data)) {
       const q = openQuestion(this.messages);
       const n = Number(data);
-      if (q?.options?.length && n <= q.options.length) return this.answer(q, n);
+      if (q?.options?.length && n <= q.options.length) {
+        this.choosing = { id: q.id, n };
+        this.scroll = Number.MAX_SAFE_INTEGER;
+        return this.tui.requestRender();
+      }
+    }
+    if (this.choosing && !typing) {
+      const q = openQuestion(this.messages);
+      if (!q || q.id !== this.choosing.id) this.choosing = null;
+      else if (matchesKey(data, Key.enter)) {
+        const n = this.choosing.n;
+        this.choosing = null;
+        return this.answer(q, n);
+      } else if (matchesKey(data, Key.escape)) {
+        this.choosing = null;
+        return this.tui.requestRender();
+      }
     }
     // Shift+Enter / Ctrl+J start a new line in the message (checked before Enter, which Ctrl+J resembles).
     // Option+Enter too: many terminals send Shift+Enter exactly like Enter.
@@ -406,6 +425,7 @@ export class App implements Component {
   select(n: number): void {
     const next = Math.min(Math.max(0, n), this.agents.length);
     if (next !== this.sel) {
+      this.choosing = null;
       this.sel = next;
       this.selName = this.agents[next]?.name ?? null;
       this.messages = [];
@@ -1004,22 +1024,42 @@ export class App implements Component {
         if (body.length && body.at(-1) !== "") body.push("");
         if (open) questionStart = body.length;
         const hq = headed(m, "A question for you");
-        body.push(line(`${open ? yellow(bold("?")) : muted("?")} ${open ? bold(hq.title) : muted(hq.title)}  ${muted(stamp(m.t))}`));
+        const rec = recommendedOption(m.options, m.recommendation);
+        if (!open && m.answer) {
+          // Answered: folded to the question and what you chose, so it never looks like it's still open.
+          for (const l of paras(`${muted("?")} ${muted(hq.title)}  ${muted(stamp(m.t))}`, inner - 4)) body.push(line(l));
+          const chosen = m.answer.choice && m.options?.[m.answer.choice - 1];
+          const said = m.answer.text.replace(/^\d+\.\s*/, "");
+          body.push(line(`${accent("✓")} ${chosen ? `You chose ${bold(optionLabel(chosen))}` : `You answered: ${said}`}`));
+          if (chosen && said.includes(" — ")) for (const l of paras(muted(said.split(" — ").slice(1).join(" — ")), inner - 4)) body.push(line(l));
+          t = this.pushExtras(m, body, bodyHits, w, t, line);
+          body.push("");
+          prev = m;
+          continue;
+        }
+        for (const l of paras(`${open ? yellow(bold("?")) : muted("?")} ${open ? bold(hq.title) : muted(hq.title)}  ${muted(stamp(m.t))}`, inner - 4)) body.push(line(l));
         if (hq.body) for (const l of paras(md(hq.body), inner - 4)) body.push(line(l));
-        if (m.why) for (const l of paras(muted(`Why it matters: ${m.why}`), inner - 4)) body.push(line(l));
-        if (m.recommendation) for (const l of paras(`${bold("Recommended:")} ${m.recommendation}`, inner - 4)) body.push(line(l));
+        if (m.why) for (const l of paras(muted(m.why), inner - 4)) body.push(line(l));
+        // A recommendation that names an option is marked on it; anything else gets its own line.
+        if (m.recommendation && rec < 0) for (const l of paras(`${bold("I'd suggest:")} ${m.recommendation}`, inner - 4)) body.push(line(l));
         if (m.options?.length) {
           body.push(line(""));
           m.options.forEach((o, i) => {
             const n = i + 1;
+            const picked = open && this.choosing?.id === m.id && this.choosing.n === n;
+            const label = optionLabel(o);
+            const tag = i === rec ? muted("  · suggested") : "";
             if (open) {
-              bodyHits.push({ line: body.length, act: () => this.answer(m, n) });
-              body.push(line(`${inverse(accent(` ${n} `))} ${o}`));
-            } else body.push(line(m.answer?.choice === n ? `${accent("✓")} ${o}` : muted(`  ${o}`)));
+              bodyHits.push({ line: body.length, act: () => ((this.choosing = null), this.answer(m, n)) });
+              const num = picked ? inverse(bold(yellow(` ${n} `))) : inverse(accent(` ${n} `));
+              body.push(line(`${num} ${picked ? bold(label) : label}${tag}${picked ? `  ${yellow("← Enter to answer, Esc to cancel")}` : ""}`));
+            } else body.push(line(muted(`${n}  ${label}`)));
           });
         }
-        if (m.answer && (!m.answer.choice || m.answer.text !== m.options?.[m.answer.choice - 1])) for (const l of paras(muted(`You: ${m.answer.text}`), inner - 4)) body.push(line(l));
-        if (open) body.push(line(""), line(muted(`Press ${m.options?.length ? (m.options.length === 1 ? "1" : `1–${m.options.length}`) + ", or " : ""}type a message to answer.`)));
+        if (open) {
+          body.push(line(""));
+          for (const l of paras(muted(m.options?.length ? `Press ${m.options.length === 1 ? "1" : `1–${m.options.length}`} to choose, then Enter. Or type a message to answer in your own words.` : "Type a message to answer."), inner - 4)) body.push(line(l));
+        }
         t = this.pushExtras(m, body, bodyHits, w, t, line);
         body.push("");
       } else if (m.kind === "alert") {
@@ -1308,7 +1348,7 @@ export class App implements Component {
     const a = this.agent;
     if (!a) return "";
     const q = openQuestion(this.messages);
-    if (q?.options?.length) return `Press ${q.options.length === 1 ? "1" : `1–${q.options.length}`} to answer, or type a message`;
+    if (q?.options?.length) return this.choosing ? "Enter answers with the option you picked; Esc cancels" : `Press ${q.options.length === 1 ? "1" : `1–${q.options.length}`} to choose, or type a message`;
     if (a.status === "new") return `Tell ${a.name} what it's for…`;
     if (a.status === "stopped") return `Message ${a.name} (stopped; it reads this when started)`;
     return `Message ${a.name}  ·  drag files here to attach`;
@@ -1369,7 +1409,8 @@ export class App implements Component {
     else if (o) hints = [keyHint("↑↓", "move"), keyHint("enter", "choose"), keyHint("esc", o.kind === "pick" && o.back ? "back" : "close")];
     else if (this.onNewRow) hints = [keyHint("enter", "create"), keyHint("↑↓", "agents"), keyHint("?", "keys")];
     else if (this.typing() || this.pending.length) hints = [keyHint("enter", "send"), keyHint("⌥/⇧ enter", "new line"), keyHint("esc", "clear")];
-    else hints = [q?.options?.length ? keyHint(`1–${q.options.length}`, "answer") : "", keyHint("↑↓", "agents"), keyHint("→", "settings"), keyHint("pgup", "scroll"), this.targets().length ? keyHint("^L", "links") : "", keyHint("?", "keys")].filter(Boolean);
+    else if (this.choosing) hints = [keyHint("enter", "answer"), keyHint("1–9", "change"), keyHint("esc", "cancel")];
+    else hints = [q?.options?.length ? keyHint(`1–${q.options.length}`, "choose") : "", keyHint("↑↓", "agents"), keyHint("→", "settings"), keyHint("pgup", "scroll"), this.targets().length ? keyHint("^L", "links") : "", keyHint("?", "keys")].filter(Boolean);
     const left = this.agent && !this.onNewRow ? muted(` ${this.agent.backend}${this.agent.model ? ` · ${this.agent.model}` : ""}`) : "";
     while (hints.length > 1 && visibleWidth(hints.join(sep)) + visibleWidth(left) + 3 > w) hints.pop();
     return spread(left, hints.join(sep) + " ", w);
