@@ -161,8 +161,11 @@ export function tokenize(src: string): Token[] {
       w().text += "`…`";
       i = end < 0 ? src.length : end + 1;
     } else {
-      if (c === "$" || c === "*" || c === "?" || c === "[") {
-        if (c === "$") w().dynamic = true;
+      if (c === "$") w().dynamic = true;
+      // Brace expansion (~{,}, a{1..3}) turns one word into several paths: they can't be checked as written.
+      if (c === "{") {
+        const m = /^\{[^\s{}]*(,|\.\.)[^\s{}]*\}/.exec(src.slice(i));
+        if (m) w().dynamic = true;
       }
       w().text += c;
       w().quoted = false;
