@@ -255,6 +255,8 @@ export function statusParts(a: StatusLike): { dot: string; word: string; detail:
     case "new":
       return { dot: "◇", word: "new", detail: "waiting for its job", color: muted };
     default:
+      // Its own session is resting, but its helpers are working: the agent is busy, so say so.
+      if (a.helpersRunning) return { dot: "●", word: "working", detail: `${a.helpersRunning} helper${a.helpersRunning === 1 ? "" : "s"}`, color: accent };
       if (a.lastError) return { dot: "○", word: "retrying", detail: a.nextWake ? when(a.nextWake) : "", color: red };
       return { dot: "○", word: "asleep", detail: a.nextWake ? `wakes ${when(a.nextWake).replace(/^at /, "")}` : "", color: gray };
   }
