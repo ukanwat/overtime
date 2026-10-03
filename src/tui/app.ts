@@ -1032,11 +1032,13 @@ export class App implements Component {
         body.push("");
       } else {
         // The agent's words, and Overtime's notes: plain text, the name only when the speaker changes.
-        if (regroup) {
-          if (body.length && body.at(-1) !== "") body.push("");
-          body.push(`  ${m.from === "agent" ? accent(bold(a.name)) : muted(bold("Overtime"))}  ${muted(stamp(m.t))}`);
-        }
-        const ind = (s: string) => "  " + s;
+        // A blank line before every message, so separate messages never read as one; the name and time
+        // only when the speaker changes (or after a pause).
+        if (body.length && body.at(-1) !== "") body.push("");
+        if (regroup) body.push(`  ${m.from === "agent" ? accent(bold(a.name)) : muted(bold("Overtime"))}  ${muted(stamp(m.t))}`);
+        // A faint bar down the side of each message, unbroken across its own blank lines, so where one
+        // message ends and the next begins is always visible.
+        const ind = (s: string) => "  " + faint("│") + " " + s;
         if (m.kind === "report" && m.title) body.push(ind(`${accent("▣")} ${bold(m.title)}`));
         const text = m.kind === "report" && m.title && m.text.startsWith(m.title) ? m.text.slice(m.title.length).trim() : m.text;
         if (text) for (const l of paras(m.from === "overtime" ? muted(text) : md(text))) body.push(ind(l));
