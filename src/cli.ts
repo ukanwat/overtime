@@ -348,7 +348,7 @@ async function main() {
         row("budget", `$${s.dailyBudgetUsd} a day`, s.costReported ? `$${s.spentUsd.toFixed(2)} spent today` : "");
         row("tokens", s.dailyTokenBudget ? `${s.dailyTokenBudget.toLocaleString()} a day` : "no limit", `${s.tokensToday.toLocaleString()} used today`);
         row("workspace", s.workspace, s.workspaceIsDefault ? "its own folder" : "");
-        row("protected", s.protect.length ? s.protect.join(", ") : "nothing", s.protect.length ? "read-only for it" : "it can write anywhere you can");
+        row("protected", s.protect?.length ? s.protect.join(", ") : "nothing", s.protect?.length ? "read-only for it" : "it can write anywhere you can");
         print();
         print(gray("Change with: ") + cmdText(`overtime set ${name} budget=20 model=… workspace=~/code/…`));
         break;

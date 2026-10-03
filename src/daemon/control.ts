@@ -1,4 +1,5 @@
 import { connect, createServer, type Server, type Socket } from "node:net";
+import { buildId } from "./build.js";
 import { existsSync, unlinkSync } from "node:fs";
 import { paths } from "../paths.js";
 import { listAgents, loadAgent, effectiveSettings } from "../agent/agent.js";
@@ -86,7 +87,7 @@ export class ControlServer {
   }
 
   private methods: Record<string, Handler> = {
-    ping: async () => ({ ok: true, pid: process.pid }),
+    ping: async () => ({ ok: true, pid: process.pid, build: buildId() }),
     agents: async () => Promise.all((await listAgents()).map((a) => this.summary(a.name))),
     agent: async ({ name }) => {
       const a = await loadAgent(name);

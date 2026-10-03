@@ -58,7 +58,7 @@ description and gets to work.
   + New agent               │  ┃  1  Merge it      2  Wait for 1.35      3  Close it
                             │
   › Press 1–3 to answer, or type a message
- claude                        1–3 answer  ·  ↑↓ agents  ·  tab settings  ·  ? keys
+ claude                        1–3 answer  ·  ↑↓ agents  ·  → settings  ·  ? keys
 ```
 
 Your agents are on the left, like DMs. On the right is your conversation with the selected agent,
@@ -68,7 +68,7 @@ No tool calls, no logs. While it's answering you, its reply streams in as it wri
 - **Move** with ↑↓; the conversation follows. Just type to message the selected agent.
 - **Attach** a file or image by dragging it into the terminal. It's copied into the agent's folder,
   and the agent opens it with its own tools when it needs to.
-- **Settings** (Tab): backend and model (picked from what the backend offers), daily budget,
+- **Settings** (→ or Tab, ← to go back): backend and model (picked from what the backend offers), daily budget,
   token budget, workspace, plus wake, stop, archive, and its folder and transcripts.
 - The mouse works too: click agents, options, links and files.
 
@@ -141,7 +141,7 @@ Everything else is plain files the agent reads and writes with the tools its bac
 
 ## Backends, models and MCP
 
-New agents use your default backend and model. Change them per agent in the app (Tab opens its settings,
+New agents use your default backend and model. Change them per agent in the app (→ or Tab opens its settings,
 where you pick a backend and then one of its models) or with `overtime set <name> backend=codex model=…`. The model list
 comes from each backend through ACP, so new models appear without an Overtime update. If a backend
 won't use the model you chose, the agent runs on its default and Overtime tells you. Built in: `claude` (bundled, uses your Claude Code login),
