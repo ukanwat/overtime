@@ -86,6 +86,28 @@ describe("an agent's life", () => {
     expect(tid).toBeTruthy();
   });
 
+  it("notices when the person keeps giving the same answer (earned autonomy)", async () => {
+    for (let i = 0; i < 2; i++) {
+      const before = (await rt.store("tester").threads()).filter((t) => t.kind === "question").length;
+      await rt.send("tester", "PASS ASK");
+      const q = await until(async () => {
+        const qs = (await rt.store("tester").threads()).filter((t) => t.kind === "question");
+        return qs.length > before ? qs.at(-1) : null;
+      }, 40_000, "another question");
+      await rt.answer("tester", q!.id, 1);
+    }
+    const delivered = join(home, "agents", "tester", ".overtime", "inbox-delivered.jsonl");
+    const inbox = join(home, "agents", "tester", ".overtime", "inbox.json");
+    await until(async () => (existsSync(delivered) && readFileSync(delivered, "utf8").includes("decide these yourself")) || (existsSync(inbox) && readFileSync(inbox, "utf8").includes("decide these yourself")), 20_000, "autonomy hint");
+  });
+
+  it("keeps the exact text of every prompt it sent", async () => {
+    const { readdirSync } = await import("node:fs");
+    const runs = join(home, "agents", "tester", ".overtime", "runs");
+    const any = readdirSync(runs).some((f) => readFileSync(join(runs, f), "utf8").includes('"event":"prompt"'));
+    expect(any).toBe(true);
+  });
+
   it("runs a helper in its own git worktree and gets its result", async () => {
     const ws = join(home, "repo");
     mkdirSync(ws, { recursive: true });

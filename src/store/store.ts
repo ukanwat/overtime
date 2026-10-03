@@ -3,7 +3,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { paths } from "../paths.js";
 import { appendJsonl, newId, readJson, readJsonl, writeJson } from "../fsutil.js";
 import { withLock } from "./mutex.js";
-import type { Decision, HelperRecord, InboxItem, Loop, Monitor, Role, Schedule, ThreadEntry, ThreadKind, ThreadMeta } from "./types.js";
+import type { Decision, HelperRecord, InboxItem, Loop, Monitor, Schedule, ThreadEntry, ThreadKind, ThreadMeta } from "./types.js";
 
 export const MIN_SLEEP_MS = 60_000;
 export const MAX_SLEEP_MS = 3 * 24 * 3600_000;
@@ -257,22 +257,6 @@ export class Store {
       const next = all.filter((m) => m.id !== id);
       await writeJson(this.p("monitors.json"), next);
       return next.length < all.length;
-    });
-  }
-
-  // ---------- roles (helpers) ----------
-
-  async roles(): Promise<Role[]> {
-    return readJson<Role[]>(this.p("roles.json"), []);
-  }
-
-  async saveRole(r: Omit<Role, "updatedAt">): Promise<Role> {
-    return this.lock(async () => {
-      const all = (await this.roles()).filter((x) => x.name !== r.name);
-      const full: Role = { ...r, updatedAt: new Date().toISOString() };
-      all.push(full);
-      await writeJson(this.p("roles.json"), all);
-      return full;
     });
   }
 

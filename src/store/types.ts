@@ -74,15 +74,6 @@ export interface Monitor {
   status: "active" | "failing" | "removed";
 }
 
-export interface Role {
-  name: string;
-  /** What the helper does, what it gets to see, and what "done" means for it. */
-  instructions: string;
-  backend?: string;
-  model?: string | null;
-  updatedAt: string;
-}
-
 export interface Decision {
   t: string;
   threadId: string;

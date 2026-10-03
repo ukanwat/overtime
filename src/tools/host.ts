@@ -24,11 +24,9 @@ export interface ToolHost {
   /** Wake the agent's main session soon (coalesced if one is running). */
   wakeMain(agent: string, reason: string): void;
   spawnHelper(ctx: ToolContext, req: { role?: string; instructions?: string; task: string; backend?: string; model?: string }): Promise<{ id: string; workdir: string }>;
-  helpers(agent: string): Promise<{ id: string; task: string; status: string; startedAt: string; finishedAt?: string; workdir: string }[]>;
   startMonitor(agent: string, monitorId: string): void;
   stopMonitor(agent: string, monitorId: string): void;
   notify(title: string, body: string): void;
-  spentToday(agent: string): Promise<{ usd: number; costReported: boolean; tokens: number; budgetUsd: number; budgetTokens: number | null }>;
   /** Something visible changed; the terminal app refreshes. */
   changed(agent: string, what: "threads" | "state" | "schedule" | "monitors" | "helpers"): void;
   setActivity(agent: string, text: string): Promise<void>;

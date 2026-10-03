@@ -51,8 +51,8 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
       await say("helper done");
     } else if (/conversation thread with the person/.test(text)) {
       const msg = /The person just wrote:\n\n([\s\S]*?)\n\nAnswer them/.exec(text)?.[1] ?? text.split("\n").pop();
-      if (/PASS/.test(msg ?? "")) await t.call("pass_to_main", { text: `do this: ${msg}` });
-      if (!/NOREPLYTOOL/.test(msg ?? "")) await t.call("reply", { text: `chat reply to: ${msg}` });
+      if (/PASS/.test(msg ?? "")) await t.call("send", { to: "main", text: `do this: ${msg}` });
+      if (!/NOREPLYTOOL/.test(msg ?? "")) await t.call("send", { text: `chat reply to: ${msg}` });
       else await say(`final words as reply to: ${msg}`);
     } else {
       if (/This is your first conversation/.test(text) && folder) {
@@ -60,14 +60,15 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
         mkdirSync(join(folder, "notes"), { recursive: true });
         writeFileSync(join(folder, "INDEX.md"), "# Index\n\n- notes/: what I learned\n");
       }
-      for (const th of threads) await t.call("reply", { thread_id: th, text: `main reply in ${th}` });
-      if (/SPAWN/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "write result.txt", instructions: "Be brief." });
-      if (/WATCH_LONG/.test(text)) await t.call("watch", { run: "for i in 1 2 3; do echo tick $i; sleep 1; done; sleep 600", why: "long test", cooldown: "1s" });
-      if (/WATCH_REPEAT/.test(text)) await t.call("watch", { run: "cat watched.txt 2>/dev/null || echo none", every: "10s", why: "repeat test", cooldown: "1s" });
+      for (const th of threads) await t.call("send", { to: th, text: `main reply in ${th}` });
+      if (/SPAWN/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "write result.txt" });
+      if (/WATCH_LONG/.test(text)) await t.call("wake", { watch: "for i in 1 2 3; do echo tick $i; sleep 1; done; sleep 600", reason: "long test", cooldown: "1s" });
+      if (/WATCH_REPEAT/.test(text)) await t.call("wake", { watch: "cat watched.txt 2>/dev/null || echo none", every: "10s", reason: "repeat test", cooldown: "1s" });
       if (/ASK/.test(text) && !/answered one of your questions/.test(text)) await t.call("ask", { question: "Bridge or ferry?", why: "test", recommendation: "Bridge", options: ["Bridge", "Ferry"], category: "test-choice" });
-      if (/LOOP/.test(text)) await t.call("every", { interval: "1m", task: "loop task" });
-      await t.call("report", { status: "fake is working", text: "Did a fake thing.", notify: /NOTIFY/.test(text) });
-      if (!/NOSLEEP/.test(text)) await t.call("sleep_until", { in: "30m", reason: "fake rest" });
+      if (/LOOP/.test(text)) await t.call("wake", { every: "1m", reason: "loop task" });
+      await t.call("send", { status: "fake is working" });
+      if (/NOTIFY/.test(text)) await t.call("send", { title: "Fake update", text: "Did a fake thing." });
+      if (!/NOSLEEP/.test(text)) await t.call("wake", { in: "30m", reason: "fake rest" });
       await say("main turn done");
     }
   } finally {

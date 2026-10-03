@@ -4,7 +4,7 @@ import { appendJsonl, newId } from "../fsutil.js";
 import { AcpSession, type SessionUpdate, type PromptResult } from "../acp/session.js";
 import { effectiveSettings, loadAgent, protectSettings, updateState, type Agent } from "../agent/agent.js";
 import type { McpServerConfig } from "../settings.js";
-import { workingInstructions } from "./instructions.js";
+import { INSTRUCTIONS_VERSION, workingInstructions } from "./instructions.js";
 import { answer, judge } from "./permissions.js";
 import { recordTurnUsage, writeLimit, type TurnUsage } from "./usage.js";
 
@@ -29,6 +29,8 @@ export interface TurnOptions {
   timeoutMs?: number;
   /** Lets the caller cancel a running turn (e.g. the daemon shutting down). */
   signal?: AbortSignal;
+  /** Extra lines for the header of this turn (e.g. today's spend), after the time and reason. */
+  header?: string;
   /** Replace the default preamble for a fresh session (helpers get a different one). */
   preamble?: string;
   /** Live view of everything the agent does in this turn. */
@@ -114,9 +116,11 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
       if (eff.model) await session.setModel(eff.model);
     }
     const now = new Date();
-    const header = `Time now: ${now.toISOString()} (${now.toString()}).\nWhy you are awake: ${o.reason}`;
+    const header = `Time now: ${now.toISOString()} (${now.toString()}).\nWhy you are awake: ${o.reason}${o.header ? `\n${o.header}` : ""}`;
     const prompt = fresh ? `${o.preamble ?? sessionPreamble(agent)}\n\n---\n\n${header}\n\n${o.text}` : `${header}\n\n${o.text}`;
-    await record("start", { kind: o.kind, backend: eff.backend, model: eff.model, sessionId: session.sessionId, fresh, reason: o.reason });
+    await record("start", { kind: o.kind, backend: eff.backend, model: eff.model, sessionId: session.sessionId, fresh, reason: o.reason, instructionsVersion: INSTRUCTIONS_VERSION });
+    // Every byte Overtime sends is kept, so you can always see exactly what an agent was told.
+    await record("prompt", { text: prompt });
     let res: PromptResult;
     let timedOut = false;
     const timer = o.timeoutMs ? setTimeout(() => { timedOut = true; void session.cancel(); }, o.timeoutMs) : null;
