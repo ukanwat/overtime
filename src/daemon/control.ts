@@ -23,6 +23,8 @@ export interface AgentSummary {
   backend: string;
   model: string | null;
   lastError: string | null;
+  /** When it last ran a turn (null if never). */
+  lastRunAt: string | null;
   dir: string;
 }
 
@@ -210,6 +212,7 @@ export class ControlServer {
       backend: eff.backend,
       model: eff.model,
       lastError: a.state.lastError,
+      lastRunAt: a.state.lastRunAt ?? null,
       dir: a.dir,
     };
   }
