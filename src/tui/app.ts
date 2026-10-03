@@ -208,6 +208,8 @@ export class App implements Component {
   private again = false;
   private flashTimer: NodeJS.Timeout | null = null;
   private lastMax = 0;
+  /** Where the link picked with Ctrl+L was drawn, so the view can bring it into sight. */
+  private linkLine = -1;
   /**
    * Where the view jumps once (an open question when you arrive, or the start of a new message), after
    * which it stays wherever you scroll. Applying it on every frame would pull the view back as you scroll.
@@ -1049,6 +1051,7 @@ export class App implements Component {
     let lastStart = 0;
     let questionStart = -1;
 
+    this.linkLine = -1;
     if (this.hasMore) body.push(muted("   ↑ older messages: ⇧↑ at the top loads them"), "");
     if (!this.messages.length) body.push("", muted(`   No messages with ${a.name} yet.`));
 
@@ -1161,6 +1164,15 @@ export class App implements Component {
     const maxScroll = Math.max(0, body.length - h);
     this.lastMax = maxScroll;
     let s: number;
+    // A link picked with Ctrl+L that's out of view: scroll to it.
+    if (this.linkIdx >= 0 && this.linkLine >= 0) {
+      const cur = this.scroll === Number.MAX_SAFE_INTEGER ? maxScroll : Math.min(this.scroll, maxScroll);
+      if (this.linkLine < cur || this.linkLine >= cur + h) {
+        const to = Math.min(maxScroll, Math.max(0, this.linkLine - Math.floor(h / 2)));
+        this.scroll = to >= maxScroll ? Number.MAX_SAFE_INTEGER : to;
+        this.anchor = null;
+      }
+    }
     if (this.scroll !== Number.MAX_SAFE_INTEGER) s = Math.min(this.scroll, maxScroll);
     else if (live) s = maxScroll;
     else if (this.anchor) {
@@ -1188,14 +1200,18 @@ export class App implements Component {
 
   /** A message's links, then its files (with an inline preview for images where the terminal can show one). */
   private pushExtras(m: Message, body: Line[], hits: { line: number; act: () => void }[], w: number, t: number, wrapLine: (s: string) => string): number {
+    // Links are clickable where they're written, and also listed under the message, paths and web
+    // links alike, so they're easy to find and open.
+    if (m.links?.length) body.push(wrapLine(""));
     for (const l of m.links ?? []) {
       const idx = t++;
-      // Links are clickable in the text itself; a line here only for the one picked with Ctrl+L.
-      if (idx !== this.linkIdx) continue;
+      const url = l.kind === "url" ? l.target : pathToFileURL(l.target).href;
       const label = l.kind === "url" ? l.label : tilde(l.label);
       const target = l.target;
       hits.push({ line: body.length, act: () => this.openLink(target) });
-      body.push(wrapLine(inverse(` ↗ ${label} `) + muted("  Enter opens")));
+      if (idx === this.linkIdx) this.linkLine = body.length;
+      // The picked one keeps "Enter opens" in view by shortening a long path rather than the hint.
+      body.push(wrapLine(idx === this.linkIdx ? inverse(` ↗ ${cut(label, Math.max(10, w - 26))} `) + muted("  Enter opens") : accent(`↗ ${link(url, underline(label))}`)));
     }
     for (const att of m.attachments ?? []) {
       const idx = t++;
