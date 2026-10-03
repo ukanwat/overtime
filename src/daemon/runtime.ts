@@ -397,6 +397,7 @@ export class Runtime extends EventEmitter implements ToolHost {
           ? agent.state.mainSessionId
           : null;
       const edits = resume ? await editedSince(agent, agent.state.mainSessionFiles) : "";
+      const convo = resume ? [] : await store.messages();
       const settings = await loadSettings();
       result = await runTurn({
         runId,
@@ -404,7 +405,8 @@ export class Runtime extends EventEmitter implements ToolHost {
         kind: "main",
         reason,
         // If resuming fails, the backend starts fresh, and the agent is told so.
-        text: (fresh) => (fresh ? "" : edits) + mainTurnText(items, firstJob, fresh && !!agent.state.mainSessionId),
+        // A fresh session also gets the recent conversation with the person: it's the one voice they talk to.
+        text: (fresh) => (fresh ? recentConversation(convo) : edits) + mainTurnText(items, firstJob, fresh && !!agent.state.mainSessionId),
         header: await this.turnHeader(agentName),
         resumeSessionId: resume,
         extraMcp: [mcp],
@@ -1020,6 +1022,24 @@ function inboxBlock(items: InboxItem[]): string {
   );
 }
 
+/**
+ * The recent conversation with the person, for a session that starts fresh (context full, an update, a
+ * new model): the last 40 messages, newest last, at most about 16,000 characters.
+ */
+function recentConversation(all: Message[]): string {
+  const shown = all.filter((m) => !m.closes).slice(-40);
+  if (!shown.length) return "";
+  const who = (m: Message) => (m.from === "you" ? "Person" : m.from === "agent" ? "You" : "Overtime");
+  const lines = shown.map((m) => {
+    const kind = m.kind === "question" ? " [your question]" : m.kind === "report" ? " [report]" : m.kind === "alert" ? " [alert]" : "";
+    const answer = m.kind === "question" && m.answer ? `\n  (${m.answer.closed ? `${m.answer.closed}` : `answered: ${m.answer.text}`})` : m.kind === "question" ? "\n  (not answered yet)" : "";
+    return `${who(m)} (${m.t})${kind}: ${withFiles(m.text, m.attachments)}${answer}`;
+  });
+  let text = lines.join("\n\n");
+  if (text.length > 16_000) text = "…\n" + text.slice(-16_000);
+  return `Your recent conversation with the person (most recent last):\n\n${text}\n\n---\n\n`;
+}
+
 function mainTurnText(items: InboxItem[], firstJob: boolean, contextReset: boolean): string {
   const parts: string[] = [];
   if (firstJob) {
@@ -1027,7 +1047,7 @@ function mainTurnText(items: InboxItem[], firstJob: boolean, contextReset: boole
       "This is your first conversation. You don't have an identity yet. From what the person tells you, rewrite AGENT.md in your folder: who you are, your role, your goals (what you're working toward over time, not only the first task) and what good looks like, and your rules (what you must check with them first). Create INDEX.md. Reply to them with a short summary of what you understood and what you'll do first. Then start.",
     );
   }
-  if (contextReset) parts.push("Note: this is a fresh session. Your earlier conversation isn't carried over; your folder is. Check INDEX.md and your notes for where things stand.");
+  if (contextReset) parts.push("Note: this is a fresh session. Your earlier work session isn't carried over (your recent conversation with the person is above); your folder is. Check INDEX.md and your notes for where things stand.");
   parts.push(inboxBlock(items));
   parts.push("Reply with send to new messages from the person (not to ones passed on from your conversation: those were already answered, so never acknowledge them twice). Do the work, as part of your goals. Before this turn ends, bring your notes and INDEX.md up to date, decide the next useful step toward your goals, and choose when to wake.");
   return parts.join("\n\n");

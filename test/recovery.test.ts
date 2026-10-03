@@ -147,6 +147,10 @@ describe("instruction updates", () => {
     await updateState("updated", { mainSessionPrompt: "older-version" });
     await ask("third question");
     expect(lastStart().fresh).toBe(true); // instructions changed: a fresh session with the new ones
+    // …which still knows the conversation so far.
+    const latest = readdirSync(runs).filter((x) => x.startsWith("main")).map((f) => readFileSync(join(runs, f), "utf8")).find((t) => t.includes('"fresh":true') && t.includes("third question"))!;
+    expect(latest).toContain("Your recent conversation with the person");
+    expect(latest).toContain("second question");
     await ask("fourth question");
     expect(lastStart().fresh).toBe(false); // and that one continues from then on
   });
