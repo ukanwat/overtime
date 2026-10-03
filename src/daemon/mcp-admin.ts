@@ -2,7 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport, SseError } from "@modelcontextprotocol/sdk/client/sse.js";
-import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
+import { UnauthorizedError, type OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { McpServerConfig } from "../settings.js";
 
 /** MCP servers in the app: checking a server works, and showing one without its secrets. */
@@ -14,7 +14,7 @@ export function describeServer(cfg: McpServerConfig): string {
 }
 
 /** Start the server (or reach it) and list its tools, to show it works. Never throws. */
-export async function checkServer(cfg: McpServerConfig, timeoutMs = 25_000): Promise<{ ok: boolean; tools: string[]; error?: string }> {
+export async function checkServer(cfg: McpServerConfig, timeoutMs = 25_000, authProvider?: OAuthClientProvider): Promise<{ ok: boolean; tools: string[]; error?: string; needsSignIn?: boolean }> {
   const clients: Client[] = [];
   // Each attempt gets its own client: one that failed to connect isn't reused.
   const attempt = async (transport: any) => {
@@ -26,16 +26,13 @@ export async function checkServer(cfg: McpServerConfig, timeoutMs = 25_000): Pro
   };
   const run = async (): Promise<string[]> => {
     if (cfg.url) {
-      const init = { requestInit: { headers: cfg.headers ?? {} } };
+      const init = { requestInit: { headers: cfg.headers ?? {} }, ...(authProvider ? { authProvider } : {}) };
       try {
         return await attempt(new StreamableHTTPClientTransport(new URL(cfg.url), init));
       } catch (e) {
-        // Older servers speak the earlier SSE transport.
-        try {
-          return await attempt(new SSEClientTransport(new URL(cfg.url), init));
-        } catch {
-          throw e;
-        }
+        // The spec's way to find an older server (HTTP+SSE): the first request is refused with 400, 404 or 405.
+        if (!(e instanceof StreamableHTTPError && [400, 404, 405].includes(e.code ?? 0))) throw e;
+        return await attempt(new SSEClientTransport(new URL(cfg.url), init));
       }
     }
     const env: Record<string, string> = {};
@@ -55,7 +52,8 @@ export async function checkServer(cfg: McpServerConfig, timeoutMs = 25_000): Pro
     if (e?.code === "ECONNREFUSED" || e?.cause?.code === "ECONNREFUSED") return { ok: false, tools: [], error: "nothing is listening at that address" };
     // HTTP servers: the status the server answered with, from the client's error code.
     const status = e instanceof UnauthorizedError ? 401 : e instanceof StreamableHTTPError || e instanceof SseError ? e.code : undefined;
-    if (status === 401 || status === 403) return { ok: false, tools: [], error: `the server wants a sign-in (HTTP ${status}): put its token in the server's headers, e.g. "Authorization": "Bearer …"` };
+    if (status === 401) return { ok: false, tools: [], needsSignIn: true, error: "needs you to sign in" };
+    if (status === 403) return { ok: false, tools: [], error: "the server refused access (HTTP 403): the account or token doesn't have permission" };
     if (status === 404) return { ok: false, tools: [], error: "the server says there's nothing at that URL (HTTP 404): check the address" };
     if (typeof status === "number" && status >= 500) return { ok: false, tools: [], error: `the server had an error (HTTP ${status}); try again later` };
     return { ok: false, tools: [], error: String(e?.message ?? e).split("\n")[0].slice(0, 300) };

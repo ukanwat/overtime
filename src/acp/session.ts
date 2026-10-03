@@ -56,18 +56,24 @@ function bridgeCommand(): { command: string; args: string[] } {
   return { command: process.execPath, args: ["--import", tsx, fileURLToPath(new URL("../tools/bridge.ts", import.meta.url))] };
 }
 
+/** The name of Overtime's own MCP server (its tools). */
+export const OVERTIME_SERVER = "overtime";
+
 /**
  * MCP servers in ACP form. A backend that can't connect to HTTP MCP servers itself gets each one through
  * a local bridge command instead, so Overtime's own tools (and URL servers you added) reach every backend.
  */
 export function toAcpMcp(servers: McpServerConfig[], http = true): acp.McpServer[] {
   return servers.map((s): acp.McpServer => {
-    if (s.url && http) {
+    // Overtime's own tools: straight to it, when the backend can.
+    if (s.url && http && s.name === OVERTIME_SERVER) {
       return { type: "http", name: s.name, url: s.url, headers: Object.entries(s.headers ?? {}).map(([name, value]) => ({ name, value })) };
     }
+    // Every other URL server goes through Overtime's own connection to it (see tools/bridge.ts), so
+    // every backend gets the same transport handling and Overtime's sign-in, not its own.
     if (s.url) {
       const b = bridgeCommand();
-      return { name: s.name, command: b.command, args: [...b.args, s.url, JSON.stringify(s.headers ?? {})], env: [] };
+      return { name: s.name, command: b.command, args: [...b.args, s.url, s.name], env: s.headers && Object.keys(s.headers).length ? [{ name: "OVERTIME_MCP_HEADERS", value: JSON.stringify(s.headers) }] : [] };
     }
     if (!s.command) throw new Error(`MCP server "${s.name}" needs either a url or a command.`);
     return { name: s.name, command: s.command, args: s.args ?? [], env: Object.entries(s.env ?? {}).map(([name, value]) => ({ name, value })) };

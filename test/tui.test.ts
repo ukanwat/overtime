@@ -76,6 +76,20 @@ describe("terminal app, against a real daemon", () => {
     await seen("main reply", 40_000);
   });
 
+  it("lists its skills when you type /, narrowing as you type; the agent is told to use the one you chose", async () => {
+    t.type("/");
+    await seen("/overtime-docs");
+    t.type("ovdoc");
+    await seen("/overtime-docs");
+    t.press(KEY.enter); // chooses it: "/overtime-docs " in the message, nothing sent yet
+    t.type("where do MCP servers go?");
+    await seen("/overtime-docs where do MCP servers go?");
+    t.press(KEY.enter);
+    const { readFileSync, existsSync } = await import("node:fs");
+    const f = join(process.env.OVERTIME_HOME!, "agents", "alpha", ".overtime", "inbox-delivered.jsonl");
+    await until(async () => existsSync(f) && readFileSync(f, "utf8").includes('load your \\"overtime-docs\\" skill'), 30_000, "skill note delivered");
+  });
+
   it("shows a question inline; a number picks an option and Enter answers", async () => {
     t.type("PASS ASK");
     t.press(KEY.enter);
