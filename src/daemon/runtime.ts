@@ -531,7 +531,9 @@ export class Runtime extends EventEmitter implements ToolHost {
     if (q.answer) throw new Error("That question is already answered.");
     const picked = choice && q.options ? q.options[choice - 1] : undefined;
     if (choice && !picked) throw new Error(`There is no option ${choice}.`);
-    const answerText = [picked ? `${choice}. ${picked}` : "", text ?? ""].filter(Boolean).join(" — ");
+    // The option's own words, without a number the agent may already have put in front.
+    const label = picked ? picked.replace(/^\s*(\d{1,2}|[a-zA-Z])\s*[—–\-.):]\s+/, "").trim() || picked : "";
+    const answerText = [picked ? `${choice}. ${label}` : "", text ?? ""].filter(Boolean).join(" — ");
     if (!answerText) throw new Error("Pick an option or write an answer.");
     const m = await store.addMessage({ from: "you", kind: "message", text: answerText, replyTo: q.id, choice, baseDir: agent.dir });
     await store.recordDecision({ threadId: q.id, category: q.category ?? "uncategorised", question: q.text, answer: answerText });
@@ -1057,7 +1059,7 @@ function mainTurnText(items: InboxItem[], firstJob: boolean, contextReset: boole
 }
 
 function chatPreamble(agent: Agent): string {
-  return `${sessionPreamble(agent, "chat")}\n\n---\n\n# This session\n\nThis session answers the person in your conversation with them, separately from your main work session. Answer from what you know and what's in your folder. Keep replies short and plain. Don't do real work here: if answering needs more than reading a few files or one quick command, or it changes your work, send it to your main session (send with to: "main") and tell the person you have.`;
+  return `${sessionPreamble(agent, "chat")}\n\n---\n\n# This session\n\nThis session answers the person in your conversation with them, separately from your main work session. Answer from what you know and what's in your folder. Keep replies short and plain. To the person you are one agent: never mention sessions, your main session or handing things over; just say what you'll do ("Got it, I'm holding"). Don't do real work here: if answering needs more than reading a few files or one quick command, or it changes your work, send it to your main session (send with to: "main") and tell the person you have.`;
 }
 
 function helperInboxText(h: HelperRecord): string {

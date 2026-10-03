@@ -64,6 +64,21 @@ export interface LiveState {
 }
 
 /** The newest question still waiting for an answer. */
+/** An option's own words, without any numbering the agent put in front ("3 — Borrowed Sun" -> "Borrowed Sun"). */
+export function optionLabel(o: string): string {
+  return o.replace(/^\s*(\d{1,2}|[a-zA-Z])\s*[—–\-.):]\s+/, "").trim() || o;
+}
+
+/** Which option the agent recommended, if its recommendation names one; -1 if none does. */
+export function recommendedOption(options: string[] | undefined, recommendation: string | undefined): number {
+  if (!options?.length || !recommendation) return -1;
+  const r = optionLabel(recommendation).toLowerCase();
+  return options.findIndex((o) => {
+    const l = optionLabel(o).toLowerCase();
+    return l === r || l.startsWith(r) || r.startsWith(l);
+  });
+}
+
 export function openQuestion(messages: Message[]): Message | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
