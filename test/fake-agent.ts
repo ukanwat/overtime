@@ -5,7 +5,7 @@
 import * as acp from "@agentclientprotocol/sdk";
 import { Readable, Writable } from "node:stream";
 import { randomUUID } from "node:crypto";
-import { writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -53,6 +53,7 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
     await cx.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "usage_update", used: 1000, size: 100000, cost: { amount: s.cost, currency: "USD" } } as any });
     throw new acp.RequestError(-32603, "Internal error", { message: "scripted costly failure" });
   }
+  if (/OVERLOADED_TURN/.test(text)) throw new acp.RequestError(-32603, "Internal error", { message: "API Error: 529 overloaded_error" });
   if (/FAIL_TURN/.test(text) && !/RECOVERED/.test(text)) throw new acp.RequestError(-32603, "Internal error", { message: "scripted failure" });
   if (!s.tools) {
     await say("no overtime tools");
@@ -63,6 +64,14 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
   const folder = /# Your folder\n\n(.+)/.exec(text)?.[1];
   try {
     if (/You are a helper/.test(text) || /a helper working for/.test(text)) {
+      // FLAKY: the provider fails once with a 502, then works (the retry continues from the folder).
+      if (/FLAKY/.test(text)) {
+        const mark = join(s.cwd, ".flaky-once");
+        if (!existsSync(mark)) {
+          writeFileSync(mark, "1");
+          throw new acp.RequestError(-32603, "Internal error", { message: "API Error: 502 Bad Gateway" });
+        }
+      }
       if (/SLOW/.test(text)) {
         await t.call("done", { result: "partial: got halfway" });
         if (await slow()) return { stopReason: "cancelled" };
@@ -104,6 +113,7 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
         writeFileSync(join(s.cwd, "escape-result.txt"), result);
       }
       if (/SPAWN_MISSING/.test(text) && names.includes("spawn")) writeFileSync(join(s.cwd, "spawn-note.txt"), await t.call("spawn", { task: "write result.txt", backend: "not-installed-cli", model: "some-model" }));
+      else if (/SPAWN_FLAKY/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "FLAKY write result.txt" });
       else if (/SPAWN_SLOW/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "SLOW write result.txt" });
       else if (/SPAWN/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "write result.txt" });
       if (/SLOW/.test(text) && !/SPAWN_SLOW/.test(text) && !/Helper result/.test(text) && (await slow())) return { stopReason: "cancelled" };
@@ -147,6 +157,10 @@ acp
     return { sessionId: id, modes: { availableModes: [{ id: "default", name: "Default" }, { id: "bypassPermissions", name: "Bypass" }], currentModeId: "default" } } as any;
   })
   .onRequest("session/load", (ctx: any) => {
+    // A continued session gets the current MCP servers too: record them, as for a new one.
+    try {
+      writeFileSync(join(ctx.params.cwd, ".mcp-seen"), (ctx.params.mcpServers ?? []).map((m: any) => m.name).join(",") + "\n");
+    } catch {}
     const http = toolsServer(ctx.params.mcpServers);
     const prev = sessions.get(ctx.params.sessionId);
     sessions.set(ctx.params.sessionId, { cwd: ctx.params.cwd, tools: http, cost: prev?.cost ?? 0.05 });

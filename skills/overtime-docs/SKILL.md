@@ -71,9 +71,12 @@ person the exact command. Changes apply from your next session.
   or a URL `{ "name": "linear", "url": "https://mcp.example.com/mcp", "headers": { "Authorization": "Bearer ..." } }`.
 - For one agent: the same entries under `mcpServers` in the settings block at the top of its AGENT.md
   (YAML between the `---` lines); `disableMcp: [name]` leaves out a shared one.
-- MCP servers are set only by editing those files: `overtime set` and the app's settings don't cover them.
-  The person makes the edit (the settings block is theirs); give them the exact text to paste.
-- They take effect from the agent's next session. Agents don't get the person's own Claude Code
+- The easiest way: in the app, select the agent, press → for its settings, and use "MCP servers":
+  "+ Add a server…" takes the command that starts it (env vars like `GITHUB_TOKEN=… npx …` allowed) or
+  its URL (headers like `https://… Authorization: Bearer …`), a name, and whether it's for this agent or
+  all agents, then checks it connects and lists its tools. Each server there can be checked, switched
+  off for one agent, or removed. `overtime set` doesn't cover MCP servers; the files above do too.
+- A change takes effect from the agent's next turn, in the same continuous session. Agents don't get the person's own Claude Code
   settings, instructions or MCP servers: only what Overtime gives them.
 - Overtime's own tools come from a server named `overtime`. Backends that can't reach URL servers get
   them through a local bridge automatically.
@@ -154,6 +157,11 @@ you have by name and description; load one with `skill` when it's relevant (or r
 ## When something goes wrong
 
 - Your full transcripts: `.overtime/runs/` in your folder. The background process: `~/overtime/overtimed.log`.
-- A failed turn is retried with growing gaps (1, 5, 15, 60 minutes); after 3 failures the person gets an alert.
+- Provider trouble (a 5xx, "overloaded", rate limits, a network drop) isn't a failure: the turn is retried
+  after 1, 5, 15, then every 60 minutes in the same session, nothing handed to you is lost, and the person
+  is told only if it lasts about two hours. A helper hit by it retries by itself (up to 3 attempts),
+  carrying on from its folder.
+- A usage limit (e.g. Claude's 5-hour window) pauses agents on that backend until the reset time.
+- Any other failed turn is retried with growing gaps (1, 5, 15, 60 minutes); after 3 the person gets an alert.
 - A backend that isn't installed or signed in fails with a plain message; tell the person what to install
   or run.

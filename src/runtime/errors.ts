@@ -20,3 +20,11 @@ export function needsPerson(message: string, backend: string, agent: string): st
   }
   return null;
 }
+
+/**
+ * A problem on the provider's side that passes by itself: overloaded, rate limited, a 5xx, a network
+ * drop. Retried quietly; it never counts as the agent failing.
+ */
+export function isTransient(message: string): boolean {
+  return /\b(429|500|502|503|504|520|522|524|529)\b|overloaded|rate[ _-]?limit|too many requests|temporarily unavailable|service unavailable|bad gateway|gateway time-?out|internal server error|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|socket hang up|network (error|is unreachable)|fetch failed|connection (reset|closed|error)|stream (closed|ended) unexpectedly/i.test(message);
+}

@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { adoptSettingsEdit, createAgent, effectiveSettings, hasIdentity, listAgents, loadAgent, updateState, type Agent, type AgentState } from "../agent/agent.js";
 import { newId } from "../fsutil.js";
 import { paths } from "../paths.js";
-import { loadSettings } from "../settings.js";
+import { loadSettings, saveSettings } from "../settings.js";
 import { withLock } from "../store/mutex.js";
 import { Store, clampWake } from "../store/store.js";
 import type { Attachment, HelperRecord, InboxItem, Message, Monitor } from "../store/types.js";
@@ -21,7 +21,7 @@ import { runTurn, sessionPreamble, TurnIncompleteError, UsageLimitError, type Tu
 import { blockedUntil, usageToday, type TurnUsage } from "../runtime/usage.js";
 import { workingInstructions } from "../runtime/instructions.js";
 import { MonitorRunner, reapStaleMonitors } from "./monitors.js";
-import { needsPerson } from "../runtime/errors.js";
+import { isTransient, needsPerson } from "../runtime/errors.js";
 
 const exec = promisify(execFile);
 
@@ -29,7 +29,18 @@ const TICK_MS = 5_000;
 const DEFAULT_WAKE_MS = 60 * 60_000;
 const BACKOFF_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000];
 /** Status lines Overtime itself writes (as opposed to the agent's own): replaced when they stop being true. */
-const OVERTIME_ACTIVITY = /^(learning its job|working|resuming|resting|stopped|paused\b.*)$/;
+const OVERTIME_ACTIVITY = /^(learning its job|working|resuming|resting|stopped|paused\b.*|waiting: .*)$/;
+/** How long a helper waits before retrying after a passing provider problem (tests shorten it). */
+const HELPER_RETRY_MS = process.env.OVERTIME_FAST_RETRY ? [200, 400] : [60_000, 5 * 60_000];
+
+/** Wait, unless the signal fires first. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => (clearTimeout(t), resolve()), { once: true });
+  });
+}
+
 const MAX_HELPERS = 6;
 /** Finished helpers' worktrees and copies are removed after this long (git branches are kept). */
 const HELPER_KEEP_MS = 7 * 24 * 3600_000;
@@ -300,7 +311,7 @@ export class Runtime extends EventEmitter implements ToolHost {
     }
     const sched = await store.schedule();
     // After a failed turn, wait out the back-off even if there's work waiting.
-    if ((a.state.failures ?? 0) > 0 && sched.wakeAt && new Date(sched.wakeAt) > now) return;
+    if (((a.state.failures ?? 0) > 0 || (a.state.transientFailures ?? 0) > 0) && sched.wakeAt && new Date(sched.wakeAt) > now) return;
     if (a.state.status === "new") {
       // A new agent does nothing until it has been told what it's for.
       if ((await store.inbox()).length) this.wakeMain(a.name, "the person sent you your first message");
@@ -430,7 +441,7 @@ export class Runtime extends EventEmitter implements ToolHost {
       }
       agent = await loadAgent(agentName);
       if (result.modelIssue) await this.modelIssue(agentName, result.modelIssue);
-      const patch: Partial<AgentState> = { status: hasIdentity(agent) ? "asleep" : "new", failures: 0, lastError: null, mainSessionFiles: fileHashes(agent), mainSessionPrompt: promptVersion("main") };
+      const patch: Partial<AgentState> = { status: hasIdentity(agent) ? "asleep" : "new", failures: 0, transientFailures: 0, troubleSince: null, lastError: null, mainSessionFiles: fileHashes(agent), mainSessionPrompt: promptVersion("main") };
       // Keep whatever status line the agent set itself; only replace Overtime's own placeholder.
       if (OVERTIME_ACTIVITY.test(agent.state.activity ?? "")) patch.activity = hasIdentity(agent) ? "resting" : "waiting for its job";
       await updateState(agentName, patch);
@@ -471,8 +482,23 @@ export class Runtime extends EventEmitter implements ToolHost {
         await updateState(agentName, { status: idle });
         return true;
       }
-      const failures = (agent.state.failures ?? 0) + 1;
       const msg = String(e?.message ?? e);
+      if (isTransient(msg) && !needsPerson(msg, eff.backend, agentName)) {
+        // The provider is having trouble: wait it out and carry on, in the same session. Not a failure,
+        // and you only hear about it if it lasts.
+        const n = (agent.state.transientFailures ?? 0) + 1;
+        const since = agent.state.troubleSince ?? new Date().toISOString();
+        await updateState(agentName, { status: idle, transientFailures: n, troubleSince: since, activity: `waiting: ${eff.backend} is having trouble`, lastError: null });
+        await store.setWake(new Date(Date.now() + BACKOFF_MS[Math.min(BACKOFF_MS.length - 1, n - 1)]), `retry: ${eff.backend} was having trouble (${msg.slice(0, 120)})`);
+        this.log(`[${agentName}] ${eff.backend} is having trouble (${n}), retrying: ${msg.slice(0, 200)}`);
+        if (n === 6) {
+          await store.addMessage({ from: "overtime", kind: "alert", title: `${eff.backend} is having trouble`, text: `${agentName} has been unable to reach ${eff.backend} since ${new Date(since).toLocaleString()} (latest: ${msg.slice(0, 200)}). Nothing is lost: it keeps retrying every hour and carries on by itself once ${eff.backend} is back.`, baseDir: agent.dir });
+          this.notify(`${agentName} is waiting on ${eff.backend}`, "Its provider keeps failing; it will carry on by itself once it's back.");
+          this.changed(agentName, "messages");
+        }
+        return false;
+      }
+      const failures = (agent.state.failures ?? 0) + 1;
       // Some failures only the person can fix: say exactly what to do, once, and retry slowly meanwhile.
       const hint = needsPerson(msg, eff.backend, agentName);
       const wait = hint ? BACKOFF_MS[BACKOFF_MS.length - 1] : BACKOFF_MS[Math.min(BACKOFF_MS.length - 1, failures - 1)];
@@ -589,6 +615,77 @@ export class Runtime extends EventEmitter implements ToolHost {
       return;
     }
     this.wakeMain(agentName, reason);
+  }
+
+  // ---------- MCP servers, managed from the app ----------
+
+  /** The MCP servers an agent gets: the shared ones (on or off for it) and its own. Secrets hidden. */
+  async mcpList(name: string): Promise<{ name: string; scope: "all" | "agent"; enabled: boolean; describe: string }[]> {
+    const { describeServer } = await import("./mcp-admin.js");
+    const g = await loadSettings();
+    const a = await loadAgent(name);
+    const off = new Set(a.settings.disableMcp ?? []);
+    return [
+      ...g.mcpServers.map((x) => ({ name: x.name, scope: "all" as const, enabled: !off.has(x.name), describe: describeServer(x) })),
+      ...(a.settings.mcpServers ?? []).map((x) => ({ name: x.name, scope: "agent" as const, enabled: true, describe: describeServer(x) })),
+    ];
+  }
+
+  /** Add a server for one agent or all of them, from what the person typed; then check it connects. */
+  async mcpAdd(name: string, scope: "all" | "agent", input: string, serverName?: string): Promise<{ name: string; check: { ok: boolean; tools: string[]; error?: string } }> {
+    const { parseServerInput, checkName, checkServer } = await import("./mcp-admin.js");
+    const cfg = parseServerInput(input, serverName);
+    const g = await loadSettings();
+    const a = await loadAgent(name);
+    // A shared name must be free for every agent; an agent's own only among what that agent gets.
+    const taken =
+      scope === "all"
+        ? [...g.mcpServers.map((x) => x.name), ...(await listAgents()).flatMap((x) => (x.settings.mcpServers ?? []).map((m) => m.name))]
+        : [...g.mcpServers.map((x) => x.name), ...(a.settings.mcpServers ?? []).map((x) => x.name)];
+    const bad = checkName(cfg.name, taken);
+    if (bad) throw new Error(bad);
+    if (scope === "all") await saveSettings({ ...g, mcpServers: [...g.mcpServers, cfg] });
+    else {
+      const { setSettings } = await import("../agent/agent.js");
+      await setSettings(name, { mcpServers: [...(a.settings.mcpServers ?? []), cfg] });
+    }
+    this.log(`[${name}] MCP server ${cfg.name} added (${scope === "all" ? "all agents" : "this agent"})`);
+    this.changed(name, "state");
+    return { name: cfg.name, check: await checkServer(cfg) };
+  }
+
+  /** Remove a server: an agent's own from it, or a shared one from every agent. */
+  async mcpRemove(name: string, serverName: string): Promise<void> {
+    const g = await loadSettings();
+    const a = await loadAgent(name);
+    if ((a.settings.mcpServers ?? []).some((x) => x.name === serverName)) {
+      const { setSettings } = await import("../agent/agent.js");
+      await setSettings(name, { mcpServers: (a.settings.mcpServers ?? []).filter((x) => x.name !== serverName) });
+    } else if (g.mcpServers.some((x) => x.name === serverName)) {
+      await saveSettings({ ...g, mcpServers: g.mcpServers.filter((x) => x.name !== serverName) });
+    } else throw new Error(`There's no MCP server called ${serverName}.`);
+    this.changed(name, "state");
+  }
+
+  /** Turn a shared server on or off for one agent. */
+  async mcpSetEnabled(name: string, serverName: string, enabled: boolean): Promise<void> {
+    const a = await loadAgent(name);
+    const off = new Set(a.settings.disableMcp ?? []);
+    if (enabled) off.delete(serverName);
+    else off.add(serverName);
+    const { setSettings } = await import("../agent/agent.js");
+    await setSettings(name, { disableMcp: off.size ? [...off] : null });
+    this.changed(name, "state");
+  }
+
+  /** Check a server this agent has actually connects, and what tools it offers. */
+  async mcpCheck(name: string, serverName: string): Promise<{ ok: boolean; tools: string[]; error?: string }> {
+    const { checkServer } = await import("./mcp-admin.js");
+    const g = await loadSettings();
+    const a = await loadAgent(name);
+    const cfg = [...(a.settings.mcpServers ?? []), ...g.mcpServers].find((x) => x.name === serverName);
+    if (!cfg) throw new Error(`There's no MCP server called ${serverName}.`);
+    return checkServer(cfg);
   }
 
   /** The person closed a question without answering it: the agent stops waiting on it. */
@@ -778,11 +875,16 @@ export class Runtime extends EventEmitter implements ToolHost {
     const { ctx, mcp } = this.tools.open({ agent: agentName, kind: "helper", helperId: rec.id, depth: rec.depth });
     const preamble = helperPreamble(agentName, rec, instructions, workspace, note);
     try {
-      const r = await runTurn({
+      // A passing provider problem (a 502, overloaded) doesn't fail the helper: it waits and tries again,
+      // up to 3 attempts, carrying on from what's already in its folder.
+      let attempt = 0;
+      const run = async (): Promise<TurnResult> => {
+        try {
+          return await runTurn({
         agent: agentName,
         kind: "helper",
         reason: `${agentName} gave you a task`,
-        text: `Your task:\n\n${rec.task}`,
+        text: `Your task:\n\n${rec.task}${attempt ? "\n\n(An earlier attempt was cut off by a problem at the provider. What it already did is in your folder: check it, and carry on from there.)" : ""}`,
         preamble,
         cwd: rec.workdir,
         backend: rec.backend,
@@ -792,7 +894,17 @@ export class Runtime extends EventEmitter implements ToolHost {
         signal: this.signalFor(agentName, cancel),
         onUpdate: (u) => this.emit("update", { agent: agentName, kind: "helper", helperId: rec.id, update: u }),
         log: this.log,
-      });
+          });
+        } catch (e: any) {
+          const msg = String(e?.message ?? e);
+          if (attempt >= HELPER_RETRY_MS.length || cancel.aborted || this.stopping || !isTransient(msg) || needsPerson(msg, rec.backend ?? "", agentName)) throw e;
+          this.log(`[${agentName}] helper ${rec.id}: provider trouble, retrying (${msg.slice(0, 120)})`);
+          await sleep(HELPER_RETRY_MS[attempt++], cancel);
+          if (cancel.aborted || this.stopping) throw e;
+          return run();
+        }
+      };
+      const r = await run();
       rec.status = "done";
       rec.result = ctx.result ?? (r.reply || "(It finished without describing its result. Check its folder.)");
     } catch (e: any) {

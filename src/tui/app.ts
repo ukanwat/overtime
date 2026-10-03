@@ -110,13 +110,17 @@ interface SettingsRow {
   danger?: boolean;
 }
 
-type SettingsOverlay = { kind: "settings"; data: AgentSettingsView | null; extra: any; idx: number; editing?: Field; error?: string };
+type McpEntry = { name: string; scope: "all" | "agent"; enabled: boolean; describe: string };
+type SettingsOverlay = { kind: "settings"; data: AgentSettingsView | null; extra: any; mcp?: McpEntry[]; idx: number; editing?: Field; error?: string };
+/** Adding an MCP server: what starts it (or its URL), its name, then for whom. */
+type McpAddOverlay = { kind: "mcpAdd"; step: "input" | "name" | "scope"; input: string; name: string; scope: 0 | 1; error?: string; busy?: string; /** What was typed, with secrets hidden. */ shown?: string };
 type Overlay =
   | null
   | { kind: "help" }
   | SettingsOverlay
   | { kind: "pick"; title: string; items: PickItem[]; idx: number; loading?: string; back?: boolean }
-  | { kind: "confirm"; title: string; body: string[]; yes: string; run: () => Promise<void>; danger?: boolean; focus: 0 | 1 };
+  | { kind: "confirm"; title: string; body: string[]; yes: string; run: () => Promise<void>; danger?: boolean; focus: 0 | 1 }
+  | McpAddOverlay;
 
 /**
  * Links and paths in a message, clickable right where they're written (underlined), instead of a
@@ -648,6 +652,118 @@ export class App implements Component {
 
   // ---------- settings ----------
 
+  /** What you can do with one MCP server: check it, switch a shared one for this agent, remove it. */
+  private showMcpMenu(m: McpEntry): void {
+    const a = this.needAgent();
+    if (!a) return;
+    const items: PickItem[] = [
+      { label: "Check its connection", note: "start it and list its tools", run: () => this.checkMcp(m.name) },
+      ...(m.scope === "all"
+        ? [
+            m.enabled
+              ? { label: `Turn off for ${a.name}`, note: "other agents keep it", run: () => this.setMcpEnabled(m.name, false) }
+              : { label: `Turn on for ${a.name}`, run: () => this.setMcpEnabled(m.name, true) },
+          ]
+        : []),
+      { label: m.scope === "all" ? "Remove for all agents…" : `Remove from ${a.name}…`, run: () => this.confirmMcpRemove(m) },
+    ];
+    this.show({ kind: "pick", title: `${m.name} · ${m.scope === "all" ? "all agents" : `only ${a.name}`}`, items, idx: 0, back: true });
+  }
+
+  private async checkMcp(name: string): Promise<void> {
+    const a = this.needAgent();
+    if (!a) return;
+    this.say(`Checking ${name}…`, "info");
+    const r = await this.c.call<{ ok: boolean; tools: string[]; error?: string }>("mcpCheck", { name: a.name, serverName: name }, 60_000);
+    if (r.ok) this.say(`${name} works · ${r.tools.length} tool${r.tools.length === 1 ? "" : "s"}${r.tools.length ? `: ${r.tools.slice(0, 6).join(", ")}${r.tools.length > 6 ? "…" : ""}` : ""}`, "ok");
+    else this.say(`${name} didn't connect: ${r.error ?? "no answer"}`, "err");
+    await this.showSettings();
+  }
+
+  private async setMcpEnabled(name: string, enabled: boolean): Promise<void> {
+    const a = this.needAgent();
+    if (!a) return;
+    await this.c.call("mcpSetEnabled", { name: a.name, serverName: name, enabled });
+    this.say(`${name} ${enabled ? "on" : "off"} for ${a.name}, from its next turn.`, "ok");
+    await this.showSettings();
+  }
+
+  private confirmMcpRemove(m: McpEntry): void {
+    const a = this.needAgent();
+    if (!a) return;
+    this.show({
+      kind: "confirm",
+      title: `Remove ${m.name}?`,
+      body: [m.scope === "all" ? `Every agent loses ${m.name} from its next turn.` : `${a.name} loses ${m.name} from its next turn.`, "", muted(m.describe)],
+      yes: "Remove",
+      danger: true,
+      focus: 1,
+      run: async () => {
+        await this.c.call("mcpRemove", { name: a.name, serverName: m.name });
+        this.say(`Removed ${m.name}.`, "ok");
+        await this.showSettings();
+      },
+    });
+  }
+
+  private startMcpAdd(): void {
+    setText(this.fieldInput, "");
+    this.show({ kind: "mcpAdd", step: "input", input: "", name: "", scope: 0 });
+  }
+
+  /** Enter in the add form: on to the next step, or add the server and check it connects. */
+  private async mcpAddNext(o: McpAddOverlay): Promise<void> {
+    const a = this.needAgent();
+    if (!a || o.busy) return;
+    o.error = undefined;
+    if (o.step === "input") {
+      const text = this.fieldInput.getValue().trim();
+      try {
+        const { parseServerInput, describeServer } = await import("../daemon/mcp-admin.js");
+        const cfg = parseServerInput(text);
+        o.name = cfg.name;
+        o.shown = describeServer(cfg); // tokens and keys never echoed on screen
+      } catch (e) {
+        o.error = friendly(e);
+        return this.tui.requestRender();
+      }
+      o.input = text;
+      o.step = "name";
+      setText(this.fieldInput, o.name);
+      return this.tui.requestRender();
+    }
+    if (o.step === "name") {
+      const name = this.fieldInput.getValue().trim();
+      const { checkName } = await import("../daemon/mcp-admin.js");
+      const bad = checkName(name, []);
+      if (bad) {
+        o.error = bad;
+        return this.tui.requestRender();
+      }
+      o.name = name;
+      o.step = "scope";
+      return this.tui.requestRender();
+    }
+    o.busy = `Adding ${o.name} and checking it connects…`;
+    this.tui.requestRender();
+    try {
+      const r = await this.c.call<{ name: string; check: { ok: boolean; tools: string[]; error?: string } }>("mcpAdd", { name: a.name, scope: o.scope === 1 ? "all" : "agent", input: o.input, serverName: o.name }, 90_000);
+      this.overlay = null;
+      const who = o.scope === 1 ? "all agents" : a.name;
+      if (r.check.ok) this.say(`Added ${r.name} for ${who} · connected · ${r.check.tools.length} tool${r.check.tools.length === 1 ? "" : "s"}. It's available from the next turn.`, "ok");
+      else this.say(`Added ${r.name} for ${who}, but it didn't connect: ${r.check.error ?? "no answer"}. Fix or remove it in settings.`, "err");
+      await this.showSettings();
+    } catch (e) {
+      o.busy = undefined;
+      o.error = friendly(e);
+      if (/already a server|lowercase/.test(o.error)) {
+        o.step = "name";
+        setText(this.fieldInput, o.name);
+      }
+      this.tui.requestRender();
+    }
+  }
+
   private async showSettings(): Promise<void> {
     if (!this.needAgent()) return;
     const o: SettingsOverlay = { kind: "settings", data: null, extra: null, idx: 0 };
@@ -670,6 +786,11 @@ export class App implements Component {
     try {
       o.extra = await this.get("agent", { name: a.name });
     } catch {}
+    try {
+      o.mcp = await this.get<McpEntry[]>("mcpList", { name: a.name });
+    } catch {
+      o.mcp = undefined; // an older background process: the section just doesn't show
+    }
   }
 
   private settingsRows(o: SettingsOverlay): SettingsRow[] {
@@ -692,6 +813,21 @@ export class App implements Component {
         value: d ? (d.protect?.length ? d.protect.map(tilde).join(", ") : "nothing") : "…",
         note: d?.protect?.length ? "read-only for it" : "full access",
       },
+      ...(o.mcp
+        ? [
+            { label: "MCP servers", heading: true } as SettingsRow,
+            ...o.mcp.map(
+              (m): SettingsRow => ({
+                label: m.name,
+                value: m.enabled ? "on" : "off",
+                note: `${m.scope === "all" ? "all agents" : `only ${a.name}`} · ${m.describe}`,
+                stay: true,
+                run: () => this.showMcpMenu(m),
+              }),
+            ),
+            { label: "+ Add a server…", note: "a command or a URL", stay: true, run: () => this.startMcpAdd() } as SettingsRow,
+          ]
+        : []),
       { label: "Control", heading: true },
       { label: "Wake now", stay: true, run: () => this.wake() },
       { label: a.status === "stopped" ? "Start" : "Stop", stay: true, note: a.status === "stopped" ? "it carries on from where it was" : "keeps its folder and messages", run: () => this.toggleStop() },
@@ -873,6 +1009,15 @@ export class App implements Component {
       else this.fieldInput.handleInput(data);
       return this.tui.requestRender();
     }
+    if (o.kind === "mcpAdd") {
+      if (matchesKey(data, Key.escape)) return this.showSettings();
+      if (o.busy) return;
+      if (matchesKey(data, Key.enter)) return this.mcpAddNext(o);
+      if (o.step === "scope") {
+        if (matchesKey(data, Key.left) || matchesKey(data, Key.right) || matchesKey(data, Key.tab)) o.scope = o.scope === 0 ? 1 : 0;
+      } else this.fieldInput.handleInput(data);
+      return this.tui.requestRender();
+    }
     const closeKey = matchesKey(data, Key.escape) || (o.kind === "settings" && (matchesKey(data, Key.tab) || matchesKey(data, Key.ctrl("p")) || matchesKey(data, Key.left)));
     if (closeKey) {
       this.overlay = null;
@@ -1039,16 +1184,18 @@ export class App implements Component {
 
   private renderAgentHeader(a: AgentSummary, w: number, x: number, narrow: boolean): string[] {
     const p = statusParts(a);
-    const detail = this.agentDetail(a);
-    // Working: the dot stays its colour and the words ("working · what it's doing") shimmer.
-    const state = `${p.color(`${p.dot} ${p.word}`)}${detail ? muted(` · ${detail}`) : ""}`;
+    // Each thing once: line one is its state and, while working, the step it's on right now; line two
+    // is its own status line. (The list on the left has the short version for scanning.)
+    const own = a.activity && a.status !== "new" && !/^(paused|stopped|resting|resuming|working|waiting for its job|waiting: )/.test(a.activity) ? a.activity : "";
+    const now = p.word === "working" ? this.mainLive(a.name)?.step ?? (a.helpersRunning ? `${a.helpersRunning} helper${a.helpersRunning === 1 ? "" : "s"}` : "") : own ? "" : p.detail;
+    const state = `${p.color(`${p.dot} ${p.word}`)}${now ? muted(` · ${now}`) : p.word === "asleep" && p.detail ? muted(` · ${p.detail}`) : ""}`;
     const open = this.overlay?.kind === "settings";
     const btn = open ? inverse(" Settings ") : `${muted("⚙")} Settings ${muted("→")}`;
     const btnW = visibleWidth(btn) + 1;
     this.hits.push({ row: TOP, x0: x + w - btnW, x1: x + w, act: () => (open ? ((this.overlay = null), this.tui.requestRender()) : this.showSettings()) });
     const where = narrow && this.agents.length > 1 ? muted(`  ${this.sel + 1}/${this.agents.length} ↑↓`) : "";
     const lines = [spread(`  ${bold(a.name)}${where}  ${state}`, btn + " ", w)];
-    const doing = a.activity && a.status !== "new" && a.status !== "working" && !/^(paused|stopped|resting|resuming|waiting for its job)/.test(a.activity) ? italic(muted(a.activity)) : "";
+    const doing = own ? italic(muted(own)) : "";
     lines.push(spread(`  ${doing}`, muted(`${money(a)}  ·  ${a.backend}${a.model ? ` · ${a.model}` : ""}`) + " ", w));
     if (a.lastError && a.status !== "working") lines.push(fit(`  ${red("Last turn failed:")} ${muted(a.lastError)}`, w));
     lines.push(faint("─".repeat(w)));
@@ -1325,6 +1472,7 @@ export class App implements Component {
       const label = fit(on ? bold(r.label) : r.danger ? red(r.label) : r.label, labelW);
       let line: string;
       if (r.field) line = label + fit(on ? accent(r.value ?? "") : (r.value ?? ""), valueW - 2) + (notes ? "  " + muted(r.note ?? "") : "");
+      else if (r.run && r.value !== undefined) line = label + fit(on ? accent(r.value) : r.value, valueW - 2) + (notes ? "  " + muted(r.note ?? "") : "");
       else if (r.run) line = (r.danger ? (on ? bold(red(r.label)) : red(r.label)) : on ? bold(r.label) : r.label) + (r.note && notes ? muted(`  ·  ${r.note}`) : "");
       else line = fit(muted(r.label), labelW) + muted(r.note ?? "");
       line = fit(gutter + line, iw);
@@ -1388,6 +1536,32 @@ export class App implements Component {
       ];
       return this.framed("Keys", body.slice(0, Math.max(3, h - 3)), [], w, x, top);
     }
+    if (o.kind === "mcpAdd") {
+      const a = this.agent!;
+      const body: string[] = [""];
+      const field = () => {
+        this.fieldInput.focused = !o.busy;
+        const fw = Math.max(10, iw - 2);
+        return hasTints() ? element(" " + (this.fieldInput.render(fw - 2)[0] ?? ""), fw) : accent("[") + fit(this.fieldInput.render(fw - 2)[0] ?? "", fw - 2) + accent("]");
+      };
+      if (o.step === "input") {
+        body.push("The command that starts the server, or its URL:", "", field(), "");
+        body.push(muted("For example:"));
+        body.push(muted("  npx -y @modelcontextprotocol/server-github"));
+        body.push(muted("  GITHUB_TOKEN=ghp_… npx -y @modelcontextprotocol/server-github"));
+        body.push(muted("  https://mcp.example.com/mcp   Authorization: Bearer …"));
+      } else if (o.step === "name") {
+        body.push(muted(cut(o.shown ?? o.input, iw)), "", "Its name (how agents will see it):", "", field());
+      } else {
+        body.push(muted(cut(o.shown ?? o.input, iw)), "", `Give ${bold(o.name)} to:`, "");
+        const btn = (label: string, on: boolean) => (on ? bold(inverse(hasTints() ? `  ${label}  ` : `[ ${label} ]`)) : hasTints() ? element(`  ${label}  `, visibleWidth(label) + 4) : `[ ${label} ]`);
+        body.push(`${btn(`Only ${a.name}`, o.scope === 0)}   ${btn("All agents", o.scope === 1)}`);
+      }
+      if (o.error) body.push("", red(o.error));
+      if (o.busy) body.push("", muted(`${spinner()} ${o.busy}`));
+      body.push("");
+      return this.framed("Add an MCP server", body, [], w, x, top);
+    }
     if (o.kind === "confirm") {
       const body: string[] = [""];
       for (const l of o.body) body.push(...(l ? wrapTextWithAnsi(l, iw) : [""]));
@@ -1447,7 +1621,7 @@ export class App implements Component {
 
   private placeholder(): string {
     const o = this.overlay;
-    if (o) return `Esc closes ${o.kind === "settings" ? "settings" : o.kind === "help" ? "the keys" : o.kind === "confirm" ? "this without changing anything" : "the list"}`;
+    if (o) return `Esc closes ${o.kind === "settings" ? "settings" : o.kind === "help" ? "the keys" : o.kind === "confirm" || o.kind === "mcpAdd" ? "this without changing anything" : "the list"}`;
     if (this.onNewRow) return "Name the new agent, e.g. repo-keeper";
     const a = this.agent;
     if (!a) return "";
@@ -1510,6 +1684,7 @@ export class App implements Component {
     if (o?.kind === "settings") hints = o.editing ? [keyHint("enter", "save"), keyHint("esc", "cancel")] : [keyHint("↑↓", "move"), keyHint("enter", "change"), keyHint("esc", "close")];
     else if (o?.kind === "help") hints = [keyHint("any key", "close")];
     else if (o?.kind === "confirm") hints = [keyHint("←→", "choose"), keyHint("enter", "confirm"), keyHint("esc", "cancel")];
+    else if (o?.kind === "mcpAdd") hints = o.step === "scope" ? [keyHint("←→", "choose"), keyHint("enter", "add"), keyHint("esc", "cancel")] : [keyHint("enter", "next"), keyHint("esc", "cancel")];
     else if (o) hints = [keyHint("↑↓", "move"), keyHint("enter", "choose"), keyHint("esc", o.kind === "pick" && o.back ? "back" : "close")];
     else if (this.onNewRow) hints = [keyHint("enter", "create"), keyHint("↑↓", "agents"), keyHint("?", "keys")];
     else if (this.typing() || this.pending.length) hints = [keyHint("enter", "send"), keyHint("⌥/⇧ enter", "new line"), keyHint("esc", "clear")];

@@ -118,6 +118,29 @@ describe.runIf(process.platform === "darwin")("protected paths", () => {
   });
 });
 
+describe("provider trouble (a 502, overloaded)", () => {
+  it("a helper waits and retries by itself, carrying on from its folder", async () => {
+    await employ("weathered");
+    await rt.send("weathered", "PASS SPAWN_FLAKY");
+    const h = await until(async () => (await rt.store("weathered").helpers()).find((x) => x.status !== "running"), 60_000, "helper done");
+    expect(h.status, h.result).toBe("done");
+    expect(existsSync(join(h.workdir, ".flaky-once"))).toBe(true); // it did fail once first
+  });
+
+  it("the main agent waits it out without counting a failure or losing its session", async () => {
+    await employ("patient");
+    const before = (await loadAgent("patient")).state.mainSessionId;
+    await rt.send("patient", "OVERLOADED_TURN now");
+    await until(async () => ((await loadAgent("patient")).state.transientFailures ?? 0) >= 1, 30_000, "trouble noted");
+    const a = await loadAgent("patient");
+    expect(a.state.failures ?? 0).toBe(0);
+    expect(a.state.activity).toMatch(/waiting: fake is having trouble/);
+    expect(a.state.mainSessionId).toBe(before);
+    expect((await rt.store("patient").inbox()).some((i) => i.text.includes("OVERLOADED_TURN"))).toBe(true); // kept for the retry
+    expect((await rt.store("patient").messages()).some((m) => m.kind === "alert")).toBe(false); // no alarm for a blip
+  });
+});
+
 describe("talking to a busy agent", () => {
   it("interrupts its work to answer you within seconds, without counting it as a failure", async () => {
     await employ("busy");

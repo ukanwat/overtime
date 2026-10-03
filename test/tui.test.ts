@@ -266,7 +266,11 @@ describe("terminal app, with a scripted daemon", () => {
     const archive = async () => {
       t.press("\x1b[C"); // → settings
       await seen("CONTROL");
-      for (let i = 0; i < 8; i++) t.press(KEY.down); // Backend, Model, budgets, workspace, protected, wake, stop, archive
+      // Down until Archive… is the selected row, however many rows come before it.
+      for (let i = 0; i < 30 && !(await t.screen()).includes("› Archive"); i++) {
+        t.press(KEY.down);
+        await new Promise((r) => setTimeout(r, 20));
+      }
       t.press(KEY.enter);
       await seen("Archive repo-keeper?");
     };
