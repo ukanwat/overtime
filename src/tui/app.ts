@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { extname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  Editor,
   getKeybindings,
   Input,
   Key,
@@ -132,6 +133,32 @@ export function md(text: string): string {
     .join("\n");
 }
 
+/**
+ * The message box: a multi-line editor. Enter sends; Shift+Enter or Ctrl+J starts a new line; a pasted
+ * block keeps its line breaks (a long one shows as a "[paste #1 +40 lines]" marker and is sent in full).
+ * It draws no border of its own: the app frames it.
+ */
+class Composer extends Editor {
+  protected renderTopBorder(): string {
+    return "";
+  }
+  protected renderBottomBorder(): string {
+    return "";
+  }
+  /** The full text, with pasted blocks expanded. */
+  getValue(): string {
+    return this.getExpandedText();
+  }
+  setValue(v: string): void {
+    this.setText(v);
+  }
+  /** Its text lines at this width, cursor included, without the (empty) borders. */
+  body(width: number): string[] {
+    const lines = this.render(width);
+    return lines.slice(1, Math.max(2, lines.length - 1));
+  }
+}
+
 const FIELD_LABEL: Record<Field, string> = { backend: "Backend", model: "Model", budget: "Daily budget", tokens: "Token budget", workspace: "Workspace", protect: "Protected paths" };
 
 /** The whole screen: agents on the left like DMs, the selected agent's messages on the right, a composer below. */
@@ -147,7 +174,7 @@ export class App implements Component {
   linkIdx = -1;
   overlay: Overlay = null;
   flash: { text: string; tone: "ok" | "err" | "info" } | null = null;
-  input = new Input({ prompt: "", placeholderStyle: muted });
+  input: Composer;
   fieldInput = new Input({ prompt: "", placeholderStyle: muted });
   pending: PendingAttachment[] = [];
   connected = true;
@@ -165,7 +192,9 @@ export class App implements Component {
   private selName: string | null = null;
   private images = new Map<string, { b64: string; w: number; h: number } | null>();
 
-  constructor(public c: DaemonClient, private readonly tui: TuiAltScreen, private readonly term: Terminal, private readonly onQuit: () => void, private readonly opener: (t: string) => string | void = openTarget) {}
+  constructor(public c: DaemonClient, private readonly tui: TuiAltScreen, private readonly term: Terminal, private readonly onQuit: () => void, private readonly opener: (t: string) => string | void = openTarget) {
+    this.input = new Composer(tui as any, { borderColor: (x: string) => x, selectList: {} as any });
+  }
 
   get agent(): AgentSummary | undefined {
     return this.agents[this.sel];
@@ -306,7 +335,7 @@ export class App implements Component {
   }
 
   private typing(): boolean {
-    return this.input.getValue().length > 0;
+    return this.input.getText().length > 0;
   }
 
   private async onKey(data: string): Promise<void> {
@@ -336,7 +365,14 @@ export class App implements Component {
       else if (this.pending.length) this.pending = [];
       return this.tui.requestRender();
     }
-    if (matchesKey(data, Key.up) || matchesKey(data, Key.down)) return this.select(this.sel + (matchesKey(data, Key.up) ? -1 : 1));
+    if (matchesKey(data, Key.up) || matchesKey(data, Key.down)) {
+      // In a message of several lines, ↑↓ move through its lines; otherwise between agents.
+      if (this.input.getLines().length > 1) {
+        this.input.handleInput(data);
+        return this.tui.requestRender();
+      }
+      return this.select(this.sel + (matchesKey(data, Key.up) ? -1 : 1));
+    }
     if (matchesKey(data, Key.pageUp) || matchesKey(data, Key.pageDown)) return this.scrollBy(matchesKey(data, Key.pageUp) ? -PAGE : PAGE);
     if (!typing && matchesKey(data, Key.backspace) && this.pending.length) {
       this.pending.pop();
@@ -346,6 +382,12 @@ export class App implements Component {
       const q = openQuestion(this.messages);
       const n = Number(data);
       if (q?.options?.length && n <= q.options.length) return this.answer(q, n);
+    }
+    // Shift+Enter / Ctrl+J start a new line in the message (checked before Enter, which Ctrl+J resembles).
+    // Option+Enter too: many terminals send Shift+Enter exactly like Enter.
+    if (!this.onNewRow && (data === "\n" || data === "\x1b\r" || getKeybindings().matches(data, "tui.input.newLine"))) {
+      this.input.handleInput("\n");
+      return this.tui.requestRender();
     }
     if (matchesKey(data, Key.enter)) {
       if (this.onNewRow) return this.create();
@@ -419,7 +461,7 @@ export class App implements Component {
       await this.c.call("send", sent.length ? { name: a.name, text, attachments: sent.map((p) => p.path) } : { name: a.name, text });
     } catch (e) {
       // Put it back, so nothing typed is ever lost to an error.
-      setText(this.input, text);
+      this.input.setValue(text);
       this.pending = sent;
       throw e;
     }
@@ -795,7 +837,8 @@ export class App implements Component {
     this.hits = [];
     const rows = Math.max(8, this.term.rows);
     const chipsH = this.pending.length && !this.onNewRow ? 1 : 0;
-    const composerH = rows >= 16 ? 3 : 1;
+    const composer = this.renderComposer(width, rows >= 16);
+    const composerH = composer.length;
     const bodyH = Math.max(1, rows - TOP - chipsH - composerH - 1);
     const narrow = width < NARROW;
     const leftW = narrow ? 0 : Math.min(34, Math.max(26, Math.floor(width * 0.26)));
@@ -811,7 +854,7 @@ export class App implements Component {
       out.push(typeof r === "string" ? lp + fit(r, rightW) : lp + "    " + r.image);
     }
     if (chipsH) out.push(this.renderChips(width, TOP + bodyH));
-    out.push(...this.renderComposer(width, composerH));
+    out.push(...composer);
     out.push(fit(this.renderFooter(width), width));
     return out;
   }
@@ -1183,6 +1226,7 @@ export class App implements Component {
         "",
         muted("MESSAGES"),
         ...row("type, Enter", "write a message and send it"),
+        ...row("⌥/⇧ Enter", "a new line in the message (Ctrl+J works too); pasted text keeps its lines"),
         ...row("1–9", "answer the open question with that option"),
         ...row("drag a file", "attach it to your next message"),
         ...row("Ctrl+L", "step through links and files; Enter opens one"),
@@ -1290,19 +1334,21 @@ export class App implements Component {
     return fit(s + muted("Backspace removes the last"), w);
   }
 
-  private renderComposer(w: number, h: number): string[] {
+  private renderComposer(w: number, roomy: boolean): string[] {
     const active = !this.overlay;
     this.input.focused = active;
     if (active) this.fieldInput.focused = false;
-    (this.input as any).placeholder = this.placeholder();
     const inner = Math.max(4, w - 8);
-    const field = active ? (this.input.render(inner)[0] ?? "") : muted(fit(this.placeholder(), inner));
+    // Empty (or a panel is open): the placeholder, with the cursor at its start when typing is possible.
+    const empty = !this.input.getText();
+    const body = empty || !active ? [active ? `\x1b[7m \x1b[0m${muted(fit(this.placeholder(), inner - 1))}` : muted(fit(this.placeholder(), inner))] : this.input.body(inner);
     const prompt = active ? accent("›") : muted("›");
-    if (h < 3) return [fit(` ${prompt} ${field}`, w)];
+    const lines = body.map((l, n) => `${n === 0 ? prompt : " "} ${l}`);
+    if (!roomy) return lines.map((l) => fit(" " + l, w));
     // Like Grok CLI: a filled block on a tint, no border. Without tints, a quiet rounded border.
-    if (hasTints()) return [element("", w), element(`  ${prompt} ${field}`, w), element("", w)];
+    if (hasTints()) return [element("", w), ...lines.map((l) => element(`  ${l}`, w)), element("", w)];
     const c = active && this.typing() ? accent : faint;
-    return [c("╭" + "─".repeat(Math.max(0, w - 2)) + "╮"), c("│") + " " + prompt + " " + fit(field, w - 6) + " " + c("│"), c("╰" + "─".repeat(Math.max(0, w - 2)) + "╯")];
+    return [c("╭" + "─".repeat(Math.max(0, w - 2)) + "╮"), ...lines.map((l) => c("│") + " " + fit(l, w - 4) + " " + c("│")), c("╰" + "─".repeat(Math.max(0, w - 2)) + "╯")];
   }
 
   private renderFooter(w: number): string {
@@ -1320,7 +1366,7 @@ export class App implements Component {
     else if (o?.kind === "confirm") hints = [keyHint("←→", "choose"), keyHint("enter", "confirm"), keyHint("esc", "cancel")];
     else if (o) hints = [keyHint("↑↓", "move"), keyHint("enter", "choose"), keyHint("esc", o.kind === "pick" && o.back ? "back" : "close")];
     else if (this.onNewRow) hints = [keyHint("enter", "create"), keyHint("↑↓", "agents"), keyHint("?", "keys")];
-    else if (this.typing() || this.pending.length) hints = [keyHint("enter", "send"), keyHint("esc", "clear"), keyHint("↑↓", "agents")];
+    else if (this.typing() || this.pending.length) hints = [keyHint("enter", "send"), keyHint("⌥/⇧ enter", "new line"), keyHint("esc", "clear")];
     else hints = [q?.options?.length ? keyHint(`1–${q.options.length}`, "answer") : "", keyHint("↑↓", "agents"), keyHint("→", "settings"), keyHint("pgup", "scroll"), this.targets().length ? keyHint("^L", "links") : "", keyHint("?", "keys")].filter(Boolean);
     const left = this.agent && !this.onNewRow ? muted(` ${this.agent.backend}${this.agent.model ? ` · ${this.agent.model}` : ""}`) : "";
     while (hints.length > 1 && visibleWidth(hints.join(sep)) + visibleWidth(left) + 3 > w) hints.pop();
