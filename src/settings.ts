@@ -26,14 +26,14 @@ export interface Settings {
   /** MCP servers given to every agent. */
   mcpServers: McpServerConfig[];
   /**
-   * Run agents inside Overtime's sandbox: they read anywhere but write only to their own folder, their
-   * workspace, temp folders, caches and their backend's own state. On by default; agents can opt out.
+   * Paths no agent may write to, enforced by the operating system for everything an agent runs.
+   * Empty by default: agents have full access unless you protect something here (e.g. "~/Documents").
    */
-  sandbox: boolean;
+  protect: string[];
   /** Whether the person has been asked about starting the daemon at login (asked once). */
   autostartAsked?: boolean;
   /** Extra ACP backends: name -> command line that speaks ACP on stdio. */
-  customBackends: Record<string, { command: string; args?: string[]; /** Where it keeps its own state, so the sandbox lets it write there. */ writable?: string[] }>;
+  customBackends: Record<string, { command: string; args?: string[] }>;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -43,7 +43,7 @@ export const DEFAULT_SETTINGS: Settings = {
   dailyTokenBudget: null,
   turnTimeoutMinutes: 180,
   mcpServers: [],
-  sandbox: true,
+  protect: [],
   customBackends: {},
 };
 

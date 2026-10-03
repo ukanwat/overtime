@@ -1,5 +1,4 @@
 import { join } from "node:path";
-import { sandboxSpec } from "./sandbox.js";
 import { paths } from "../paths.js";
 import { appendJsonl, newId } from "../fsutil.js";
 import { AcpSession, type SessionUpdate, type PromptResult } from "../acp/session.js";
@@ -78,10 +77,12 @@ export function sessionPreamble(agent: Agent, kind: "main" | "chat" = "main"): s
 
 const KILL_GRACE_MS = 20_000;
 
-/** Told to every sandboxed session, so agents work with the sandbox instead of fighting it. */
-const SANDBOX_NOTE = `# Sandbox
+/** Told to sessions that have protected paths, so agents work around them instead of fighting them. */
+function protectNote(paths: string[]): string {
+  return `# Protected paths
 
-You run in Overtime's sandbox. You can read anywhere, but write only to your folder, your workspace, temp folders, caches, and the usual install locations, so brew, npm -g, pip --user, cargo, rustup and the like work. Writes anywhere else fail with "Operation not permitted". Don't try to get around it. If your work needs something outside (a file elsewhere, a sudo or .pkg install, an app in /Applications), ask the person, give the exact command, and carry on with other work.`;
+The person has made these read-only for you: ${paths.join(", ")}. Writes there fail with "Operation not permitted". Don't try to get around it; if your work needs a change there, ask the person.`;
+}
 
 
 /** When an agent's own session last wrote (or may have written) its AGENT.md, per agent. */
@@ -139,7 +140,7 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
     session = await AcpSession.open({
       backend: eff.backend,
       cwd: eff.workspace,
-      sandbox: base.sandbox ? await sandboxSpec(agent.dir, [base.workspace, eff.workspace], eff.backend) : null,
+      protect: base.protect,
       mcpServers: [...eff.mcpServers, ...(o.extraMcp ?? [])],
       onUpdate: (u) => {
         if (o.kind !== "helper" && touchesAgentMd(u, agent.dir)) {
@@ -187,7 +188,7 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
     const now = new Date();
     const header = `Time now: ${now.toISOString()} (${now.toString()}).\nWhy you are awake: ${o.reason}${o.header ? `\n${o.header}` : ""}`;
     const body = typeof o.text === "function" ? o.text(fresh) : o.text;
-    const preamble = (o.preamble ?? sessionPreamble(agent)) + (base.sandbox ? `\n\n---\n\n${SANDBOX_NOTE}` : "");
+    const preamble = (o.preamble ?? sessionPreamble(agent)) + (base.protect.length ? `\n\n---\n\n${protectNote(base.protect)}` : "");
     const prompt = fresh ? `${preamble}\n\n---\n\n${header}\n\n${body}` : `${header}\n\n${body}`;
     await record("start", { kind: o.kind, backend: eff.backend, model: eff.model, sessionId: session.sessionId, fresh, reason: o.reason, instructionsVersion: INSTRUCTIONS_VERSION });
     // Every byte Overtime sends is kept, so you can always see exactly what an agent was told.

@@ -55,7 +55,7 @@ function HELP(): string {
         ["overtime answer <name> <n> [note]", "answer its open question with option n"],
         ["overtime stop|start|wake <name>", "stop it, start it again, or wake it now"],
         ["overtime settings <name>", "show its backend, model, budgets and workspace"],
-        ["overtime set <name> key=value…", "backend=  model=  budget=  tokens=  workspace=  sandbox=on|off"],
+        ["overtime set <name> key=value…", "backend=  model=  budget=  tokens=  workspace=  protect=~/a,~/b"],
         ["overtime models [backend]", "the models a backend offers"],
         ["overtime archive <name>", "stop an agent for good and move its folder away"],
       ],
@@ -205,12 +205,15 @@ function parseSettings(args: string[]): Record<string, unknown> {
         if (!p.startsWith("/")) fail(`"${v}" isn't a full path.`, "e.g. workspace=~/code/my-repo");
         out.workspace = p;
       }
-    } else if (k === "sandbox") {
-      if (/^(on|true|yes|1)$/i.test(v)) out.sandbox = true;
-      else if (/^(off|false|no|0)$/i.test(v)) out.sandbox = false;
-      else if (v === "" || v === "default") out.sandbox = null;
-      else fail(`"${v}" isn't on or off.`, "e.g. sandbox=off");
-    } else fail(`There's no setting "${k}".`, "You can set backend, model, budget, tokens, workspace and sandbox.");
+    } else if (k === "protect") {
+      if (v === "" || /^(none|nothing)$/i.test(v)) out.protect = null;
+      else {
+        const list = v.split(",").map((x) => x.trim()).filter(Boolean).map((x) => (x === "~" || x.startsWith("~/") ? homedir() + x.slice(1) : x));
+        const rel = list.find((x) => !x.startsWith("/"));
+        if (rel) fail(`"${rel}" isn't a full path.`, "e.g. protect=~/Documents,~/.ssh");
+        out.protect = list;
+      }
+    } else fail(`There's no setting "${k}".`, "You can set backend, model, budget, tokens, workspace and protect.");
   }
   if (!Object.keys(out).length) fail("Nothing to change.", "e.g. overtime set scout backend=codex model=default budget=20");
   return out;
@@ -345,7 +348,7 @@ async function main() {
         row("budget", `$${s.dailyBudgetUsd} a day`, s.costReported ? `$${s.spentUsd.toFixed(2)} spent today` : "");
         row("tokens", s.dailyTokenBudget ? `${s.dailyTokenBudget.toLocaleString()} a day` : "no limit", `${s.tokensToday.toLocaleString()} used today`);
         row("workspace", s.workspace, s.workspaceIsDefault ? "its own folder" : "");
-        row("sandbox", s.sandbox ? "on" : "off", s.sandbox ? "writes only to its folders, caches and install locations" : "it can write anywhere you can");
+        row("protected", s.protect.length ? s.protect.join(", ") : "nothing", s.protect.length ? "read-only for it" : "it can write anywhere you can");
         print();
         print(gray("Change with: ") + cmdText(`overtime set ${name} budget=20 model=… workspace=~/code/…`));
         break;
@@ -363,7 +366,7 @@ async function main() {
         const changes = parseSettings(rest.slice(1));
         await call("set", { name, ...changes });
         const label: Record<string, string> = { dailyBudgetUsd: "budget", dailyTokenBudget: "tokens" };
-        const said = Object.entries(changes).map(([k, v]) => `${label[k] ?? k} ${bold(v === null ? (k === "dailyTokenBudget" ? "no limit" : "default") : k === "dailyBudgetUsd" ? `$${v}/day` : k === "dailyTokenBudget" ? `${Number(v).toLocaleString()} a day` : typeof v === "boolean" ? (v ? "on" : "off") : String(v))}`);
+        const said = Object.entries(changes).map(([k, v]) => `${label[k] ?? k} ${bold(v === null ? (k === "dailyTokenBudget" ? "no limit" : "default") : k === "dailyBudgetUsd" ? `$${v}/day` : k === "dailyTokenBudget" ? `${Number(v).toLocaleString()} a day` : Array.isArray(v) ? v.join(", ") : String(v))}`);
         ok(`${bold(name)}: ${said.join(", ")}. ${gray("Applies from its next session.")}`);
         break;
       }

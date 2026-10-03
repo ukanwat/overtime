@@ -43,8 +43,10 @@ export interface AgentSettingsView {
   dailyTokenBudget: number | null;
   workspace: string;
   workspaceIsDefault: boolean;
-  /** Whether it runs in Overtime's sandbox (writes only where its work lives). */
-  sandbox: boolean;
+  /** Paths it may not write to: all agents' plus its own. */
+  protect: string[];
+  /** Just this agent's own protected paths. */
+  protectOwn: string[];
   spentUsd: number;
   costReported: boolean;
   tokensToday: number;

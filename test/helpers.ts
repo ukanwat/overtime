@@ -9,13 +9,13 @@ export const here = dirname(fileURLToPath(import.meta.url));
 export function fakeHome(extra: Record<string, unknown> = {}): string {
   const dir = mkdtempSync(join(tmpdir(), "overtime-test-"));
   process.env.OVERTIME_HOME = dir;
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(join(dir, "protected"), { recursive: true });
   writeFileSync(
     join(dir, "settings.json"),
     JSON.stringify({
       backend: "fake",
-      // The end-to-end tests run inside Overtime's sandbox where the machine has one (macOS always does).
-      sandbox: process.platform === "darwin",
+      // On macOS (which can always enforce it), one protected path, so end-to-end tests run with protection on.
+      protect: process.platform === "darwin" ? [join(dir, "protected")] : [],
       customBackends: { fake: { command: join(here, "..", "node_modules", ".bin", "tsx"), args: [join(here, "fake-agent.ts")] } },
       ...extra,
     }),

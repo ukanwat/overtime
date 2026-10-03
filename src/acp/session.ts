@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { sandboxLaunch, type SandboxSpec } from "../runtime/sandbox.js";
+import { sandboxLaunch } from "../runtime/sandbox.js";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import type { McpServerConfig } from "../settings.js";
@@ -21,14 +21,14 @@ export interface OpenOptions {
   onPermission: (req: PermissionRequest) => PermissionResponse | Promise<PermissionResponse>;
   /** Backend stderr, for the daemon log. */
   onStderr?: (line: string) => void;
-  /** Run the backend inside Overtime's sandbox, writing only to these paths (null: not sandboxed). */
-  sandbox?: SandboxSpec | null;
+  /** Paths the backend and everything it starts may not write to (enforced by the operating system). */
+  protect?: string[];
 }
 
-/** Sandboxing was asked for but this machine can't do it; the turn doesn't run unprotected. */
+/** Protected paths are set but this machine can't enforce them; the turn doesn't run unprotected. */
 export class SandboxUnavailableError extends Error {
   constructor(why: string) {
-    super(`Overtime's sandbox isn't available: ${why}. Install it, or switch the sandbox off for this agent in its settings.`);
+    super(`Can't protect the paths in your settings: ${why}. Install it, or remove the protected paths.`);
   }
 }
 
@@ -94,8 +94,9 @@ export class AcpSession {
 
   static async open(opts: OpenOptions): Promise<AcpSession> {
     const base = await backendCommand(opts.backend);
-    const cmd = opts.sandbox ? sandboxLaunch(base.command, base.args, opts.sandbox) : { ...base, sandboxed: false };
-    if (opts.sandbox && !cmd.sandboxed) throw new SandboxUnavailableError(cmd.why ?? "the sandbox can't start here");
+    const protect = opts.protect ?? [];
+    const cmd = sandboxLaunch(base.command, base.args, protect);
+    if (protect.length && !cmd.sandboxed) throw new SandboxUnavailableError(cmd.why ?? "the sandbox can't start here");
     // Its own process group, so closing it also ends everything it started (CLI, MCP servers, shells).
     const proc = spawn(cmd.command, cmd.args, {
       cwd: opts.cwd,
