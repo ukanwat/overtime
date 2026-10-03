@@ -1,0 +1,40 @@
+{
+  "name": "overtime",
+  "version": "0.2.0-dev",
+  "description": "Agents that exist, not sessions. Brief a coding agent once; it works on its own, keeps its own folder, and checks in only when it needs you.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "overtime": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "dev": "tsx src/cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p . --noEmit"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "^0.85.1",
+    "@agentclientprotocol/sdk": "^1.7.0",
+    "@modelcontextprotocol/sdk": "^1.32.0",
+    "ink": "^7.1.1",
+    "react": "^19.3.0",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "@types/react": "^19.3.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  }
+}
