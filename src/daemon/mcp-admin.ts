@@ -114,6 +114,9 @@ export async function checkServer(cfg: McpServerConfig, timeoutMs = 25_000): Pro
     ]);
     return { ok: true, tools };
   } catch (e: any) {
+    // The system's own error codes, not the wording of messages.
+    if (e?.code === "ENOENT") return { ok: false, tools: [], error: `${cfg.command} isn't installed or isn't on your PATH` };
+    if (e?.code === "ECONNREFUSED" || e?.cause?.code === "ECONNREFUSED") return { ok: false, tools: [], error: "nothing is listening at that address" };
     return { ok: false, tools: [], error: String(e?.message ?? e).split("\n")[0].slice(0, 300) };
   } finally {
     clearTimeout(timer);

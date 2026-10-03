@@ -617,57 +617,42 @@ export class Runtime extends EventEmitter implements ToolHost {
     this.wakeMain(agentName, reason);
   }
 
-  // ---------- MCP servers, managed from the app ----------
+  // ---------- MCP servers: the person sees their status and controls them ----------
 
-  /** The MCP servers an agent gets: the shared ones (on or off for it) and its own. Secrets hidden. */
-  async mcpList(name: string): Promise<{ name: string; scope: "all" | "agent"; enabled: boolean; describe: string }[]> {
+  /** Every MCP server an agent has, where it came from, and whether the person has it on. Secrets hidden. */
+  async mcpList(name: string): Promise<{ name: string; source: "shared" | "person" | "agent"; enabled: boolean; describe: string }[]> {
     const { describeServer } = await import("./mcp-admin.js");
-    const g = await loadSettings();
+    const { allMcpServers } = await import("../agent/agent.js");
     const a = await loadAgent(name);
     const off = new Set(a.settings.disableMcp ?? []);
-    return [
-      ...g.mcpServers.map((x) => ({ name: x.name, scope: "all" as const, enabled: !off.has(x.name), describe: describeServer(x) })),
-      ...(a.settings.mcpServers ?? []).map((x) => ({ name: x.name, scope: "agent" as const, enabled: true, describe: describeServer(x) })),
-    ];
+    return (await allMcpServers(a)).map(({ server, source }) => ({ name: server.name, source, enabled: !off.has(server.name), describe: describeServer(server) }));
   }
 
-  /** Add a server for one agent or all of them, from what the person typed; then check it connects. */
-  async mcpAdd(name: string, scope: "all" | "agent", input: string, serverName?: string): Promise<{ name: string; check: { ok: boolean; tools: string[]; error?: string } }> {
-    const { parseServerInput, checkName, checkServer } = await import("./mcp-admin.js");
-    const cfg = parseServerInput(input, serverName);
-    const g = await loadSettings();
+  private mcpStatusCache = new Map<string, { at: number; r: { ok: boolean; tools: string[]; error?: string } }>();
+
+  /** Whether each of an agent's servers that's on connects, and its tools (checked live, cached a minute). */
+  async mcpStatus(name: string, fresh = false): Promise<Record<string, { ok: boolean; tools: string[]; error?: string }>> {
+    const { checkServer } = await import("./mcp-admin.js");
+    const { allMcpServers } = await import("../agent/agent.js");
     const a = await loadAgent(name);
-    // A shared name must be free for every agent; an agent's own only among what that agent gets.
-    const taken =
-      scope === "all"
-        ? [...g.mcpServers.map((x) => x.name), ...(await listAgents()).flatMap((x) => (x.settings.mcpServers ?? []).map((m) => m.name))]
-        : [...g.mcpServers.map((x) => x.name), ...(a.settings.mcpServers ?? []).map((x) => x.name)];
-    const bad = checkName(cfg.name, taken);
-    if (bad) throw new Error(bad);
-    if (scope === "all") await saveSettings({ ...g, mcpServers: [...g.mcpServers, cfg] });
-    else {
-      const { setSettings } = await import("../agent/agent.js");
-      await setSettings(name, { mcpServers: [...(a.settings.mcpServers ?? []), cfg] });
-    }
-    this.log(`[${name}] MCP server ${cfg.name} added (${scope === "all" ? "all agents" : "this agent"})`);
-    this.changed(name, "state");
-    return { name: cfg.name, check: await checkServer(cfg) };
+    const off = new Set(a.settings.disableMcp ?? []);
+    const out: Record<string, { ok: boolean; tools: string[]; error?: string }> = {};
+    await Promise.all(
+      (await allMcpServers(a))
+        .filter(({ server }) => !off.has(server.name))
+        .map(async ({ server }) => {
+          const key = JSON.stringify(server);
+          const hit = this.mcpStatusCache.get(key);
+          if (!fresh && hit && Date.now() - hit.at < 60_000) return void (out[server.name] = hit.r);
+          const r = await checkServer(server, 20_000);
+          this.mcpStatusCache.set(key, { at: Date.now(), r });
+          out[server.name] = r;
+        }),
+    );
+    return out;
   }
 
-  /** Remove a server: an agent's own from it, or a shared one from every agent. */
-  async mcpRemove(name: string, serverName: string): Promise<void> {
-    const g = await loadSettings();
-    const a = await loadAgent(name);
-    if ((a.settings.mcpServers ?? []).some((x) => x.name === serverName)) {
-      const { setSettings } = await import("../agent/agent.js");
-      await setSettings(name, { mcpServers: (a.settings.mcpServers ?? []).filter((x) => x.name !== serverName) });
-    } else if (g.mcpServers.some((x) => x.name === serverName)) {
-      await saveSettings({ ...g, mcpServers: g.mcpServers.filter((x) => x.name !== serverName) });
-    } else throw new Error(`There's no MCP server called ${serverName}.`);
-    this.changed(name, "state");
-  }
-
-  /** Turn a shared server on or off for one agent. */
+  /** Connect or disconnect a server for one agent (from its next turn). */
   async mcpSetEnabled(name: string, serverName: string, enabled: boolean): Promise<void> {
     const a = await loadAgent(name);
     const off = new Set(a.settings.disableMcp ?? []);
@@ -675,17 +660,30 @@ export class Runtime extends EventEmitter implements ToolHost {
     else off.add(serverName);
     const { setSettings } = await import("../agent/agent.js");
     await setSettings(name, { disableMcp: off.size ? [...off] : null });
+    this.log(`[${name}] MCP server ${serverName} ${enabled ? "connected" : "disconnected"}`);
     this.changed(name, "state");
   }
 
-  /** Check a server this agent has actually connects, and what tools it offers. */
-  async mcpCheck(name: string, serverName: string): Promise<{ ok: boolean; tools: string[]; error?: string }> {
-    const { checkServer } = await import("./mcp-admin.js");
-    const g = await loadSettings();
+  /** Remove a server from where it came from: the agent's mcp.json, the person's settings for it, or the shared list. */
+  async mcpRemove(name: string, serverName: string): Promise<void> {
+    const { allMcpServers, setSettings } = await import("../agent/agent.js");
     const a = await loadAgent(name);
-    const cfg = [...(a.settings.mcpServers ?? []), ...g.mcpServers].find((x) => x.name === serverName);
-    if (!cfg) throw new Error(`There's no MCP server called ${serverName}.`);
-    return checkServer(cfg);
+    const entry = (await allMcpServers(a)).find((x) => x.server.name === serverName);
+    if (!entry) throw new Error(`There's no MCP server called ${serverName}.`);
+    if (entry.source === "agent") {
+      const { readFileSync, writeFileSync } = await import("node:fs");
+      const file = join(a.dir, "mcp.json");
+      const raw = JSON.parse(readFileSync(file, "utf8"));
+      const keep = (list: any[]) => list.filter((x) => x?.name !== serverName);
+      writeFileSync(file, JSON.stringify(Array.isArray(raw) ? keep(raw) : { ...raw, ...(raw.servers ? { servers: keep(raw.servers) } : { mcpServers: keep(raw.mcpServers ?? []) }) }, null, 2) + "\n");
+    } else if (entry.source === "person") {
+      await setSettings(name, { mcpServers: (a.settings.mcpServers ?? []).filter((x) => x.name !== serverName) });
+    } else {
+      const g = await loadSettings();
+      await saveSettings({ ...g, mcpServers: g.mcpServers.filter((x) => x.name !== serverName) });
+    }
+    this.log(`[${name}] MCP server ${serverName} removed`);
+    this.changed(name, "state");
   }
 
   /** The person closed a question without answering it: the agent stops waiting on it. */

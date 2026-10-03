@@ -59,27 +59,31 @@ overtime models [backend]     # the models a backend offers
 ```
 
 `overtime set` accepts exactly these keys: `backend`, `model`, `budget`, `tokens`, `workspace`, `protect`.
-Anything else (MCP servers, `disableMcp`, global defaults) is edited in the files above.
+Anything else (MCP servers, global defaults) is edited in the files above, or in the app.
 
 You never change the settings block yourself: Overtime puts it back. If a change would help, tell the
 person the exact command. Changes apply from your next session.
 
 ## MCP servers
 
-- For every agent: add to `mcpServers` in `~/overtime/settings.json`, either a local command
-  `{ "name": "github", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"], "env": { "GITHUB_TOKEN": "..." } }`
-  or a URL `{ "name": "linear", "url": "https://mcp.example.com/mcp", "headers": { "Authorization": "Bearer ..." } }`.
-- For one agent: the same entries under `mcpServers` in the settings block at the top of its AGENT.md
-  (YAML between the `---` lines); `disableMcp: [name]` leaves out a shared one.
-- The easiest way: in the app, select the agent, press → for its settings, and use "MCP servers":
-  "+ Add a server…" takes the command that starts it (env vars like `GITHUB_TOKEN=… npx …` allowed) or
-  its URL (headers like `https://… Authorization: Bearer …`), a name, and whether it's for this agent or
-  all agents, then checks it connects and lists its tools. Each server there can be checked, switched
-  off for one agent, or removed. `overtime set` doesn't cover MCP servers; the files above do too.
-- A change takes effect from the agent's next turn, in the same continuous session. Agents don't get the person's own Claude Code
-  settings, instructions or MCP servers: only what Overtime gives them.
-- Overtime's own tools come from a server named `overtime`. Backends that can't reach URL servers get
-  them through a local bridge automatically.
+An agent gets MCP servers from three places, all in the same shape (a local command, or a URL):
+
+- **Shared, for every agent:** `mcpServers` in `~/overtime/settings.json` (the person's).
+- **Set by the person for one agent:** `mcpServers` in the settings block at the top of its AGENT.md.
+- **Added by the agent itself:** `mcp.json` in your folder. This one is yours: when you need a server,
+  add it here and it's yours from your next turn. Format:
+  `{ "servers": [ { "name": "github", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"], "env": { "GITHUB_TOKEN": "..." } },
+  { "name": "linear", "url": "https://mcp.example.com/mcp", "headers": { "Authorization": "Bearer ..." } } ] }`.
+  Never put a secret you don't have into it: ask the person for tokens (with ask), and say which.
+
+The person sees every server and controls it in the app (select the agent, press → for settings, "MCP
+servers"), like Claude Code's /mcp: whether it's connected (✓), failed (✗, with why) or off, how many
+tools it has; connect or disconnect it for this agent, check it again, see its tools, or remove it.
+A server they disconnect stays off for you (it's in `disableMcp` in your settings block); don't re-add
+it under another name. Any change takes effect from your next turn, in the same session. Agents don't
+get the person's own Claude Code settings, instructions or MCP servers: only these. Overtime's own
+tools come from a server named `overtime`; backends that can't reach URL servers get them through a
+local bridge automatically.
 
 ## Backends
 

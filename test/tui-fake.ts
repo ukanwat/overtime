@@ -100,7 +100,10 @@ export function fakeData() {
   };
   const settings: Record<string, any> = {};
   for (const a of agents) settings[a.name] = { backend: a.backend, model: a.model, dailyBudgetUsd: a.budgetUsd, dailyTokenBudget: null, workspace: a.dir, workspaceIsDefault: true, spentUsd: a.spentUsd, costReported: a.costReported, tokensToday: 120000 };
-  const mcp: any[] = [{ name: "github", scope: "all", enabled: true, describe: "npx -y @modelcontextprotocol/server-github (GITHUB_TOKEN set)" }];
+  const mcp: any[] = [
+    { name: "github", source: "shared", enabled: true, describe: "npx -y @modelcontextprotocol/server-github (GITHUB_TOKEN set)" },
+    { name: "broken", source: "agent", enabled: true, describe: "uvx mcp-server-broken" },
+  ];
   return { agents, messages, settings, mcp };
 }
 
@@ -131,17 +134,14 @@ export class FakeClient {
         return { schedule: { wakeAt: new Date(now + 95 * 60000).toISOString(), wakeReason: "hourly CI check", loops: [] }, monitors: [], helpers: [] };
       case "mcpList":
         return d.mcp;
-      case "mcpAdd":
-        d.mcp.push({ name: params.serverName, scope: params.scope, enabled: true, describe: params.input });
-        return { name: params.serverName, check: { ok: true, tools: ["search_issues", "create_pull_request"] } };
+      case "mcpStatus":
+        return Object.fromEntries(d.mcp.filter((m: any) => m.enabled).map((m: any) => [m.name, m.name === "broken" ? { ok: false, tools: [], error: "spawn uvx ENOENT" } : { ok: true, tools: ["search_issues", "create_pull_request"] }]));
       case "mcpSetEnabled":
         d.mcp = d.mcp.map((m: any) => (m.name === params.serverName ? { ...m, enabled: params.enabled } : m));
         return { ok: true };
       case "mcpRemove":
         d.mcp = d.mcp.filter((m: any) => m.name !== params.serverName);
         return { ok: true };
-      case "mcpCheck":
-        return { ok: true, tools: ["search_issues"] };
       case "backendStatus":
         return [{ name: "claude", missing: null }, { name: "codex", missing: null }, { name: "gemini", missing: "gemini isn't installed. Install Gemini CLI: npm install -g @google/gemini-cli" }, { name: "opencode", missing: null }];
       case "backends":

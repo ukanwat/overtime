@@ -38,28 +38,30 @@ describe("adding MCP servers from the app", () => {
   }, 60_000);
 });
 
-describe("an added server reaches the agent", () => {
+describe("an agent's own servers, controlled by the person", () => {
   const rt = new Runtime(() => {});
   beforeAll(async () => rt.start());
   afterAll(async () => rt.stop());
 
-  it("for one agent, from its next turn; shared ones can be switched off per agent and removed", async () => {
+  it("an agent adds one in its mcp.json; you see its status, disconnect, reconnect and remove it", async () => {
     await rt.create("tooled");
     await rt.send("tooled", "Your job is testing.");
     await until(async () => (await loadAgent("tooled")).state.status === "asleep", 30_000, "first turn");
-    const added = await rt.mcpAdd("tooled", "agent", tiny, "tiny");
-    expect(added.check).toMatchObject({ ok: true, tools: ["ping"] });
-    expect(readFileSync(join(home, "agents", "tooled", "AGENT.md"), "utf8")).toContain("name: tiny"); // shown in its settings block
+    // The agent adds a server for itself, as the overtime-docs skill describes.
+    writeFileSync(join(home, "agents", "tooled", "mcp.json"), JSON.stringify({ servers: [parseServerInput(tiny, "tiny")] }));
     await rt.send("tooled", "next turn please");
     const seen = join(home, "agents", "tooled", ".mcp-seen");
     await until(async () => readFileSync(seen, "utf8").includes("tiny"), 30_000, "server given to the agent");
-    await rt.mcpAdd("tooled", "all", "https://example.invalid/mcp", "shared-one");
-    expect((await rt.mcpList("tooled")).map((m) => `${m.name}:${m.scope}:${m.enabled}`)).toEqual(["shared-one:all:true", "tiny:agent:true"]);
-    await rt.mcpSetEnabled("tooled", "shared-one", false);
-    expect((await rt.mcpList("tooled")).find((m) => m.name === "shared-one")!.enabled).toBe(false);
-    await rt.mcpRemove("tooled", "tiny");
-    await rt.mcpRemove("tooled", "shared-one");
+    expect(await rt.mcpList("tooled")).toEqual([{ name: "tiny", source: "agent", enabled: true, describe: expect.stringContaining("tiny-mcp.ts") }]);
+    expect((await rt.mcpStatus("tooled")).tiny).toMatchObject({ ok: true, tools: ["ping"] });
+    await rt.mcpSetEnabled("tooled", "tiny", false); // you disconnect it
+    expect((await rt.mcpList("tooled"))[0].enabled).toBe(false);
+    expect(await rt.mcpStatus("tooled")).toEqual({}); // off: not started
+    await rt.send("tooled", "another turn");
+    await until(async () => !readFileSync(seen, "utf8").includes("tiny"), 30_000, "server no longer given");
+    await rt.mcpSetEnabled("tooled", "tiny", true); // and back
+    await rt.mcpRemove("tooled", "tiny"); // removed from the agent's own mcp.json
     expect(await rt.mcpList("tooled")).toEqual([]);
-    await expect(rt.mcpAdd("tooled", "agent", "x", "overtime")).rejects.toThrow(/Overtime's own/);
+    expect(JSON.parse(readFileSync(join(home, "agents", "tooled", "mcp.json"), "utf8")).servers).toEqual([]);
   }, 120_000);
 });
