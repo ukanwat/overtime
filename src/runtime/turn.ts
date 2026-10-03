@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { stopLeftovers } from "./leftovers.js";
 import { paths } from "../paths.js";
 import { appendJsonl, newId } from "../fsutil.js";
 import { AcpSession, type SessionUpdate, type PromptResult } from "../acp/session.js";
@@ -79,6 +80,9 @@ export function sessionPreamble(agent: Agent, kind: "main" | "chat" = "main"): s
 
 const KILL_GRACE_MS = 20_000;
 
+/** Per agent: how many of its sessions are running, and since when, for cleaning up what they leave behind. */
+const activeSessions = new Map<string, { count: number; since: number; roots: Set<string> }>();
+
 
 
 /** When an agent's own session last wrote (or may have written) its AGENT.md, per agent. */
@@ -133,6 +137,13 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
   const deadline = o.timeoutMs ? setTimeout(() => stop(`ran past its ${Math.round(o.timeoutMs! / 60000)}-minute limit`), o.timeoutMs) : undefined;
   const onAbort = () => stop("cancelled");
   o.signal?.addEventListener("abort", onAbort);
+
+  // Count this session in: what it starts in the background is stopped once the agent's last session ends.
+  const act = activeSessions.get(agent.name) ?? { count: 0, since: Date.now(), roots: new Set<string>() };
+  if (act.count === 0) act.since = Date.now();
+  act.count++;
+  for (const r of scope.roots) act.roots.add(r);
+  activeSessions.set(agent.name, act);
 
   try {
     session = await AcpSession.open({
@@ -247,6 +258,12 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
     if (killTimer) clearTimeout(killTimer);
     o.signal?.removeEventListener("abort", onAbort);
     if (session) await session.close();
+    act.count--;
+    if (act.count === 0) {
+      activeSessions.delete(agent.name);
+      const n = await stopLeftovers(act.since, [...act.roots]).catch(() => 0);
+      if (n) o.log?.(`[${agent.name}] stopped ${n} process(es) its sessions left running in the background`);
+    }
     // The settings block is the person's. If an agent session wrote AGENT.md since this turn began, a
     // changed block is the agent's doing and is put back; if none did, the change is the person's edit.
     if (o.kind !== "helper") {
