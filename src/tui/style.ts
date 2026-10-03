@@ -103,6 +103,10 @@ export const red = wrapFg(() => pal.red);
  * normal text colour, the rest muted. Plain text without colour support.
  */
 export function shimmer(text: string, now = Date.now()): string {
+  // Plain characters only: an escape code split across the band would print as garbage.
+  text = text.replace(/\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07/g, "");
+  // Still frames for tests and anyone who wants no motion.
+  if (process.env.OVERTIME_STILL) return muted(text);
   if (noColor() || !text) return text;
   const chars = Array.from(text);
   const span = chars.length + 16;
@@ -125,6 +129,17 @@ export function shimmer(text: string, now = Date.now()): string {
   });
   flush();
   return out;
+}
+
+/** Plain text cut to w columns with an ellipsis, without adding any escape codes. */
+export function cut(text: string, w: number): string {
+  if (visibleWidth(text) <= w) return text;
+  let out = "";
+  for (const ch of Array.from(text)) {
+    if (visibleWidth(out + ch) > w - 1) break;
+    out += ch;
+  }
+  return out + "…";
 }
 
 /** Secondary text. */
