@@ -1034,12 +1034,12 @@ function mainTurnText(items: InboxItem[], firstJob: boolean, contextReset: boole
   const parts: string[] = [];
   if (firstJob) {
     parts.push(
-      "This is your first conversation. You don't have an identity yet. From what the person tells you, rewrite AGENT.md in your folder: who you are, your job, what good looks like, and your rules (what you must check with them first). Create INDEX.md. Reply to them with a short summary of what you understood and what you'll do first. Then start.",
+      "This is your first conversation. You don't have an identity yet. From what the person tells you, rewrite AGENT.md in your folder: who you are, your role, your goals (what you're working toward over time, not only the first task) and what good looks like, and your rules (what you must check with them first). Create INDEX.md. Reply to them with a short summary of what you understood and what you'll do first. Then start.",
     );
   }
   if (contextReset) parts.push("Note: this is a fresh session. Your earlier conversation isn't carried over; your folder is. Check INDEX.md and your notes for where things stand.");
   parts.push(inboxBlock(items));
-  parts.push("Reply to the person's messages with send. Do the work. Before this turn ends, bring your notes and INDEX.md up to date and choose when to wake.");
+  parts.push("Reply to the person's messages with send. Do the work, as part of your goals. Before this turn ends, bring your notes and INDEX.md up to date, decide the next useful step toward your goals, and choose when to wake.");
   return parts.join("\n\n");
 }
 
