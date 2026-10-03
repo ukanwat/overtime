@@ -144,9 +144,18 @@ Everything else is plain files the agent reads and writes with the tools its bac
 New agents use your default backend and model. Change them per agent in the app (→ or Tab opens its settings,
 where you pick a backend and then one of its models) or with `overtime set <name> backend=codex model=…`. The model list
 comes from each backend through ACP, so new models appear without an Overtime update. If a backend
-won't use the model you chose, the agent runs on its default and Overtime tells you. Built in: `claude` (bundled, uses your Claude Code login),
-`codex`, `gemini`. Anything else that speaks ACP goes under `customBackends` in
-`~/overtime/settings.json`.
+won't use the model you chose, the agent runs on its default and Overtime tells you; a model name
+the backend doesn't offer is refused when you set it. Built in: `claude` (bundled, uses your Claude
+Code login), `codex` (through its ACP adapter, uses your Codex login), `gemini` and `opencode` (each
+needs its CLI installed and signed in). Any other coding CLI that speaks ACP works too: add its
+command under `customBackends` in `~/overtime/settings.json`, for example
+`"goose": { "command": "goose", "args": ["acp"] }`.
+
+Overtime adapts to each backend rather than assuming Claude: it picks the backend's mode that asks
+before risky actions (so Overtime's check sees them), gives Overtime's tools through a local bridge
+to backends that can't reach MCP servers over HTTP, reads cost when the backend reports it (and
+tokens when it doesn't), and if an agent answers without using its tools, its final words still
+reach you.
 
 MCP servers you list in `settings.json` under `mcpServers` are given to every agent; an agent's
 `AGENT.md` settings can add more or switch shared ones off. Agents don't inherit your personal

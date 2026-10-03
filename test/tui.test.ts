@@ -186,6 +186,19 @@ describe("terminal app, with a scripted daemon", () => {
     expect(s).toContain("▌ repo-keeper");
   });
 
+  it("scrolls back through the conversation with PgUp and forward with PgDn", async () => {
+    const { t, seen } = await open(120, 14);
+    await seen("lines above");
+    const before = await t.screen();
+    t.press(KEY.pgup);
+    await new Promise((r) => setTimeout(r, 300));
+    const up = await t.screen();
+    expect(up).not.toEqual(before);
+    t.press("\x1b[6~");
+    await new Promise((r) => setTimeout(r, 300));
+    expect(await t.screen()).toEqual(before);
+  });
+
   it("moves through agents with ↑↓ and the conversation follows", async () => {
     const { t, seen } = await open();
     await seen("Merge the dependency fix?");

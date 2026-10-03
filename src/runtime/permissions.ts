@@ -200,7 +200,11 @@ function commands(tokens: Token[]): { words: Word[]; redirects: { op: string; ta
 }
 
 /** Inline code that deletes or moves files, in the languages agents reach for. */
-const INLINE_DELETE = /\b(rmtree|rmSync|rmdirSync|unlinkSync|unlink|remove|removedirs|rmdir|rm_rf|rm_r|rename|renameSync|move|truncate|FileUtils\.rm|os\.system|subprocess|child_process|execSync|spawnSync|Deno\.remove)\b/;
+const INLINE_DELETE = /\b(rmtree|rmSync|rmdirSync|unlinkSync|unlink|remove|removedirs|rmdir|rm_rf|rm_r|rename|renameSync|move|truncate|FileUtils\.rm|Deno\.remove)\b/;
+/** Inline code that runs other programs: the commands it passes are checked like any shell command. */
+const INLINE_SPAWN = /\b(os\.system|os\.popen|subprocess|child_process|execSync|execFileSync|spawnSync|Deno\.Command|system|exec|spawn)\b/;
+/** A temporary path made by mktemp: as a substitution, or a variable assigned from one. */
+const MKTEMP = /^\$\(\s*mktemp\b[^)]*\)$/;
 const INTERPRETERS = /^(python\d*(\.\d+)?|node|nodejs|deno|bun|perl|ruby|php|osascript|tclsh|lua)$/;
 const SHELLS = /^(sh|bash|zsh|dash|ksh|fish)$/;
 /** Programs that just run the rest of their arguments as a command. */
@@ -223,7 +227,17 @@ function inspect(cmd: string, cwd: string, roots: string[], depth = 0): Finding 
   const f: Finding = { outside: [], unknown: false };
   if (depth > 4) return { outside: [], unknown: true };
   let here = cwd;
+  // Variables this command line set from mktemp: deleting them later is deleting a temp file.
+  const temps = new Set<string>();
+  let substHere: string[] = [];
+  const isTemp = (w: Word) => {
+    if (MKTEMP.test(w.text)) return true;
+    if (w.text === "$(…)" && substHere.length === 1 && /^\s*mktemp\b/.test(substHere[0])) return true;
+    const v = /^\$\{?(\w+)\}?(\/[^$`]*)?$/.exec(w.text);
+    return !!v && temps.has(v[1]);
+  };
   const target = (w: Word) => {
+    if (w.dynamic && isTemp(w)) return;
     if (w.dynamic && !/^\$\{?HOME\}?(\/[^$`]*)?$/.test(w.text)) {
       f.unknown = true;
       return;
@@ -236,7 +250,11 @@ function inspect(cmd: string, cwd: string, roots: string[], depth = 0): Finding 
     f.unknown ||= g.unknown;
   };
   for (const c of commands(tokenize(cmd))) {
+    substHere = c.subst;
     for (const s of c.subst) merge(inspect(s, here, roots, depth + 1));
+    // NAME=$(mktemp ...) on its own: remember NAME as a temp path.
+    const asg = c.words.length === 1 ? /^(\w+)=/.exec(c.words[0].text) : null;
+    if (asg && (c.subst.some((x) => /^\s*mktemp\b/.test(x)) || MKTEMP.test(c.words[0].text.slice(asg[0].length)))) temps.add(asg[1]);
     // Truncating redirections overwrite files: check where they point.
     for (const r of c.redirects) if (r.op === ">" && !SAFE_DEVICES.test(r.target.text)) target(r.target);
     let words = c.words.filter((w, i) => !(i === 0 && /^\w+=/.test(w.text) && !w.quoted));
@@ -270,12 +288,17 @@ function inspect(cmd: string, cwd: string, roots: string[], depth = 0): Finding 
     if (INTERPRETERS.test(prog)) {
       const ci = args.findIndex((a) => /^-(c|e|E|-eval|-command|p)$/.test(a.text) || a.text === "-");
       const code = ci >= 0 ? args[ci + 1]?.text ?? "" : "";
+      const strings = [...code.matchAll(/(["'`])((?:\\.|(?!\1)[^\\])*)\1/g)].map((m) => m[2]);
+      const pathLike = (x: string) => /^(~|\/|\.\.?\/|\$HOME|\$\{HOME\})/.test(x);
       if (code && INLINE_DELETE.test(code)) {
-        // Every path the code mentions must be inside the roots; one we can't read makes it unknown.
-        const lits = [...code.matchAll(/(["'`])((?:~|\/|\.\.?\/|\$HOME|\$\{HOME\})[^"'`]*)\1/g)].map((m) => m[2]);
-        const mentionsHome = /\b(homedir|expanduser|os\.environ|process\.env|Path\.home|ENV\[|getenv|HOME)\b/.test(code);
-        for (const l of lits) target({ text: l, dynamic: false, quoted: true });
-        if (mentionsHome || /\b(subprocess|child_process|os\.system|execSync|spawnSync)\b/.test(code)) f.unknown = true;
+        // Every path the code mentions must be inside the roots; one it builds from your home folder can't be checked.
+        for (const l of strings.filter(pathLike)) target({ text: l, dynamic: false, quoted: true });
+        if (/\b(homedir|expanduser|os\.environ|process\.env|Path\.home|ENV\[|getenv)\b/.test(code)) f.unknown = true;
+      }
+      if (code && INLINE_SPAWN.test(code)) {
+        // A command passed as one string is a shell line; one passed as a list is checked if it deletes.
+        for (const str of strings) if (/\s/.test(str)) merge(inspect(str, here, roots, depth + 1));
+        if (strings.some((x) => DESTRUCTIVE_WORD.test(base(x)))) for (const l of strings.filter(pathLike)) target({ text: l, dynamic: false, quoted: true });
       }
       continue;
     }

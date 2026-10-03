@@ -10,10 +10,15 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+
+/** --stdio-mcp: act like a backend that only runs MCP servers as local commands (Overtime must bridge). */
+const STDIO_ONLY = process.argv.includes("--stdio-mcp");
 
 interface S {
   cwd: string;
-  tools?: string;
+  /** Overtime's tools server: a URL, or (for a stdio-only backend) the command to start. */
+  tools?: string | { command: string; args: string[] };
   cost: number;
 }
 const sessions = new Map<string, S>();
@@ -24,9 +29,9 @@ async function slow(): Promise<boolean> {
   return cancelled;
 }
 
-async function tools(url: string) {
+async function tools(where: string | { command: string; args: string[] }) {
   const c = new Client({ name: "fake-agent", version: "1" });
-  await c.connect(new StreamableHTTPClientTransport(new URL(url)));
+  await c.connect(typeof where === "string" ? new StreamableHTTPClientTransport(new URL(where)) : new StdioClientTransport({ command: where.command, args: where.args }));
   return {
     list: async () => (await c.listTools()).tools.map((t) => t.name),
     call: async (name: string, args: Record<string, unknown>) => {
@@ -110,14 +115,22 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
   return { stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } as any };
 }
 
+/** Where Overtime's tools are, as this backend was given them. A stdio-only backend must be given a command. */
+function toolsServer(servers: any[] = []): S["tools"] {
+  const m = servers.find((x) => x.name === "overtime");
+  if (!m) return undefined;
+  if (m.type === "http") return STDIO_ONLY ? undefined : m.url;
+  return { command: m.command, args: m.args };
+}
+
 const stream = acp.ndJsonStream(Writable.toWeb(process.stdout) as WritableStream<Uint8Array>, Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>);
 acp
   .agent({ name: "fake-agent" })
-  .onRequest("initialize", () => ({ protocolVersion: acp.PROTOCOL_VERSION, agentCapabilities: { loadSession: true } }))
+  .onRequest("initialize", () => ({ protocolVersion: acp.PROTOCOL_VERSION, agentCapabilities: { loadSession: true, mcpCapabilities: { http: !STDIO_ONLY } } }) as any)
   .onRequest("session/new", (ctx: any) => {
     const id = randomUUID();
-    const http = (ctx.params.mcpServers ?? []).find((m: any) => m.type === "http" && m.name === "overtime");
-    sessions.set(id, { cwd: ctx.params.cwd, tools: http?.url, cost: 0 });
+    const http = toolsServer(ctx.params.mcpServers);
+    sessions.set(id, { cwd: ctx.params.cwd, tools: http, cost: 0 });
     // Record which MCP servers this session was given, so tests can check what reached the backend.
     try {
       writeFileSync(join(ctx.params.cwd, ".mcp-seen"), (ctx.params.mcpServers ?? []).map((m: any) => m.name).join(",") + "\n");
@@ -125,9 +138,9 @@ acp
     return { sessionId: id, modes: { availableModes: [{ id: "default", name: "Default" }, { id: "bypassPermissions", name: "Bypass" }], currentModeId: "default" } } as any;
   })
   .onRequest("session/load", (ctx: any) => {
-    const http = (ctx.params.mcpServers ?? []).find((m: any) => m.type === "http" && m.name === "overtime");
+    const http = toolsServer(ctx.params.mcpServers);
     const prev = sessions.get(ctx.params.sessionId);
-    sessions.set(ctx.params.sessionId, { cwd: ctx.params.cwd, tools: http?.url, cost: prev?.cost ?? 0.05 });
+    sessions.set(ctx.params.sessionId, { cwd: ctx.params.cwd, tools: http, cost: prev?.cost ?? 0.05 });
     return {} as any;
   })
   .onRequest("session/set_mode", () => ({}) as any)

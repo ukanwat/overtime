@@ -41,15 +41,23 @@ export async function lastSessionCost(agent: string, sessionId: string): Promise
   return null;
 }
 
-export async function recordTurnUsage(agent: string, u: Omit<TurnUsage, "t" | "turnCostUsd">): Promise<TurnUsage> {
+/**
+ * One turn's cost from the totals the backend reported during it. Backends report a running total; on
+ * a resumed session some carry the earlier total over and some start again from zero. The first total
+ * of the turn tells which: below the session's last recorded total means it started again.
+ */
+export function turnCost(prev: number | null, first: number | null, last: number): number {
+  if (prev == null) return last;
+  if (first != null && first < prev) return last;
+  return Math.max(0, last - prev);
+}
+
+export async function recordTurnUsage(agent: string, u: Omit<TurnUsage, "t" | "turnCostUsd"> & { firstCostUsd?: number | null }): Promise<TurnUsage> {
   return withLock(`usage:${agent}`, async () => {
+    const { firstCostUsd, ...rest } = u;
     let turnCostUsd: number | null = null;
-    if (u.sessionCostUsd != null) {
-      const prev = await lastSessionCost(agent, u.sessionId);
-      // A fresh session starts at zero; a resumed one continues from its last recorded total.
-      turnCostUsd = Math.max(0, u.sessionCostUsd - (prev ?? 0));
-    }
-    const row: TurnUsage = { t: new Date().toISOString(), turnCostUsd, ...u };
+    if (rest.sessionCostUsd != null) turnCostUsd = turnCost(await lastSessionCost(agent, rest.sessionId), firstCostUsd ?? null, rest.sessionCostUsd);
+    const row: TurnUsage = { t: new Date().toISOString(), turnCostUsd, ...rest };
     await appendJsonl(usagePath(agent), row);
     return row;
   });

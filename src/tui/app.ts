@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { extname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  getKeybindings,
   Input,
   Key,
   ProcessTerminal,
@@ -110,6 +111,25 @@ type Overlay =
   | SettingsOverlay
   | { kind: "pick"; title: string; items: PickItem[]; idx: number; loading?: string; back?: boolean }
   | { kind: "confirm"; title: string; body: string[]; yes: string; run: () => Promise<void> };
+
+/** The bits of Markdown agents write most, shown as styling instead of raw symbols: headings, **bold**, `code`. */
+export function md(text: string): string {
+  let inFence = false;
+  return text
+    .split("\n")
+    .map((line) => {
+      if (/^\s*```/.test(line)) {
+        inFence = !inFence;
+        return null;
+      }
+      if (inFence) return accent(line);
+      const h = /^#{1,6}\s+(.*)$/.exec(line);
+      if (h) return bold(h[1]);
+      return line.replace(/\*\*([^*\n]+)\*\*/g, (_, x) => bold(x)).replace(/`([^`\n]+)`/g, (_, x) => accent(x));
+    })
+    .filter((l): l is string => l !== null)
+    .join("\n");
+}
 
 const FIELD_LABEL: Record<Field, string> = { backend: "Backend", model: "Model", budget: "Daily budget", tokens: "Token budget", workspace: "Workspace", protect: "Protected paths" };
 
@@ -661,7 +681,7 @@ export class App implements Component {
     if (this.overlay?.kind !== "pick" || this.overlay.title !== title) return; // closed meanwhile
     const same = backend === a.backend;
     const apply = (model: string | null) => async () => {
-      await this.c.call("set", { name: a.name, backend, model });
+      await this.c.call("set", { name: a.name, backend, model }, 120_000);
       this.say(`${a.name} will use ${backend} · ${model ?? "its default model"} from its next session.`, "ok");
       await this.refresh();
       if (fromSettings) await this.showSettings();
@@ -922,7 +942,7 @@ export class App implements Component {
         if (open) questionStart = body.length;
         const hq = headed(m, "A question for you");
         body.push(line(`${open ? yellow(bold("?")) : muted("?")} ${open ? bold(hq.title) : muted(hq.title)}  ${muted(stamp(m.t))}`));
-        if (hq.body) for (const l of paras(hq.body, inner - 4)) body.push(line(l));
+        if (hq.body) for (const l of paras(md(hq.body), inner - 4)) body.push(line(l));
         if (m.why) for (const l of paras(muted(`Why it matters: ${m.why}`), inner - 4)) body.push(line(l));
         if (m.recommendation) for (const l of paras(`${bold("Recommended:")} ${m.recommendation}`, inner - 4)) body.push(line(l));
         if (m.options?.length) {
@@ -944,7 +964,7 @@ export class App implements Component {
         if (body.length && body.at(-1) !== "") body.push("");
         const ha = headed(m, "Something went wrong");
         body.push(line(`${red(bold(ha.title))}  ${muted(stamp(m.t))}${m.from === "overtime" ? muted("  · from Overtime") : ""}`));
-        if (ha.body) for (const l of paras(ha.body, inner - 4)) body.push(line(l));
+        if (ha.body) for (const l of paras(md(ha.body), inner - 4)) body.push(line(l));
         t = this.pushExtras(m, body, bodyHits, w, t, line);
         body.push("");
       } else {
@@ -956,7 +976,7 @@ export class App implements Component {
         const ind = (s: string) => "  " + s;
         if (m.kind === "report" && m.title) body.push(ind(`${accent("▣")} ${bold(m.title)}`));
         const text = m.kind === "report" && m.title && m.text.startsWith(m.title) ? m.text.slice(m.title.length).trim() : m.text;
-        if (text) for (const l of paras(m.from === "overtime" ? muted(text) : text)) body.push(ind(l));
+        if (text) for (const l of paras(m.from === "overtime" ? muted(text) : md(text))) body.push(ind(l));
         t = this.pushExtras(m, body, bodyHits, w, t, ind);
       }
       prev = m;
@@ -1267,6 +1287,10 @@ export async function runApp(o: AppOptions = {}): Promise<{ app: App; tui: TuiAl
   const c = o.client ?? (await connectFn());
   const term = o.terminal ?? new ProcessTerminal();
   const opener = o.opener ?? openTarget;
+  // The screen library pages its own viewport on PgUp/PgDn, but this app draws one screen and scrolls
+  // the conversation itself: hand those keys to the app.
+  const kb = getKeybindings();
+  kb.setUserBindings({ ...kb.getUserBindings(), "tui.altScreen.pageUp": [], "tui.altScreen.pageDown": [] } as any);
   const tui = new TuiAltScreen(term, false, undefined, { openUrl: (url) => app.openLink(url), copyOnSelect: true, mouse: o.mouse ?? !o.terminal });
   const timers: NodeJS.Timeout[] = [];
   let quitting = false;
