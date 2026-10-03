@@ -62,8 +62,8 @@ const spinner = () => SPINNER[Math.floor(Date.now() / 90) % SPINNER.length];
 const NARROW = 80;
 const PAGE = 10;
 /** Rows above the panes: the title bar and its rule. */
-/** Rows above the panes. None: the screen starts with content, like Claude Code. */
-const TOP = 0;
+/** Rows above the panes: one empty row, so the first line isn't pressed against the top edge. */
+const TOP = 1;
 /** A quiet gap (minutes) after which the agent's name is shown again above its next message. */
 const REGROUP_MIN = 10;
 
@@ -745,7 +745,7 @@ export class App implements Component {
     const rightW = narrow ? width : width - leftW - 1;
     this.leftW = leftW;
 
-    const out: string[] = [];
+    const out: string[] = Array(TOP).fill("");
     const left = narrow ? [] : this.renderAgents(leftW, bodyH);
     const right = this.renderRight(rightW, bodyH, narrow ? 0 : leftW + 1, narrow);
     for (let i = 0; i < bodyH; i++) {
