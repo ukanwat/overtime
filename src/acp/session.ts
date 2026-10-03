@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 import { spawn, type ChildProcess } from "node:child_process";
 import { sandboxLaunch } from "../runtime/sandbox.js";
 import { Readable, Writable } from "node:stream";
@@ -40,10 +43,27 @@ export function describeAcpError(e: any, backend: string): string {
   return detail && !base.includes(String(detail)) ? `${backend}: ${base}: ${detail}` : `${backend}: ${base}`;
 }
 
-export function toAcpMcp(servers: McpServerConfig[]): acp.McpServer[] {
+/** How to run the stdio ⇄ HTTP bridge: the built file, or the source through tsx when running from source. */
+function bridgeCommand(): { command: string; args: string[] } {
+  const js = fileURLToPath(new URL("../tools/bridge.js", import.meta.url));
+  if (existsSync(js)) return { command: process.execPath, args: [js] };
+  // Running from source (tests): load tsx by absolute path, since the bridge runs in the agent's folder.
+  const tsx = pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href;
+  return { command: process.execPath, args: ["--import", tsx, fileURLToPath(new URL("../tools/bridge.ts", import.meta.url))] };
+}
+
+/**
+ * MCP servers in ACP form. A backend that can't connect to HTTP MCP servers itself gets each one through
+ * a local bridge command instead, so Overtime's own tools (and URL servers you added) reach every backend.
+ */
+export function toAcpMcp(servers: McpServerConfig[], http = true): acp.McpServer[] {
   return servers.map((s): acp.McpServer => {
-    if (s.url) {
+    if (s.url && http) {
       return { type: "http", name: s.name, url: s.url, headers: Object.entries(s.headers ?? {}).map(([name, value]) => ({ name, value })) };
+    }
+    if (s.url) {
+      const b = bridgeCommand();
+      return { name: s.name, command: b.command, args: [...b.args, s.url, JSON.stringify(s.headers ?? {})], env: [] };
     }
     if (!s.command) throw new Error(`MCP server "${s.name}" needs either a url or a command.`);
     return { name: s.name, command: s.command, args: s.args ?? [], env: Object.entries(s.env ?? {}).map(([name, value]) => ({ name, value })) };
@@ -51,11 +71,23 @@ export function toAcpMcp(servers: McpServerConfig[]): acp.McpServer[] {
 }
 
 /**
+ * Claude Code's own tools that do Overtime's jobs (messaging, waking, watching, scheduling, subagents,
+ * asking) or wait on a person in an interactive app. Inside Overtime they do nothing useful, or never
+ * return, and the model mistakes them for the real ones; the agent uses Overtime's send, wake, ask and
+ * spawn instead. Unknown names are ignored, so the list is safe across Claude Code versions.
+ */
+export const CLAUDE_BUILTINS_OFF = [
+  "Agent", "Task", "SendMessage", "ListAgents", "ScheduleWakeup", "Monitor", "CronCreate", "CronDelete", "CronList",
+  "RemoteTrigger", "PushNotification", "AskUserQuestion", "EnterPlanMode", "ExitPlanMode", "EnterWorktree", "ExitWorktree",
+  "Workflow", "Artifact", "SendFeedback", "ClaudeDesign", "Projects", "ProposeGoal", "ProposeSkills", "ShowOnboardingRolePicker", "ReadNotifications",
+];
+
+/**
  * Backend-specific session options. Overtime agents get only what Overtime gives them:
  * no personal settings, instructions or MCP servers from the person's own CLI setup.
  */
 function isolationMeta(backend: string): Record<string, unknown> | undefined {
-  if (backend === "claude") return { claudeCode: { options: { settingSources: [], strictMcpConfig: true } } };
+  if (backend === "claude") return { claudeCode: { options: { settingSources: [], strictMcpConfig: true, disallowedTools: CLAUDE_BUILTINS_OFF } } };
   return undefined;
 }
 
@@ -64,7 +96,10 @@ function isolationMeta(backend: string): Record<string, unknown> | undefined {
  * So sessions run in the backend's normal mode, where risky actions come to Overtime first,
  * rather than a bypass mode where the backend would skip asking.
  */
-const ASKING_MODES = ["default", "ask"];
+// Mode names by backend: Claude and Gemini "default"; Codex "workspace-write" (asks the client to step
+// outside its sandbox; its "agent" mode would have its own reviewer decide instead, unseen by Overtime).
+// A backend with none of these keeps its own default mode.
+const ASKING_MODES = ["default", "ask", "workspace-write"];
 
 /** Every open backend session, so a shutdown can close them all. */
 const open = new Set<AcpSession>();
@@ -101,7 +136,9 @@ export class AcpSession {
     const proc = spawn(cmd.command, cmd.args, {
       cwd: opts.cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, ...opts.env },
+      // Claude's background shells start in their own process group and outlive the session; agents
+      // use watches for anything long-running instead.
+      env: { ...process.env, ...(opts.backend === "claude" ? { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" } : {}), ...opts.env },
       detached: true,
     });
     const stderrTail: string[] = [];
@@ -136,7 +173,8 @@ export class AcpSession {
         withTimeout(
           conn.agent.request(acp.methods.agent.initialize, {
             protocolVersion: acp.PROTOCOL_VERSION,
-            clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+            // notices: backend notes (like "Auto mode unavailable") arrive as their own updates, not mixed into replies.
+            clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, session: { notices: {} } } as any,
           }),
           INIT_TIMEOUT_MS,
           `Starting ${opts.backend}`,
@@ -178,6 +216,11 @@ export class AcpSession {
     return AcpSession.explain(p, this.proc, this.stderrTail, this.backend, this.exited);
   }
 
+  /** Whether the backend connects to HTTP MCP servers itself (ACP mcpCapabilities.http). */
+  get httpMcp(): boolean {
+    return !!(this.init.agentCapabilities as any)?.mcpCapabilities?.http;
+  }
+
   get canLoad(): boolean {
     return !!this.init.agentCapabilities?.loadSession;
   }
@@ -187,7 +230,7 @@ export class AcpSession {
       withTimeout(
         this.conn.agent.request<acp.NewSessionResponse>(acp.methods.agent.session.new, {
           cwd: this.opts.cwd,
-          mcpServers: toAcpMcp(this.opts.mcpServers),
+          mcpServers: toAcpMcp(this.opts.mcpServers, this.httpMcp),
           _meta: isolationMeta(this.backend),
         } as any),
         INIT_TIMEOUT_MS,
@@ -196,7 +239,7 @@ export class AcpSession {
     );
     this.sessionId = res.sessionId;
     this.newSessionInfo = res;
-    await this.goAutonomous(res.modes as any);
+    await this.goAutonomous(res.modes as any, (res as any).configOptions);
     return res.sessionId;
   }
 
@@ -210,13 +253,13 @@ export class AcpSession {
         this.conn.agent.request(acp.methods.agent.session.load, {
           sessionId,
           cwd: this.opts.cwd,
-          mcpServers: toAcpMcp(this.opts.mcpServers),
+          mcpServers: toAcpMcp(this.opts.mcpServers, this.httpMcp),
           _meta: isolationMeta(this.backend),
         } as any),
         INIT_TIMEOUT_MS,
         "Loading the session",
       );
-      await this.goAutonomous(res?.modes);
+      await this.goAutonomous(res?.modes, res?.configOptions);
       return true;
     } catch {
       this.sessionId = "";
@@ -226,12 +269,22 @@ export class AcpSession {
     }
   }
 
-  private async goAutonomous(modes: { availableModes?: { id: string }[]; currentModeId?: string } | undefined): Promise<void> {
+  private async goAutonomous(modes: { availableModes?: { id: string }[]; currentModeId?: string } | undefined, configOptions?: any[]): Promise<void> {
     const ids = modes?.availableModes?.map((m) => m.id) ?? [];
     const target = ASKING_MODES.find((m) => ids.includes(m));
-    if (!target || modes?.currentModeId === target) return;
+    if (target && modes?.currentModeId !== target) {
+      try {
+        await this.conn.agent.request(acp.methods.agent.session.setMode, { sessionId: this.sessionId, modeId: target });
+      } catch {}
+      return;
+    }
+    if (target) return;
+    // Backends that offer the mode as a config option instead of session modes.
+    const opt = configOptions?.find((o: any) => o?.category === "mode" && Array.isArray(o.options));
+    const value = opt && ASKING_MODES.find((m) => opt.options.some((x: any) => (x.value ?? x.id) === m));
+    if (!opt || !value || opt.currentValue === value) return;
     try {
-      await this.conn.agent.request(acp.methods.agent.session.setMode, { sessionId: this.sessionId, modeId: target });
+      await this.conn.agent.request(acp.methods.agent.session.setConfigOption, { sessionId: this.sessionId, configId: opt.id, value } as any);
     } catch {}
   }
 
@@ -276,6 +329,14 @@ export class AcpSession {
   /** Close the connection and make sure the backend and everything it started are gone. */
   async close(): Promise<void> {
     open.delete(this);
+    // Politely first: end its input and keep reading what it still writes (a closing backend often
+    // sends final updates), so it exits on its own instead of crashing on a closed pipe.
+    if (this.proc.exitCode === null && this.proc.signalCode === null) {
+      try {
+        this.proc.stdin?.end();
+      } catch {}
+      await Promise.race([this.exited, new Promise((r) => setTimeout(r, 2000))]);
+    }
     try {
       this.conn.close();
     } catch {}

@@ -32,3 +32,19 @@ describe("MCP servers", () => {
     expect((await loadAgent("mcpbot")).settings.disableMcp).toEqual(["shared-b"]);
   });
 });
+
+describe("a backend that only runs MCP servers as local commands", () => {
+  it("still gets Overtime's tools, through the bridge, and replies", async () => {
+    const settings = JSON.parse(readFileSync(join(home, "settings.json"), "utf8"));
+    settings.customBackends.stdiofake = { command: settings.customBackends.fake.command, args: [...settings.customBackends.fake.args, "--stdio-mcp"] };
+    writeFileSync(join(home, "settings.json"), JSON.stringify(settings));
+    await rt.create("bridged", { backend: "stdiofake" });
+    const [g] = await rt.store("bridged").messages();
+    await rt.send("bridged", "Your job is testing.", []);
+    await until(async () => (await loadAgent("bridged")).state.status === "asleep", 40_000, "turn through the bridge");
+    const msgs = await rt.store("bridged").messages();
+    expect(msgs.some((m) => m.from === "agent" && m.id !== g.id)).toBe(true);
+    // Set with Overtime's own wake tool, so the tools really reached this backend.
+    expect((await rt.store("bridged").schedule()).wakeReason).toBe("fake rest");
+  });
+});

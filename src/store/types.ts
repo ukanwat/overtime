@@ -49,8 +49,10 @@ export interface Conversation {
   lastReadId: string | null;
   /** ACP session of the chat session answering the person, so replies continue it. */
   chatSessionId?: string | null;
-  /** Fingerprints of AGENT.md and INDEX.md when the chat session last ended. */
+  /** Fingerprints of AGENT.md and INDEX.md as the chat session last saw them (when its turn began). */
   chatFiles?: { agent: string; index: string };
+  /** The last message the chat session had seen, so a resumed one is told what happened since. */
+  chatSeen?: string | null;
 }
 
 export type InboxType = "message" | "answer" | "monitor" | "helper" | "system" | "loop";

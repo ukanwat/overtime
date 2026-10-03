@@ -11,6 +11,8 @@ import { recordTurnUsage, writeLimit, type TurnUsage } from "./usage.js";
 export type SessionKind = "main" | "chat" | "helper";
 
 export interface TurnOptions {
+  /** The id for this run's log and usage row (the daemon passes its own, so all records of one turn match). */
+  runId?: string;
   agent: string;
   kind: SessionKind;
   /** What happened that started this turn, in plain words (shown to the agent). */
@@ -77,12 +79,6 @@ export function sessionPreamble(agent: Agent, kind: "main" | "chat" = "main"): s
 
 const KILL_GRACE_MS = 20_000;
 
-/** Told to sessions that have protected paths, so agents work around them instead of fighting them. */
-function protectNote(paths: string[]): string {
-  return `# Protected paths
-
-The person has made these read-only for you: ${paths.join(", ")}. Writes there fail with "Operation not permitted". Don't try to get around it; if your work needs a change there, ask the person.`;
-}
 
 
 /** When an agent's own session last wrote (or may have written) its AGENT.md, per agent. */
@@ -107,7 +103,7 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
   const agent = await loadAgent(o.agent);
   const base = await effectiveSettings(agent);
   const eff = { ...base, backend: o.backend ?? base.backend, model: o.model !== undefined ? o.model : base.model, workspace: o.cwd ?? base.workspace };
-  const runId = newId(o.kind);
+  const runId = o.runId ?? newId(o.kind);
   const runLog = join(paths.meta(agent.name), "runs", `${runId}.jsonl`);
   const record = (event: string, data: unknown) => appendJsonl(runLog, { t: new Date().toISOString(), event, data }).catch(() => {});
   const scope = { roots: [agent.dir, base.workspace, eff.workspace] };
@@ -115,6 +111,8 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
 
   let reply = "";
   let sessionCost: number | null = null;
+  let firstCost: number | null = null;
+  let afterTool = false;
   let context: { used: number; size: number } | null = null;
   let limitRejected: { resetsAt: Date | null } | null = null;
   let stopped: string | null = null;
@@ -148,11 +146,20 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
           if (!agentMdWriters.has(agent.name)) agentMdWriters.set(agent.name, new Set());
           agentMdWriters.get(agent.name)!.add(runId);
         }
-        if (u.sessionUpdate === "agent_message_chunk" && u.content.type === "text") reply += u.content.text;
+        if (u.sessionUpdate === "agent_message_chunk" && u.content.type === "text") {
+          // Text from separate messages (with tool calls between) becomes separate paragraphs, not one run-on line.
+          if (afterTool && reply && !/\s$/.test(reply)) reply += "\n\n";
+          afterTool = false;
+          reply += u.content.text;
+        }
+        if (u.sessionUpdate === "tool_call") afterTool = true;
         if (u.sessionUpdate === "usage_update") {
           const uu = u as any;
           if (typeof uu.used === "number" && typeof uu.size === "number") context = { used: uu.used, size: uu.size };
-          if (uu.cost && typeof uu.cost.amount === "number" && (uu.cost.currency ?? "USD") === "USD") sessionCost = uu.cost.amount;
+          if (uu.cost && typeof uu.cost.amount === "number" && (uu.cost.currency ?? "USD") === "USD") {
+            if (firstCost == null) firstCost = uu.cost.amount;
+            sessionCost = uu.cost.amount;
+          }
           const rl = uu._meta?.["_claude/rateLimit"];
           if (rl && typeof rl.status === "string") {
             void writeLimit({ backend: eff.backend, status: rl.status, rateLimitType: rl.rateLimitType, utilization: rl.utilization, resetsAt: rl.resetsAt, updatedAt: new Date().toISOString() });
@@ -168,7 +175,11 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
         if (!d.allowed) o.log?.(`[${agent.name}/${o.kind}] declined: ${d.reason}`);
         return answer(req, d);
       },
-      onStderr: (line) => o.log?.(`[${agent.name}/${o.kind}] ${line}`),
+      // The backend's routine progress lines go to this run's log only; anything else (warnings, errors) to the daemon log too.
+      onStderr: (line) => {
+        void record("stderr", line);
+        if (!/^\[(session|acp|mcp|query)\/[\w-]+\]/.test(line)) o.log?.(`[${agent.name}/${o.kind}] ${line}`);
+      },
     });
     if (stopped) throw new TurnIncompleteError(stopped);
 
@@ -186,9 +197,11 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
     if (stopped) throw new TurnIncompleteError(stopped);
     o.onSession?.(session.sessionId, fresh);
     const now = new Date();
-    const header = `Time now: ${now.toISOString()} (${now.toString()}).\nWhy you are awake: ${o.reason}${o.header ? `\n${o.header}` : ""}`;
+    // Protected paths go in every turn's header, so a change reaches a session that is being continued.
+    const prot = base.protect.length ? `\nRead-only for you (the person's protected paths): ${base.protect.join(", ")}. If your work needs a change there, ask.` : "";
+    const header = `Time now: ${now.toISOString()} (${now.toString()}).\nWhy you are awake: ${o.reason}${o.header ? `\n${o.header}` : ""}${prot}`;
     const body = typeof o.text === "function" ? o.text(fresh) : o.text;
-    const preamble = (o.preamble ?? sessionPreamble(agent)) + (base.protect.length ? `\n\n---\n\n${protectNote(base.protect)}` : "");
+    const preamble = o.preamble ?? sessionPreamble(agent);
     const prompt = fresh ? `${preamble}\n\n---\n\n${header}\n\n${body}` : `${header}\n\n${body}`;
     await record("start", { kind: o.kind, backend: eff.backend, model: eff.model, sessionId: session.sessionId, fresh, reason: o.reason, instructionsVersion: INSTRUCTIONS_VERSION });
     // Every byte Overtime sends is kept, so you can always see exactly what an agent was told.
@@ -212,6 +225,7 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
       sessionId: session.sessionId,
       tokens: u ? { input: u.inputTokens ?? 0, output: u.outputTokens ?? 0, cacheRead: u.cachedReadTokens ?? 0, cacheWrite: u.cachedWriteTokens ?? 0, total: u.totalTokens ?? 0 } : null,
       sessionCostUsd: sessionCost,
+      firstCostUsd: firstCost,
       context,
     });
     recorded = true;
@@ -223,7 +237,7 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
     await record("error", { message: String(e?.message ?? e) });
     // A turn that failed or was killed still spent money: count what the backend reported so far.
     if (!recorded && session?.sessionId && sessionCost != null) {
-      await recordTurnUsage(agent.name, { runId, kind: o.kind, backend: eff.backend, sessionId: session.sessionId, tokens: null, sessionCostUsd: sessionCost, context, incomplete: true }).catch(() => {});
+      await recordTurnUsage(agent.name, { runId, kind: o.kind, backend: eff.backend, sessionId: session.sessionId, tokens: null, sessionCostUsd: sessionCost, firstCostUsd: firstCost, context, incomplete: true }).catch(() => {});
     }
     throw e;
   } finally {

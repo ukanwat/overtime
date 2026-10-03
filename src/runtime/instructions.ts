@@ -21,6 +21,6 @@ export function workingInstructions(name: string, kind: InstructionKind = "main"
     return [intro, own, desk, check, talk].join("\n\n");
   }
   const delegate = `Delegate big work. Split it, run independent parts in parallel with helpers (spawn), give each only what it needs, and check what comes back before accepting it.`;
-  const time = `Manage your time. Before a turn ends, choose when to wake (wake). For waits of seconds, wait in the session. To react to events, set a watch. Messages, answers and finished helpers wake you early.`;
+  const time = `Manage your time. Before a turn ends, choose when to wake (wake). For waits of seconds, wait in the session. To react to events, set a watch. Messages, answers and finished helpers wake you early. Keep your status line (send status) true to what you're doing or waiting on now.`;
   return [intro, own, delegate, desk, time, check, talk].join("\n\n");
 }

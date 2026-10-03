@@ -32,6 +32,32 @@ describe("the permission guard", () => {
     expect(sh('rm -rf "$HOME/overtime/agents/a/tmp"').allowed).toBe(true);
   });
 
+  it("doesn't refuse ordinary work that only looks risky", () => {
+    for (const c of [
+      `python3 -c "import argparse, pathlib, subprocess, logging, json; print('ok')"`,
+      `node -e "require('child_process'); console.log(1)"`,
+      `python3 -c "import subprocess; subprocess.run(['git', 'status'])"`,
+      "T=$(mktemp); echo hi > $T; cat $T; rm -f $T",
+      'T="$(mktemp -d)" && touch "$T/x" && rm -rf "$T"',
+      'rm -rf "$(mktemp -d)"',
+    ]) {
+      expect(sh(c).allowed, c).toBe(true);
+    }
+  });
+
+  it("still sees deletes hidden in inline code", () => {
+    for (const c of [
+      `python3 -c "import os; os.system('rm -rf ~/Documents')"`,
+      `python3 -c "import subprocess; subprocess.run(['rm', '-rf', '/etc/x'])"`,
+      `node -e "require('child_process').execSync('rm -rf ~')"`,
+      `python3 -c "import shutil; shutil.rmtree('/Users/someone/x')"`,
+      `python3 -c "import shutil, os; shutil.rmtree(os.path.expanduser('~/x'))"`,
+      "rm -rf $T",
+    ]) {
+      expect(sh(c).allowed, c).toBe(false);
+    }
+  });
+
   it("always declines the few never-ever actions", () => {
     for (const c of ["sudo rm -rf /var/x", "git push --force origin main", "git push -f", "git push origin +main", "git push --force-with-lease origin master", "git push --mirror --force", "mkfs.ext4 /dev/sda1", "diskutil eraseDisk APFS X disk2", "dd if=x of=/dev/disk2", "psql -c 'DROP TABLE users'", "shutdown -h now", "FOO=1 reboot"]) {
       expect(sh(c).allowed, c).toBe(false);

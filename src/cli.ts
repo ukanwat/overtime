@@ -364,7 +364,7 @@ async function main() {
       case "set": {
         const name = need(rest[0], "overtime set <name> [backend=…] [model=…] [budget=…]");
         const changes = parseSettings(rest.slice(1));
-        await call("set", { name, ...changes });
+        await call("set", { name, ...changes }, 120_000); // checking a model name may start the backend
         const label: Record<string, string> = { dailyBudgetUsd: "budget", dailyTokenBudget: "tokens" };
         const said = Object.entries(changes).map(([k, v]) => `${label[k] ?? k} ${bold(v === null ? (k === "dailyTokenBudget" ? "no limit" : "default") : k === "dailyBudgetUsd" ? `$${v}/day` : k === "dailyTokenBudget" ? `${Number(v).toLocaleString()} a day` : Array.isArray(v) ? v.join(", ") : String(v))}`);
         ok(`${bold(name)}: ${said.join(", ")}. ${gray("Applies from its next session.")}`);

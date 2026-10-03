@@ -30,6 +30,9 @@ const when = (d: Date) => `${d.toISOString()} (${d.toString()})`;
  * Chat sessions get ask and send. Helpers get done; they hand results back and don't start their own.
  */
 export function registerTools(mcp: McpServer, ctx: ToolContext, host: ToolHost): void {
+  // Always in the model's view, never hidden behind a tool search, so the agent reaches for Overtime's
+  // send and wake rather than a backend's own look-alikes.
+  const reg: McpServer["registerTool"] = ((name: string, config: any, cb: any) => mcp.registerTool(name, { ...config, _meta: { ...(config._meta ?? {}), "anthropic/alwaysLoad": true } }, cb)) as any;
   const store = host.store(ctx.agent);
   const dir = host.agentDir(ctx.agent);
   const main = ctx.kind === "main";
@@ -37,7 +40,7 @@ export function registerTools(mcp: McpServer, ctx: ToolContext, host: ToolHost):
   const helper = ctx.kind === "helper";
 
   if (main) {
-    mcp.registerTool(
+    reg(
       "wake",
       {
         description: `Decide when you wake up next. One of:
@@ -83,7 +86,7 @@ Messages, answers and finished helpers always wake you early.`,
       }),
     );
 
-    mcp.registerTool(
+    reg(
       "cancel",
       { description: "Stop a repeating wake-up, a watch or a running helper, by its id.", inputSchema: { id: z.string() } },
       safe(async ({ id }) => {
@@ -104,7 +107,7 @@ Messages, answers and finished helpers always wake you early.`,
   }
 
   if (main || chat) {
-    mcp.registerTool(
+    reg(
       "ask",
       {
         description:
@@ -127,7 +130,7 @@ Messages, answers and finished helpers always wake you early.`,
       }),
     );
 
-    mcp.registerTool(
+    reg(
       "send",
       {
         description: chat
@@ -167,7 +170,7 @@ Messages, answers and finished helpers always wake you early.`,
   }
 
   if (main) {
-    mcp.registerTool(
+    reg(
       "spawn",
       {
         description:
@@ -198,7 +201,7 @@ Messages, answers and finished helpers always wake you early.`,
   }
 
   if (helper) {
-    mcp.registerTool(
+    reg(
       "done",
       {
         description: "Hand your result back: what you did, where the output is, what you checked, anything left open. Then end your turn.",

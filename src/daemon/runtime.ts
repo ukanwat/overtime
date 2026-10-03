@@ -29,6 +29,8 @@ const DEFAULT_WAKE_MS = 60 * 60_000;
 /** Start a fresh main session (rebuilt from the agent's files) once the context is this full. */
 const FRESH_SESSION_AT = 0.6;
 const BACKOFF_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000];
+/** Status lines Overtime itself writes (as opposed to the agent's own): replaced when they stop being true. */
+const OVERTIME_ACTIVITY = /^(learning its job|working|resuming|resting|stopped|paused\b.*)$/;
 const MAX_HELPERS = 6;
 /** Finished helpers' worktrees and copies are removed after this long (git branches are kept). */
 const HELPER_KEEP_MS = 7 * 24 * 3600_000;
@@ -290,7 +292,7 @@ export class Runtime extends EventEmitter implements ToolHost {
       // A budget pause lifts as soon as the budget is raised; a limit pause when the limit resets.
       const lifted = a.state.activity === "paused: daily budget used" && !(await this.blocked(a.name));
       if (!lifted && a.state.pausedUntil && new Date(a.state.pausedUntil) > now) return;
-      await updateState(a.name, { status: hasIdentity(a) ? "asleep" : "new", pausedUntil: null });
+      await updateState(a.name, { status: hasIdentity(a) ? "asleep" : "new", pausedUntil: null, ...(OVERTIME_ACTIVITY.test(a.state.activity ?? "") ? { activity: hasIdentity(a) ? "resting" : "waiting for its job" } : {}) });
       this.changed(a.name, "state");
       a = await loadAgent(a.name);
     }
@@ -309,8 +311,9 @@ export class Runtime extends EventEmitter implements ToolHost {
     const inbox = await store.inbox();
     if (inbox.length) return this.wakeMain(a.name, describeInbox(inbox));
     if (sched.wakeAt && new Date(sched.wakeAt) <= now) return this.wakeMain(a.name, `your scheduled wake-up: ${sched.wakeReason ?? "no reason given"}`);
-    if (!sched.wakeAt && a.state.status === "asleep") {
-      // Never let an agent go quiet indefinitely.
+    // Never let an agent go quiet indefinitely; a repeating wake or a watch already brings it back.
+    const watching = sched.loops.length > 0 || (await store.monitors()).some((m) => m.status !== "removed");
+    if (!sched.wakeAt && !watching && a.state.status === "asleep") {
       await store.setWake(clampWake(new Date(now.getTime() + DEFAULT_WAKE_MS)), "routine check-in (no wake-up was set)");
       await this.refreshNextWake(a.name);
       this.changed(a.name, "state");
@@ -331,8 +334,8 @@ export class Runtime extends EventEmitter implements ToolHost {
     const tomorrow = new Date();
     tomorrow.setHours(24, 5, 0, 0);
     const text = overUsd
-      ? `${agentName} has used $${today.usd.toFixed(2)} today (budget $${eff.dailyBudgetUsd.toFixed(2)}, as reported by ${eff.backend}). It will resume tomorrow. Raise dailyBudgetUsd in its AGENT.md settings if you want it to keep going.`
-      : `${agentName} has used ${today.tokens.toLocaleString()} tokens today (budget ${eff.dailyTokenBudget!.toLocaleString()}). It will resume tomorrow. Raise dailyTokenBudget in its AGENT.md settings if you want it to keep going.`;
+      ? `${agentName} has used $${today.usd.toFixed(2)} today (budget $${eff.dailyBudgetUsd.toFixed(2)}, as reported by ${eff.backend}). It resumes tomorrow. To keep it going today, raise its daily budget in Settings (→), or run: overtime set ${agentName} budget=…`
+      : `${agentName} has used ${today.tokens.toLocaleString()} tokens today (budget ${eff.dailyTokenBudget!.toLocaleString()}). It resumes tomorrow. To keep it going today, raise its token budget in Settings (→), or run: overtime set ${agentName} tokens=…`;
     return { kind: "budget", until: tomorrow, text };
   }
 
@@ -382,6 +385,7 @@ export class Runtime extends EventEmitter implements ToolHost {
       const edits = resume ? await editedSince(agent, agent.state.mainSessionFiles) : "";
       const settings = await loadSettings();
       result = await runTurn({
+        runId,
         agent: agentName,
         kind: "main",
         reason,
@@ -396,11 +400,17 @@ export class Runtime extends EventEmitter implements ToolHost {
         log: this.log,
       });
       await store.ackInbox(runId);
+      // The person wrote and the agent never answered with send or ask: its final words are the answer,
+      // so a message is never left without a reply (whatever the backend made of the tools).
+      if (!ctx.sent && result.reply.trim() && items.some((i) => i.type === "message" || i.type === "answer")) {
+        await store.addMessage({ from: "agent", kind: "message", text: result.reply.trim(), baseDir: agent.dir });
+        this.changed(agentName, "messages");
+      }
       agent = await loadAgent(agentName);
       if (result.modelIssue) await this.modelIssue(agentName, result.modelIssue);
       const patch: Partial<AgentState> = { status: hasIdentity(agent) ? "asleep" : "new", failures: 0, lastError: null, mainSessionFiles: fileHashes(agent) };
       // Keep whatever status line the agent set itself; only replace Overtime's own placeholder.
-      if (agent.state.activity === "learning its job" || agent.state.activity === "working") patch.activity = hasIdentity(agent) ? "resting" : "waiting for its job";
+      if (OVERTIME_ACTIVITY.test(agent.state.activity ?? "")) patch.activity = hasIdentity(agent) ? "resting" : "waiting for its job";
       await updateState(agentName, patch);
       // A watch or repeating wake already brings it back; otherwise make sure it never goes quiet.
       const sched = await store.schedule();
@@ -467,7 +477,7 @@ export class Runtime extends EventEmitter implements ToolHost {
   /** What every main turn is told besides the time: spend so far today and helpers still running. */
   private async turnHeader(agentName: string): Promise<string> {
     const s = await this.spentToday(agentName);
-    const spend = s.costReported ? `Spent today: $${s.usd.toFixed(2)} of $${s.budgetUsd.toFixed(2)} (as your backend reports it).` : `Used today: ${s.tokens.toLocaleString()} tokens${s.budgetTokens != null ? ` of ${s.budgetTokens.toLocaleString()}` : ""}.`;
+    const spend = s.costReported ? `Spent today: $${s.usd.toFixed(2)} of $${s.budgetUsd.toFixed(2)} (as your backend reports it).` : s.tokens ? `Used today: ${s.tokens.toLocaleString()} tokens${s.budgetTokens != null ? ` of ${s.budgetTokens.toLocaleString()}` : ""}.` : `Nothing spent yet today (budget $${s.budgetUsd.toFixed(2)}).`;
     const running = (await this.store(agentName).helpers()).filter((h) => h.status === "running");
     const helpers = running.length ? `Helpers still running: ${running.map((h) => `${h.id} (${h.task.split("\n")[0].slice(0, 60)})`).join("; ")}.` : "";
     return [spend, helpers].filter(Boolean).join("\n");
@@ -578,6 +588,13 @@ export class Runtime extends EventEmitter implements ToolHost {
         .join("\n\n");
       const resume = conv.chatSessionId && !full(await lastContext(agentName, conv.chatSessionId)) ? conv.chatSessionId : null;
       const editsText = resume ? await editedSince(agent, conv.chatFiles) : "";
+      // What the chat session hasn't seen: everything since its last turn (main's replies, reports, answers).
+      const filesAtStart = fileHashes(agent);
+      const seenIdx = conv.chatSeen ? all.findIndex((x) => x.id === conv.chatSeen) : -1;
+      const since = (seenIdx >= 0 ? all.slice(seenIdx + 1, idx) : [])
+        .map((e) => `${e.from === "you" ? "Person" : e.from === "agent" ? "You" : "Overtime"} (${e.t})${e.kind === "question" ? " [question]" : e.kind === "report" ? " [report]" : ""}: ${withFiles(e.text, e.attachments)}${e.answer ? `\n  (answered: ${e.answer.text})` : ""}`)
+        .join("\n\n");
+      const catchUp = `${since ? `Since you last answered here (most recent last):\n${since}\n\n` : ""}What you are doing right now (from your main session):\n${state}\n\n`;
       const r = await runTurn({
         agent: agentName,
         kind: "chat",
@@ -586,14 +603,15 @@ export class Runtime extends EventEmitter implements ToolHost {
         resumeSessionId: resume,
         // A fresh session (first message, or the old one couldn't be resumed) gets the recent conversation.
         text: (fresh) =>
-          `${fresh ? "" : editsText}${fresh ? `What you are doing right now (from your main session):\n${state}\n\n${history ? `The conversation so far (most recent last):\n${history}\n\n` : ""}` : ""}The person just wrote:\n\n${text}\n\nAnswer them with send. If it changes your work or needs real work done, send it to: "main" and tell them you have.`,
+          `${fresh ? `What you are doing right now (from your main session):\n${state}\n\n${history ? `The conversation so far (most recent last):\n${history}\n\n` : ""}` : `${editsText}${catchUp}`}The person just wrote:\n\n${text}\n\nAnswer them with send. If it changes your work or needs real work done, send it to: "main" and tell them you have.`,
         extraMcp: [mcp],
         timeoutMs: 20 * 60_000,
         signal: this.signalFor(agentName),
         onUpdate: (u) => this.emit("update", { agent: agentName, kind: "chat", update: u }),
         log: this.log,
       });
-      await store.patchConversation({ chatSessionId: r.sessionId, chatFiles: fileHashes(await loadAgent(agentName)) });
+      // Fingerprints from when this turn began: a rewrite by main during the turn still counts as unseen next time.
+      await store.patchConversation({ chatSessionId: r.sessionId, chatFiles: filesAtStart, chatSeen: m.id });
       if (r.modelIssue) await this.modelIssue(agentName, r.modelIssue);
       // If it didn't use send, its final words are the reply, so the person always gets an answer.
       if (!ctx.sent) await store.addMessage({ from: "agent", kind: "message", text: r.reply || "(I read this, but didn't write a reply.)", baseDir: agent.dir });
@@ -895,9 +913,34 @@ export class Runtime extends EventEmitter implements ToolHost {
       if (!existsSync(p) || !statSync(p).isDirectory()) throw new Error(`There's no folder at ${p}.`);
       patch.workspace = p;
     }
+    if (typeof patch.model === "string" && patch.model.trim() && patch.model !== "default") {
+      // Check the name against what the backend offers, so a typo can't quietly run on its default model.
+      const backend = patch.backend ?? (await effectiveSettings(await loadAgent(name))).backend;
+      let offered: { id: string; name: string }[] | null = null;
+      try {
+        offered = await this.models(backend);
+      } catch {} // can't ask the backend right now: accept, and the next turn reports a bad name
+      const want = patch.model.trim().toLowerCase();
+      if (offered?.length && !offered.some((m) => m.id.toLowerCase() === want || m.name.toLowerCase() === want)) {
+        throw new Error(`${backend} doesn't offer a model called "${patch.model}". It offers: ${offered.map((m) => m.id).join(", ")}.`);
+      }
+      const hit = offered?.find((m) => m.id.toLowerCase() === want || m.name.toLowerCase() === want);
+      if (hit) patch.model = hit.id;
+    }
+    if (Array.isArray(patch.protect)) {
+      // Stored as clean absolute paths, so what you see is exactly what's protected.
+      const { expandHome } = await import("../agent/agent.js");
+      const { resolve } = await import("node:path");
+      patch.protect = [...new Set(patch.protect.map((p) => resolve(expandHome(String(p).trim()))).filter((p) => p !== "/"))];
+      if (!patch.protect.length) patch.protect = null;
+    }
     if (patch.backend) {
       const known = await this.backends();
       if (!known.includes(patch.backend)) throw new Error(`Unknown backend "${patch.backend}". Choose one of: ${known.join(", ")}.`);
+      // Refuse a backend that isn't installed now, rather than let the agent fail on its next turn.
+      const { backendMissing } = await import("../acp/backends.js");
+      const missing = await backendMissing(patch.backend);
+      if (missing) throw new Error(missing);
     }
     if (patch.dailyBudgetUsd !== undefined && !(typeof patch.dailyBudgetUsd === "number" && patch.dailyBudgetUsd >= 0)) throw new Error("The daily budget must be a number of dollars, 0 or more.");
     const { setSettings } = await import("../agent/agent.js");
@@ -932,7 +975,7 @@ export class Runtime extends EventEmitter implements ToolHost {
     const a = await loadAgent(name);
     if (a.state.status === "stopped") throw new Error(`${name} is stopped. Start it first.`);
     if (a.state.status === "new" && !(await this.store(name).inbox()).length) throw new Error(`${name} doesn't have a job yet. Send it a message saying what it's for.`);
-    if (a.state.status === "paused") await updateState(name, { status: hasIdentity(a) ? "asleep" : "new", pausedUntil: null });
+    if (a.state.status === "paused") await updateState(name, { status: hasIdentity(a) ? "asleep" : "new", pausedUntil: null, ...(OVERTIME_ACTIVITY.test(a.state.activity ?? "") ? { activity: hasIdentity(a) ? "resting" : "waiting for its job" } : {}) });
     await updateState(name, { failures: 0 });
     this.wakeMain(name, "the person asked you to wake up");
   }
@@ -993,7 +1036,7 @@ function mainTurnText(items: InboxItem[], firstJob: boolean, contextReset: boole
 }
 
 function chatPreamble(agent: Agent): string {
-  return `${sessionPreamble(agent, "chat")}\n\n---\n\n# This session\n\nThis session answers the person in your conversation with them, separately from your main work session. Answer from what you know and what's in your folder. Keep replies short and plain. Anything that changes your work or needs real work goes to your main session: send with to: "main".`;
+  return `${sessionPreamble(agent, "chat")}\n\n---\n\n# This session\n\nThis session answers the person in your conversation with them, separately from your main work session. Answer from what you know and what's in your folder. Keep replies short and plain. Don't do real work here: if answering needs more than reading a few files or one quick command, or it changes your work, send it to your main session (send with to: "main") and tell the person you have.`;
 }
 
 function helperInboxText(h: HelperRecord): string {
