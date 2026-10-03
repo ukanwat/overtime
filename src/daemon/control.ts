@@ -129,6 +129,17 @@ export class ControlServer {
       const m = await this.rt.send(name, String(text ?? ""), Array.isArray(attachments) ? attachments.map(String) : []);
       return { id: m.id };
     },
+    mcpList: async ({ name }) => this.rt.mcpList(String(name)),
+    mcpAdd: async ({ name, scope, input, serverName }) => this.rt.mcpAdd(String(name), scope === "all" ? "all" : "agent", String(input ?? ""), serverName ? String(serverName) : undefined),
+    mcpRemove: async ({ name, serverName }) => {
+      await this.rt.mcpRemove(String(name), String(serverName));
+      return { ok: true };
+    },
+    mcpSetEnabled: async ({ name, serverName, enabled }) => {
+      await this.rt.mcpSetEnabled(String(name), String(serverName), !!enabled);
+      return { ok: true };
+    },
+    mcpCheck: async ({ name, serverName }) => this.rt.mcpCheck(String(name), String(serverName)),
     dismiss: async ({ name, questionId }) => {
       await this.rt.dismissQuestion(name, String(questionId));
       return { ok: true };

@@ -53,6 +53,10 @@ export interface AgentState {
   pausedUntil?: string | null;
   /** Consecutive failed turns, for back-off. */
   failures?: number;
+  /** Turns that hit a passing provider problem (a 502, overloaded): retried, never counted as failures. */
+  transientFailures?: number;
+  /** When the current run of provider problems began. */
+  troubleSince?: string | null;
 }
 
 export interface Agent {
