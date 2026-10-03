@@ -1,4 +1,5 @@
 import { connect, createServer, type Server, type Socket } from "node:net";
+import { describeStep } from "./steps.js";
 import { buildId } from "./build.js";
 import { existsSync, unlinkSync } from "node:fs";
 import { paths } from "../paths.js";
@@ -72,10 +73,12 @@ export class ControlServer {
     let cur = this.live.get(key);
     if (!cur) this.live.set(key, (cur = { agent: e.agent, kind: e.kind, threadId: e.threadId, helperId: e.helperId, text: "", step: null, startedAt: new Date().toISOString() }));
     if (u.sessionUpdate === "agent_message_chunk" && u.content?.type === "text") cur.text = (cur.text + u.content.text).slice(-6000);
-    else if (u.sessionUpdate === "tool_call" && typeof u.title === "string") {
-      // What it is doing, in a few words. A reply it sends starts a fresh paragraph of streamed text.
-      cur.step = u.title.replace(/^mcp__overtime__/, "").slice(0, 120);
-      if (cur.text && !cur.text.endsWith("\n\n")) cur.text += "\n\n";
+    else if (u.sessionUpdate === "tool_call" || (u.sessionUpdate === "tool_call_update" && (u.title || u.rawInput))) {
+      // What it is doing, in plain words ("Running npm test", "Editing calc.py"), never a tool's name.
+      const step = describeStep(u);
+      if (!step) return;
+      cur.step = step;
+      if (u.sessionUpdate === "tool_call" && cur.text && !cur.text.endsWith("\n\n")) cur.text += "\n\n";
     } else return;
     // At most ~12 updates a second per session, so a fast model can't flood the app.
     if (cur.timer) return;
