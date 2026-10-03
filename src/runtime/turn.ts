@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { skillsBlock } from "../skills.js";
+import { listSkills, skillsBlock } from "../skills.js";
 import { recordLeftovers } from "./leftovers.js";
 import { paths } from "../paths.js";
 import { appendJsonl, newId } from "../fsutil.js";
@@ -214,7 +214,10 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
     const prot = base.protect.length ? `\nRead-only for you (the person's protected paths): ${base.protect.join(", ")}. If your work needs a change there, ask.` : "";
     // Like protected paths, the workspace is restated every turn, so a change reaches a continued session.
     const ws = o.kind !== "helper" && base.workspace !== agent.dir ? `\nYour workspace (where the work lives): ${base.workspace}` : "";
-    const header = `Time now: ${now.toISOString()} (${now.toString()}).\nWhy you are awake: ${o.reason}${o.header ? `\n${o.header}` : ""}${ws}${prot}`;
+    // Skill names every turn (descriptions are in the session's opening), so one written mid-session shows up.
+    const names = listSkills(agent.dir).map((k) => k.name);
+    const sk = names.length ? `\nYour skills (load with skill): ${names.join(", ")}` : "";
+    const header = `Time now: ${now.toISOString()} (${now.toString()}).\nWhy you are awake: ${o.reason}${o.header ? `\n${o.header}` : ""}${ws}${prot}${sk}`;
     const body = typeof o.text === "function" ? o.text(fresh) : o.text;
     const preamble = o.preamble ?? sessionPreamble(agent);
     const prompt = fresh ? `${preamble}\n\n---\n\n${header}\n\n${body}` : `${header}\n\n${body}`;

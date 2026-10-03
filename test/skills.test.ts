@@ -16,9 +16,9 @@ describe("skills", () => {
   const agentDir = mkdtempSync(join(tmpdir(), "ot-skill-agent-"));
 
   it("include Overtime's own guide to itself", () => {
-    const s = listSkills(agentDir).find((x) => x.name === "overtime");
+    const s = listSkills(agentDir).find((x) => x.name === "overtime-docs");
     expect(s?.source).toBe("built-in");
-    const r = readSkill(agentDir, "overtime")!;
+    const r = readSkill(agentDir, "overtime-docs")!;
     for (const fact of ["mcpServers", "overtime set", "dailyBudgetUsd", "customBackends", "protect", "overtimed.log"]) expect(r.text).toContain(fact);
   });
 
@@ -39,7 +39,7 @@ describe("skills", () => {
 
   it("are listed to every session by name and description only", () => {
     const b = skillsBlock(agentDir);
-    expect(b).toContain("- overtime:");
+    expect(b).toContain("- overtime-docs:");
     expect(b).toContain("- release (its own): My own way to release");
     expect(b).not.toContain("Run ./ship.sh");
   });
