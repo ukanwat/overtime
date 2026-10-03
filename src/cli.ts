@@ -32,18 +32,70 @@ const HELP = `overtime: agents that exist, not sessions
   overtime reply <name> <id> "…"   reply in a thread
   overtime answer <name> <id> <n>  answer a question with option n
   overtime stop|start|wake <name>
+  overtime acp                     speak ACP on stdio, for editors (Zed, JetBrains, VS Code)
   overtime daemon                  run the daemon in the foreground
   overtime daemon stop             stop the background daemon
+  overtime daemon install          start the daemon when you log in (asks first)
+  overtime daemon uninstall        stop starting it at login
 `;
+
+async function confirm(q: string, dflt: boolean): Promise<boolean> {
+  if (!process.stdin.isTTY) return dflt;
+  const { createInterface } = await import("node:readline/promises");
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const a = (await rl.question(q)).trim().toLowerCase();
+  rl.close();
+  return a ? a.startsWith("y") : dflt;
+}
+
+/** Asked once, on first run: keep agents running across restarts? */
+async function maybeAskAutostart(): Promise<void> {
+  const { loadSettings, saveSettings } = await import("./settings.js");
+  const s = await loadSettings();
+  if (s.autostartAsked) return;
+  const { autostartSupported, autostartInstalled, autostartDescription, installAutostart } = await import("./daemon/install.js");
+  if (!autostartSupported() || autostartInstalled()) return;
+  console.log("Overtime keeps a small background process running so your agents carry on when this window is closed.");
+  console.log(autostartDescription());
+  const yes = await confirm("Start it automatically when you log in? [Y/n] ", true);
+  await saveSettings({ ...s, autostartAsked: true });
+  if (yes) {
+    try {
+      await installAutostart();
+      console.log("Done.");
+    } catch (e: any) {
+      console.log(`Couldn't set that up: ${e?.message ?? e}. Overtime will still run until you log out.`);
+    }
+  }
+}
 
 async function main() {
   if (!cmd) {
+    await maybeAskAutostart();
     const { runApp } = await import("./tui/app.js");
     await runApp();
     return;
   }
   if (cmd === "help" || cmd === "--help" || cmd === "-h") return void console.log(HELP);
+  if (cmd === "acp") {
+    // For editors: speak ACP on stdio. Nothing else may be printed to stdout here.
+    const { runAcpServer } = await import("./acp/server.js");
+    await runAcpServer();
+    return;
+  }
   if (cmd === "daemon") {
+    if (rest[0] === "install") {
+      const { installAutostart, autostartDescription } = await import("./daemon/install.js");
+      console.log(autostartDescription());
+      if (!(await confirm("Install it? [y/N] ", false))) return void console.log("Nothing installed.");
+      await installAutostart();
+      return void console.log("Installed. Overtime will start when you log in.");
+    }
+    if (rest[0] === "uninstall") {
+      const { uninstallAutostart } = await import("./daemon/install.js");
+      await uninstallAutostart();
+      return void console.log("Removed. Overtime will no longer start at login (agents keep their folders).");
+    }
     if (rest[0] === "stop") {
       try {
         const c = await DaemonClient.connect();
