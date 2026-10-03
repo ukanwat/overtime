@@ -395,10 +395,10 @@ export class App implements Component {
       this.pending.pop();
       return this.tui.requestRender();
     }
-    if (!typing && !this.onNewRow && /^[1-9]$/.test(data)) {
+    if (!typing && !this.onNewRow && /^[0-9]$/.test(data)) {
       const q = openQuestion(this.messages);
       const n = Number(data);
-      if (q?.options?.length && n <= q.options.length) {
+      if (q && (n === 0 || (q.options?.length && n <= q.options.length))) {
         this.choosing = { id: q.id, n };
         this.scroll = Number.MAX_SAFE_INTEGER;
         this.anchor = "question"; // bring the question into view, once
@@ -411,7 +411,7 @@ export class App implements Component {
       else if (matchesKey(data, Key.enter)) {
         const n = this.choosing.n;
         this.choosing = null;
-        return this.answer(q, n);
+        return n === 0 ? this.dismiss(q) : this.answer(q, n);
       } else if (matchesKey(data, Key.escape)) {
         this.choosing = null;
         return this.tui.requestRender();
@@ -470,6 +470,14 @@ export class App implements Component {
     this.say(`Attached ${files.map((f) => f.name).join(", ")}. It goes with your next message.`, "ok");
   }
 
+  private async dismiss(q: Message): Promise<void> {
+    const a = this.agent;
+    if (!a || this.onNewRow) return;
+    await this.c.call("dismiss", { name: a.name, questionId: q.id });
+    this.say("Dismissed. It won't wait on an answer.", "ok");
+    await this.refresh();
+  }
+
   private async answer(q: Message, n: number): Promise<void> {
     const a = this.agent;
     if (!a || this.onNewRow) return;
@@ -497,7 +505,10 @@ export class App implements Component {
     this.pending = [];
     this.tui.requestRender();
     try {
-      await this.c.call("send", sent.length ? { name: a.name, text, attachments: sent.map((p) => p.path) } : { name: a.name, text });
+      // With a question open and no files, what you type answers it, as its card says.
+      const q = !sent.length ? openQuestion(this.messages) : undefined;
+      if (q) await this.c.call("answer", { name: a.name, questionId: q.id, text });
+      else await this.c.call("send", sent.length ? { name: a.name, text, attachments: sent.map((p) => p.path) } : { name: a.name, text });
     } catch (e) {
       // Put it back, so nothing typed is ever lost to an error.
       this.input.setValue(text);
@@ -1017,6 +1028,7 @@ export class App implements Component {
     if (!this.messages.length) body.push("", muted(`   No messages with ${a.name} yet.`));
 
     for (const m of this.messages) {
+      if (m.closes) continue; // a question's withdrawal or dismissal shows on the question itself
       const day = new Date(m.t).toDateString();
       if (day !== lastDay) {
         const label = day === new Date().toDateString() ? "Today" : day === new Date(Date.now() - 86400000).toDateString() ? "Yesterday" : new Date(m.t).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
@@ -1048,9 +1060,10 @@ export class App implements Component {
           // Answered: folded to the question and what you chose, so it never looks like it's still open.
           for (const l of paras(`${muted("?")} ${muted(hq.title)}  ${muted(stamp(m.t))}`, inner - 4)) body.push(line(l));
           const chosen = m.answer.choice && m.options?.[m.answer.choice - 1];
-          const said = m.answer.text.replace(/^\d+\.\s*/, "");
-          body.push(line(`${accent("✓")} ${chosen ? `You chose ${bold(optionLabel(chosen))}` : `You answered: ${said}`}`));
-          if (chosen && said.includes(" — ")) for (const l of paras(muted(said.split(" — ").slice(1).join(" — ")), inner - 4)) body.push(line(l));
+          const said = (m.answer.text ?? "").replace(/^\d+\.\s*/, "");
+          if (m.answer.closed) body.push(line(muted(m.answer.closed === "dismissed" ? "✕ You dismissed this question" : `✕ ${a.name} withdrew this question`)));
+          else body.push(line(`${accent("✓")} ${chosen ? `You chose ${bold(optionLabel(chosen))}` : `You answered: ${said}`}`));
+          if (!m.answer.closed && chosen && said.includes(" — ")) for (const l of paras(muted(said.split(" — ").slice(1).join(" — ")), inner - 4)) body.push(line(l));
           t = this.pushExtras(m, body, bodyHits, w, t, line);
           body.push("");
           prev = m;
@@ -1076,8 +1089,13 @@ export class App implements Component {
           });
         }
         if (open) {
+          const picked = this.choosing?.id === m.id && this.choosing.n === 0;
+          bodyHits.push({ line: body.length, act: () => ((this.choosing = null), this.dismiss(m)) });
+          body.push(line(`${picked ? inverse(bold(yellow(" 0 "))) : muted(" 0 ")} ${picked ? bold("Dismiss this question") : muted("Dismiss this question")}${picked ? `  ${yellow("← Enter to dismiss, Esc to cancel")}` : ""}`));
+        }
+        if (open) {
           body.push(line(""));
-          for (const l of paras(muted(m.options?.length ? `Press ${m.options.length === 1 ? "1" : `1–${m.options.length}`} to choose, then Enter. Or type a message to answer in your own words.` : "Type a message to answer."), inner - 4)) body.push(line(l));
+          for (const l of paras(muted(m.options?.length ? `Press ${m.options.length === 1 ? "1" : `1–${m.options.length}`} to choose (0 to dismiss), then Enter. Or type a message to answer in your own words.` : "Type a message to answer, or press 0 then Enter to dismiss."), inner - 4)) body.push(line(l));
         }
         t = this.pushExtras(m, body, bodyHits, w, t, line);
         body.push("");

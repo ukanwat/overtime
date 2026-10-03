@@ -93,8 +93,11 @@ Messages, answers and finished helpers always wake you early.`,
 
     reg(
       "cancel",
-      { description: "Stop a repeating wake-up, a watch or a running helper, by its id.", inputSchema: { id: z.string() } },
+      { description: "Stop a repeating wake-up, a watch or a running helper, or withdraw a question you asked that no longer applies, by its id.", inputSchema: { id: z.string() } },
       safe(async ({ id }) => {
+        if (id.startsWith("m_")) {
+          return (await host.withdrawQuestion(ctx.agent, id)) ? ok(`Withdrew question ${id}; it no longer waits on the person.`) : fail(`No open question ${id}.`);
+        }
         if (id.startsWith("helper_")) {
           return (await host.cancelHelper(ctx.agent, id)) ? ok(`Cancelling ${id}. Its result (what it got done) will come to you.`) : fail(`No running helper ${id}.`);
         }
@@ -131,7 +134,7 @@ Messages, answers and finished helpers always wake you early.`,
         const m = await store.addMessage({ from: "agent", kind: "question", text: question, why, recommendation, options, urgent, category, baseDir: dir });
         if (urgent) host.notify(`${ctx.agent} has a question`, question);
         host.changed(ctx.agent, "messages");
-        return ok(`Asked (${m.id}). Carry on with anything that doesn't depend on the answer.`);
+        return ok(`Asked (${m.id}). Carry on with anything that doesn't depend on the answer. If it stops applying (you decided, or asked something else instead), withdraw it with cancel ${m.id} so it doesn't keep waiting on the person.`);
       }),
     );
 

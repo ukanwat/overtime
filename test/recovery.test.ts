@@ -107,6 +107,35 @@ describe.runIf(process.platform === "darwin")("protected paths", () => {
   });
 });
 
+describe("instruction updates", () => {
+  it("reach a running conversation: a session started under older instructions starts fresh", async () => {
+    const { readdirSync } = await import("node:fs");
+    await employ("updated");
+    const runs = join(meta("updated"), "runs");
+    // The most recent chat run by its start time (run ids from the same second don't sort by time).
+    const lastChatStart = () =>
+      readdirSync(runs)
+        .filter((x) => x.startsWith("chat"))
+        .map((f) => readFileSync(join(runs, f), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((e) => e.event === "start"))
+        .filter(Boolean)
+        .sort((a, b) => a.t.localeCompare(b.t))
+        .at(-1).data;
+    // Send, and wait until that chat turn has completely finished (the conversation records it as seen).
+    const chat = async (text: string) => {
+      const m = await rt.send("updated", text);
+      await until(async () => (await rt.store("updated").conversation()).chatSeen === m.id, 30_000, `chat turn for "${text}"`);
+    };
+    await chat("first question");
+    await chat("second question");
+    expect(lastChatStart().fresh).toBe(false); // same instructions: the session continues
+    await rt.store("updated").patchConversation({ chatPrompt: "older-version" });
+    await chat("third question");
+    expect(lastChatStart().fresh).toBe(true); // instructions changed: a fresh session with the new ones
+    await chat("fourth question");
+    expect(lastChatStart().fresh).toBe(false); // and that one continues from then on
+  });
+});
+
 describe("budgets and settings", () => {
   it("doesn't spend in chats once the daily budget is used, and keeps the message", async () => {
     await employ("thrifty", "dailyBudgetUsd: 0.005");
