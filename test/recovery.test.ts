@@ -205,3 +205,48 @@ describe("what turns cost and see", () => {
     expect(s.wakeReason ?? "").not.toMatch(/default wake-up/);
   });
 });
+
+describe("common problems", () => {
+  it("says exactly what to do when the backend isn't signed in, once", async () => {
+    await rt.create("unsigned");
+    const [g] = await rt.store("unsigned").threads();
+    await rt.send("unsigned", "NOT_SIGNED_IN", g.id);
+    await until(async () => (await rt.store("unsigned").threads()).some((t) => t.kind === "alert"), 30_000, "alert");
+    const alert = (await rt.store("unsigned").threads()).find((t) => t.kind === "alert")!;
+    const th = await rt.store("unsigned").thread(alert.id);
+    expect(th!.entries[0].text).toMatch(/isn't signed in/);
+    // It retries slowly, not every minute.
+    const s = await rt.store("unsigned").schedule();
+    expect(new Date(s.wakeAt!).getTime() - Date.now()).toBeGreaterThan(30 * 60_000);
+  });
+
+  it("says so plainly when a backend isn't installed", async () => {
+    const { needsPerson } = await import("../src/runtime/errors.js");
+    expect(needsPerson('Could not start backend "gemini" (gemini): spawn gemini ENOENT', "gemini", "a")).toMatch(/isn't installed/);
+    expect(needsPerson("claude: Internal error: Your credit balance is too low", "claude", "a")).toMatch(/out of credit/);
+    expect(needsPerson("claude: Internal error: overloaded", "claude", "a")).toBeNull();
+  });
+
+  it("survives a damaged state file and keeps the damaged copy", async () => {
+    await rt.create("damaged");
+    const f = join(meta("damaged"), "threads.json");
+    writeFileSync(f, "{ not json");
+    const ths = await rt.store("damaged").threads();
+    expect(ths).toEqual([]);
+    const { readdirSync } = await import("node:fs");
+    expect(readdirSync(meta("damaged")).some((x) => x.startsWith("threads.json.damaged-"))).toBe(true);
+    // And keeps working.
+    await rt.send("damaged", "Your job is testing.");
+    expect((await rt.store("damaged").threads()).length).toBe(1);
+  });
+
+  it("never wipes AGENT.md settings when its saved copy is lost", async () => {
+    await rt.create("lostcopy", { dailyBudgetUsd: 7 } as any);
+    const { rmSync } = await import("node:fs");
+    rmSync(join(meta("lostcopy"), "settings.json"));
+    const { restoreSettings } = await import("../src/agent/agent.js");
+    await restoreSettings("lostcopy");
+    expect((await loadAgent("lostcopy")).settings.dailyBudgetUsd).toBe(7);
+    expect(readFileSync(join(home, "agents", "lostcopy", "AGENT.md"), "utf8")).toContain("dailyBudgetUsd: 7");
+  });
+});

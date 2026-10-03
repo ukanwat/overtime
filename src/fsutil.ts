@@ -10,12 +10,26 @@ export async function writeAtomic(path: string, data: string): Promise<void> {
   await rename(tmp, path);
 }
 
+/**
+ * Read a JSON file. A missing file gives the fallback. A damaged one (a full disk, a bad hand edit) is
+ * moved aside as <name>.damaged-<time> so nothing is lost, and the fallback is used, so one bad file
+ * can never stop an agent or the daemon.
+ */
 export async function readJson<T>(path: string, fallback: T): Promise<T> {
+  let text: string;
   try {
-    return JSON.parse(await readFile(path, "utf8")) as T;
+    text = await readFile(path, "utf8");
   } catch (e: any) {
     if (e?.code === "ENOENT") return fallback;
     throw e;
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    const aside = `${path}.damaged-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+    await rename(path, aside).catch(() => {});
+    console.error(`${new Date().toISOString()} ${path} was damaged; moved it to ${aside} and started that file fresh`);
+    return fallback;
   }
 }
 

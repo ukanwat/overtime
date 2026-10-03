@@ -41,6 +41,7 @@ async function tools(url: string) {
 async function turn(sessionId: string, text: string, cx: any): Promise<acp.PromptResponse> {
   const s = sessions.get(sessionId)!;
   const say = (t: string) => cx.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: t } } });
+  if (/NOT_SIGNED_IN/.test(text)) throw new acp.RequestError(-32000, "Authentication required");
   if (/COSTLY_FAIL/.test(text)) {
     s.cost += 0.25;
     await cx.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "usage_update", used: 1000, size: 100000, cost: { amount: s.cost, currency: "USD" } } as any });
