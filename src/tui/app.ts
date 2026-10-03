@@ -62,7 +62,8 @@ const spinner = () => SPINNER[Math.floor(Date.now() / 90) % SPINNER.length];
 const NARROW = 80;
 const PAGE = 10;
 /** Rows above the panes: the title bar and its rule. */
-const TOP = 2;
+/** Rows above the panes. None: the screen starts with content, like Claude Code. */
+const TOP = 0;
 /** A quiet gap (minutes) after which the agent's name is shown again above its next message. */
 const REGROUP_MIN = 10;
 
@@ -744,7 +745,7 @@ export class App implements Component {
     const rightW = narrow ? width : width - leftW - 1;
     this.leftW = leftW;
 
-    const out: string[] = [this.renderTop(width), this.connected ? faint("─".repeat(width)) : red("─".repeat(width))];
+    const out: string[] = [];
     const left = narrow ? [] : this.renderAgents(leftW, bodyH);
     const right = this.renderRight(rightW, bodyH, narrow ? 0 : leftW + 1, narrow);
     for (let i = 0; i < bodyH; i++) {
@@ -758,13 +759,14 @@ export class App implements Component {
     return out;
   }
 
-  private renderTop(w: number): string {
+  /** The first row of the agent list: the name of the app, and what needs you across all agents. */
+  private renderBrand(w: number): string {
     const title = ` ${accent("◆")} ${bold("overtime")}`;
-    if (!this.connected) return spread(title, red("can't reach the background process · reconnecting…") + " ", w);
+    if (!this.connected) return spread(title, red("offline") + " ", w);
     const working = this.agents.filter((a) => a.status === "working").length;
     const needs = this.agents.reduce((n, a) => n + a.waiting, 0);
-    const parts = [muted(`${this.agents.length} agent${this.agents.length === 1 ? "" : "s"}`), working ? accent(`${working} working`) : "", needs ? yellow(`${needs} need${needs === 1 ? "s" : ""} you`) : ""].filter(Boolean);
-    return spread(title, parts.join(sep) + " ", w);
+    const right = needs ? yellow(`${needs} need${needs === 1 ? "s" : ""} you`) : working ? accent(`${working} working`) : "";
+    return spread(title, right + " ", w);
   }
 
   private agentDetail(a: AgentSummary): string {
@@ -774,10 +776,10 @@ export class App implements Component {
   }
 
   private renderAgents(w: number, h: number): string[] {
-    const lines: string[] = [""];
+    const lines: string[] = [this.renderBrand(w), ""];
     const per = 3;
     const count = this.agents.length + 1;
-    const visible = Math.max(1, Math.floor((h - 2) / per));
+    const visible = Math.max(1, Math.floor((h - 3) / per));
     const start = Math.max(0, Math.min(this.sel - Math.floor(visible / 2), count - visible));
     for (let idx = start; idx < Math.min(count, start + visible); idx++) {
       const on = idx === this.sel;
@@ -1183,6 +1185,7 @@ export class App implements Component {
   }
 
   private renderFooter(w: number): string {
+    if (!this.connected && !this.flash) return ` ${red("✗")} ${red("Can't reach the background process. Reconnecting…")}`;
     if (this.flash) {
       const f = this.flash;
       const icon = f.tone === "ok" ? accent("✓") : f.tone === "err" ? red("✗") : accent("›");
