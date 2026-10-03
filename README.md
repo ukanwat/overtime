@@ -16,7 +16,6 @@
   Built by <a href="https://utkarshkanwat.com">Utkarsh Kanwat</a> · <a href="https://x.com/ukanwat">𝕏</a>
 </p>
 
-
 Today's coding agents work like a junior or a student. You sit with them and chat through every
 step, and the moment you stop talking, the work stops.
 
