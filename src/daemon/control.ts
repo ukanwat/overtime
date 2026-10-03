@@ -136,6 +136,7 @@ export class ControlServer {
         dailyTokenBudget: eff.dailyTokenBudget,
         workspace: eff.workspace,
         workspaceIsDefault: !a.settings.workspace,
+        sandbox: eff.sandbox,
         spentUsd: today.usd,
         costReported: today.costReported,
         tokensToday: today.tokens,
@@ -161,13 +162,14 @@ export class ControlServer {
     live: async () => [...this.live.values()].map(({ timer, ...rest }) => rest),
     backends: async () => this.rt.backends(),
     models: async ({ backend }) => this.rt.models(String(backend)),
-    set: async ({ name, backend, model, dailyBudgetUsd, dailyTokenBudget, workspace }) => {
+    set: async ({ name, backend, model, dailyBudgetUsd, dailyTokenBudget, workspace, sandbox }) => {
       await this.rt.setAgentSettings(name, {
         backend: backend || undefined,
         model,
         dailyBudgetUsd: dailyBudgetUsd === undefined ? undefined : Number(dailyBudgetUsd),
         dailyTokenBudget: dailyTokenBudget === undefined ? undefined : dailyTokenBudget === null ? null : Number(dailyTokenBudget),
         workspace,
+        sandbox: sandbox === undefined ? undefined : sandbox === null ? null : Boolean(sandbox),
       });
       return { ok: true };
     },

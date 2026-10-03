@@ -528,6 +528,13 @@ export class App implements Component {
       { label: "Token budget", field: "tokens", value: d?.dailyTokenBudget ? `${fmtTokens(d.dailyTokenBudget)} a day` : "none", note: `${fmtTokens(d?.tokensToday ?? a.tokensToday)} used today` },
       { label: "Work", heading: true },
       { label: "Workspace", field: "workspace", value: tilde(d?.workspace ?? a.dir), note: d && !d.workspaceIsDefault ? "where its work lives" : "its own folder" },
+      {
+        label: "Sandbox",
+        value: d ? (d.sandbox ? "on" : "off") : "…",
+        note: d?.sandbox === false ? "it can write anywhere you can" : "writes only to its folders, caches and install locations",
+        stay: true,
+        run: () => this.toggleSandbox(),
+      },
       { label: "Control", heading: true },
       { label: "Wake now", stay: true, run: () => this.wake() },
       { label: a.status === "stopped" ? "Start" : "Stop", stay: true, note: a.status === "stopped" ? "it carries on from where it was" : "keeps its folder and messages", run: () => this.toggleStop() },
@@ -547,6 +554,14 @@ export class App implements Component {
       if (running.length) rows.push({ label: `${running.length} helper${running.length === 1 ? "" : "s"} running`, note: running.map((h: any) => h.task.split("\n")[0]).join("; ") });
     }
     return rows;
+  }
+
+  private async toggleSandbox(): Promise<void> {
+    const o = this.overlay;
+    if (o?.kind !== "settings" || !o.data) return;
+    const on = !o.data.sandbox;
+    await this.c.call("set", { name: this.agent!.name, sandbox: on });
+    this.say(on ? "Sandbox on: it writes only where its work lives, from its next session." : "Sandbox off: it can write anywhere you can, from its next session.", "ok");
   }
 
   private moveSettings(d: number): void {

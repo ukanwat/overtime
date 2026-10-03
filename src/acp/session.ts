@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { sandboxLaunch, type SandboxSpec } from "../runtime/sandbox.js";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import type { McpServerConfig } from "../settings.js";
@@ -20,6 +21,15 @@ export interface OpenOptions {
   onPermission: (req: PermissionRequest) => PermissionResponse | Promise<PermissionResponse>;
   /** Backend stderr, for the daemon log. */
   onStderr?: (line: string) => void;
+  /** Run the backend inside Overtime's sandbox, writing only to these paths (null: not sandboxed). */
+  sandbox?: SandboxSpec | null;
+}
+
+/** Sandboxing was asked for but this machine can't do it; the turn doesn't run unprotected. */
+export class SandboxUnavailableError extends Error {
+  constructor(why: string) {
+    super(`Overtime's sandbox isn't available: ${why}. Install it, or switch the sandbox off for this agent in its settings.`);
+  }
 }
 
 /** A readable message from an ACP error: JSON-RPC errors often carry the real reason in `data`. */
@@ -83,7 +93,9 @@ export class AcpSession {
   ) {}
 
   static async open(opts: OpenOptions): Promise<AcpSession> {
-    const cmd = await backendCommand(opts.backend);
+    const base = await backendCommand(opts.backend);
+    const cmd = opts.sandbox ? sandboxLaunch(base.command, base.args, opts.sandbox) : { ...base, sandboxed: false };
+    if (opts.sandbox && !cmd.sandboxed) throw new SandboxUnavailableError(cmd.why ?? "the sandbox can't start here");
     // Its own process group, so closing it also ends everything it started (CLI, MCP servers, shells).
     const proc = spawn(cmd.command, cmd.args, {
       cwd: opts.cwd,

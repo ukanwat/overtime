@@ -43,6 +43,8 @@ export interface AgentSettingsView {
   dailyTokenBudget: number | null;
   workspace: string;
   workspaceIsDefault: boolean;
+  /** Whether it runs in Overtime's sandbox (writes only where its work lives). */
+  sandbox: boolean;
   spentUsd: number;
   costReported: boolean;
   tokensToday: number;

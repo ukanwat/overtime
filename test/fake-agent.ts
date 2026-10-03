@@ -5,7 +5,8 @@
 import * as acp from "@agentclientprotocol/sdk";
 import { Readable, Writable } from "node:stream";
 import { randomUUID } from "node:crypto";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -78,6 +79,17 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
         writeFileSync(join(folder, "INDEX.md"), "# Index\n\n- notes/: what I learned\n");
       }
       if (/Message from the person|The person answered|Passed on by your chat session/.test(text)) await t.call("send", { text: "main reply" });
+      if (/ESCAPE/.test(text)) {
+        // Try to write outside the agent's folders, as a script or program it wrote would.
+        const target = join(homedir(), `.ot-escape-${process.pid}`);
+        let result = "denied";
+        try {
+          writeFileSync(target, "x");
+          result = "LEAKED";
+          rmSync(target, { force: true });
+        } catch {}
+        writeFileSync(join(s.cwd, "escape-result.txt"), result);
+      }
       if (/SPAWN_SLOW/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "SLOW write result.txt" });
       else if (/SPAWN/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "write result.txt" });
       if (/SLOW/.test(text) && !/SPAWN_SLOW/.test(text) && !/Helper result/.test(text) && (await slow())) return { stopReason: "cancelled" };
