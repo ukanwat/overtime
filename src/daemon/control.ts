@@ -1,4 +1,4 @@
-import { createServer, type Server, type Socket } from "node:net";
+import { connect, createServer, type Server, type Socket } from "node:net";
 import { existsSync, unlinkSync } from "node:fs";
 import { paths } from "../paths.js";
 import { listAgents, loadAgent, effectiveSettings } from "../agent/agent.js";
@@ -85,7 +85,7 @@ export class ControlServer {
       return { ok: true };
     },
     wake: async ({ name }) => {
-      this.rt.wakeMain(name, "the person asked you to wake up");
+      await this.rt.wakeNow(name);
       return { ok: true };
     },
     limits: async () => readLimits(),
@@ -135,7 +135,11 @@ export class ControlServer {
 
   async start(): Promise<void> {
     const sockPath = paths.socket();
-    if (existsSync(sockPath)) unlinkSync(sockPath);
+    // Only remove a socket nobody answers on: a live one belongs to a running daemon.
+    if (existsSync(sockPath)) {
+      if (await socketAnswers(sockPath)) throw new Error("Another Overtime daemon is answering on its socket.");
+      unlinkSync(sockPath);
+    }
     this.server = createServer((sock) => {
       sock.setEncoding("utf8");
       let buf = "";
@@ -180,4 +184,18 @@ export class ControlServer {
       unlinkSync(paths.socket());
     } catch {}
   }
+}
+
+function socketAnswers(path: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const s = connect(path);
+    const done = (v: boolean) => {
+      clearTimeout(t);
+      s.destroy();
+      resolve(v);
+    };
+    const t = setTimeout(() => done(false), 2_000);
+    s.once("connect", () => done(true));
+    s.once("error", () => done(false));
+  });
 }

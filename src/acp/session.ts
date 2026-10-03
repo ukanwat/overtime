@@ -49,8 +49,21 @@ function isolationMeta(backend: string): Record<string, unknown> | undefined {
   return undefined;
 }
 
-/** The backend's fully autonomous mode, if it offers one. */
-const AUTONOMOUS_MODES = ["bypassPermissions", "full-access", "yolo", "auto"];
+/**
+ * Overtime is the one that answers permission requests, instantly (see runtime/permissions.ts).
+ * So sessions run in the backend's normal mode, where risky actions come to Overtime first,
+ * rather than a bypass mode where the backend would skip asking.
+ */
+const ASKING_MODES = ["default", "ask"];
+
+/** Every open backend session, so a shutdown can close them all. */
+const open = new Set<AcpSession>();
+const INIT_TIMEOUT_MS = 90_000;
+
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let t: NodeJS.Timeout;
+  return Promise.race([p, new Promise<T>((_, rej) => (t = setTimeout(() => rej(new Error(`${what} timed out after ${Math.round(ms / 1000)}s`)), ms)))]).finally(() => clearTimeout(t));
+}
 
 /**
  * One backend process speaking ACP, holding one session.
@@ -71,10 +84,12 @@ export class AcpSession {
 
   static async open(opts: OpenOptions): Promise<AcpSession> {
     const cmd = await backendCommand(opts.backend);
+    // Its own process group, so closing it also ends everything it started (CLI, MCP servers, shells).
     const proc = spawn(cmd.command, cmd.args, {
       cwd: opts.cwd,
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, ...opts.env },
+      detached: true,
     });
     const stderrTail: string[] = [];
     proc.stderr?.setEncoding("utf8");
@@ -102,17 +117,28 @@ export class AcpSession {
     const stream = acp.ndJsonStream(Writable.toWeb(proc.stdin!) as WritableStream<Uint8Array>, Readable.toWeb(proc.stdout!) as ReadableStream<Uint8Array>);
     const conn = app.connect(stream);
     const exited = new Promise<void>((r) => proc.once("exit", () => r()));
-    const init = await AcpSession.explain(
-      conn.agent.request(acp.methods.agent.initialize, {
-        protocolVersion: acp.PROTOCOL_VERSION,
-        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
-      }),
-      proc,
-      stderrTail,
-      opts.backend,
-      exited,
-    );
+    let init: acp.InitializeResponse;
+    try {
+      init = await AcpSession.explain(
+        withTimeout(
+          conn.agent.request(acp.methods.agent.initialize, {
+            protocolVersion: acp.PROTOCOL_VERSION,
+            clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+          }),
+          INIT_TIMEOUT_MS,
+          `Starting ${opts.backend}`,
+        ),
+        proc,
+        stderrTail,
+        opts.backend,
+        exited,
+      );
+    } catch (e) {
+      killGroup(proc, "SIGKILL");
+      throw e;
+    }
     self = new AcpSession(proc, conn, init, opts.backend, opts);
+    open.add(self);
     self.stderrTail = stderrTail;
     self.exited = exited;
     return self;
@@ -145,11 +171,15 @@ export class AcpSession {
 
   async newSession(): Promise<string> {
     const res: acp.NewSessionResponse = await this.wrap(
-      this.conn.agent.request<acp.NewSessionResponse>(acp.methods.agent.session.new, {
-        cwd: this.opts.cwd,
-        mcpServers: toAcpMcp(this.opts.mcpServers),
-        _meta: isolationMeta(this.backend),
-      } as any),
+      withTimeout(
+        this.conn.agent.request<acp.NewSessionResponse>(acp.methods.agent.session.new, {
+          cwd: this.opts.cwd,
+          mcpServers: toAcpMcp(this.opts.mcpServers),
+          _meta: isolationMeta(this.backend),
+        } as any),
+        INIT_TIMEOUT_MS,
+        "Creating a session",
+      ),
     );
     this.sessionId = res.sessionId;
     this.newSessionInfo = res;
@@ -163,12 +193,16 @@ export class AcpSession {
     this.sessionId = sessionId;
     this.replaying = true;
     try {
-      const res: any = await this.conn.agent.request(acp.methods.agent.session.load, {
-        sessionId,
-        cwd: this.opts.cwd,
-        mcpServers: toAcpMcp(this.opts.mcpServers),
-        _meta: isolationMeta(this.backend),
-      } as any);
+      const res: any = await withTimeout(
+        this.conn.agent.request(acp.methods.agent.session.load, {
+          sessionId,
+          cwd: this.opts.cwd,
+          mcpServers: toAcpMcp(this.opts.mcpServers),
+          _meta: isolationMeta(this.backend),
+        } as any),
+        INIT_TIMEOUT_MS,
+        "Loading the session",
+      );
       await this.goAutonomous(res?.modes);
       return true;
     } catch {
@@ -181,7 +215,7 @@ export class AcpSession {
 
   private async goAutonomous(modes: { availableModes?: { id: string }[]; currentModeId?: string } | undefined): Promise<void> {
     const ids = modes?.availableModes?.map((m) => m.id) ?? [];
-    const target = AUTONOMOUS_MODES.find((m) => ids.includes(m));
+    const target = ASKING_MODES.find((m) => ids.includes(m));
     if (!target || modes?.currentModeId === target) return;
     try {
       await this.conn.agent.request(acp.methods.agent.session.setMode, { sessionId: this.sessionId, modeId: target });
@@ -226,16 +260,35 @@ export class AcpSession {
     } catch {}
   }
 
-  /** Close the connection and make sure the backend process is gone. */
+  /** Close the connection and make sure the backend and everything it started are gone. */
   async close(): Promise<void> {
+    open.delete(this);
     try {
       this.conn.close();
     } catch {}
-    if (this.proc.exitCode === null) {
-      this.proc.kill("SIGTERM");
-      const t = setTimeout(() => this.proc.kill("SIGKILL"), 3000);
-      await new Promise<void>((r) => this.proc.once("exit", () => r()));
+    if (this.proc.exitCode === null && this.proc.signalCode === null) {
+      killGroup(this.proc, "SIGTERM");
+      const t = setTimeout(() => killGroup(this.proc, "SIGKILL"), 3000);
+      await Promise.race([this.exited, new Promise((r) => setTimeout(r, 5000))]);
       clearTimeout(t);
     }
+    // Anything the backend left behind in its group.
+    killGroup(this.proc, "SIGKILL");
+  }
+
+  /** Close every open backend session (daemon shutdown). */
+  static async closeAll(): Promise<void> {
+    await Promise.allSettled([...open].map((s) => s.close()));
+  }
+}
+
+function killGroup(p: ChildProcess, sig: NodeJS.Signals): void {
+  if (!p.pid) return;
+  try {
+    process.kill(-p.pid, sig);
+  } catch {
+    try {
+      p.kill(sig);
+    } catch {}
   }
 }

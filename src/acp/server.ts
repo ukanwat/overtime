@@ -3,6 +3,24 @@ import * as acp from "@agentclientprotocol/sdk";
 import { ensureDaemon, type DaemonClient } from "../daemon/client.js";
 import type { AgentSummary } from "../daemon/control.js";
 import type { ThreadEntry } from "../store/types.js";
+import { join } from "node:path";
+import { home } from "../paths.js";
+import { readJson, writeJson } from "../fsutil.js";
+import { withLock } from "../store/mutex.js";
+
+/** Editor session ids and the thread each one became, kept so an editor can reopen a session later. */
+const sessionsFile = () => join(home(), "acp-sessions.json");
+type Saved = Record<string, { agent: string; threadId: string | null }>;
+async function remember(id: string, agent: string, threadId: string | null): Promise<void> {
+  await withLock("acp-sessions", async () => {
+    const all = await readJson<Saved>(sessionsFile(), {});
+    all[id] = { agent, threadId };
+    await writeJson(sessionsFile(), all);
+  });
+}
+async function recall(id: string): Promise<{ agent: string; threadId: string | null } | null> {
+  return (await readJson<Saved>(sessionsFile(), {}))[id] ?? null;
+}
 
 /**
  * Overtime as an ACP agent, so editors (Zed, JetBrains, VS Code ACP extensions, Neovim...) can talk to
@@ -19,12 +37,26 @@ interface Sess {
 const REPLY_TIMEOUT_MS = 15 * 60_000;
 
 export async function runAcpServer(): Promise<void> {
-  const c: DaemonClient = await ensureDaemon();
   const sessions = new Map<string, Sess>();
   const waiters = new Set<() => void>();
-  await c.subscribe(() => {
+  const wakeWaiters = () => {
     for (const w of [...waiters]) w();
-  });
+  };
+  // The daemon can restart under a long editor session: reconnect on the next call.
+  let client: DaemonClient = await ensureDaemon();
+  await client.subscribe(wakeWaiters);
+  let connecting: Promise<DaemonClient> | null = null;
+  const live = async (): Promise<DaemonClient> => {
+    if (!client.isClosed) return client;
+    connecting ??= (async () => {
+      const next = await ensureDaemon();
+      await next.subscribe(wakeWaiters);
+      client = next;
+      return next;
+    })().finally(() => (connecting = null));
+    return connecting;
+  };
+  const c = { call: async <T = any>(method: string, params: Record<string, unknown> = {}): Promise<T> => (await live()).call<T>(method, params) };
 
   const agents = async (): Promise<AgentSummary[]> => c.call("agents");
   const modes = async (current: string) => {
@@ -34,7 +66,7 @@ export async function runAcpServer(): Promise<void> {
       currentModeId: current,
     };
   };
-  const sid = (agent: string, threadId: string | null) => `${agent}:${threadId ?? "new"}:${Math.random().toString(36).slice(2, 8)}`;
+  const sid = () => `ot_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 
   const stream = acp.ndJsonStream(Writable.toWeb(process.stdout) as WritableStream<Uint8Array>, Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>);
 
@@ -51,15 +83,18 @@ export async function runAcpServer(): Promise<void> {
       const list = await agents();
       if (!list.length) throw acp.RequestError.invalidParams?.({ message: "No Overtime agents yet. Create one with `overtime new <name>`." }) ?? new Error("No Overtime agents yet.");
       const first = list.find((a) => a.status !== "stopped") ?? list[0];
-      const id = sid(first.name, null);
+      const id = sid();
       sessions.set(id, { agent: first.name, threadId: null, seen: 0 });
+      await remember(id, first.name, null);
       return { sessionId: id, modes: await modes(first.name) } as any;
     })
     .onRequest("session/load", async (ctx: any) => {
-      const [agent, threadId] = String(ctx.params.sessionId).split(":");
-      const th = await c.call("thread", { name: agent, id: threadId, markRead: true });
-      sessions.set(ctx.params.sessionId, { agent, threadId, seen: th.entries.length });
-      for (const e of th.entries as ThreadEntry[]) {
+      const saved = await recall(String(ctx.params.sessionId));
+      if (!saved) throw new Error("Overtime doesn't know that session. Start a new one.");
+      const { agent, threadId } = saved;
+      const entries: ThreadEntry[] = threadId ? (await c.call("thread", { name: agent, id: threadId, markRead: true })).entries : [];
+      sessions.set(ctx.params.sessionId, { agent, threadId, seen: entries.length });
+      for (const e of entries) {
         await ctx.client.notify(acp.methods.client.session.update, {
           sessionId: ctx.params.sessionId,
           update: { sessionUpdate: e.from === "you" ? "user_message_chunk" : "agent_message_chunk", content: text(render(e)) },
@@ -74,6 +109,7 @@ export async function runAcpServer(): Promise<void> {
         s.agent = ctx.params.modeId;
         s.threadId = null;
         s.seen = 0;
+        await remember(ctx.params.sessionId, s.agent, null);
       }
       return {} as any;
     })
@@ -93,6 +129,7 @@ export async function runAcpServer(): Promise<void> {
         const r = await c.call("send", { name: s.agent, text: msg });
         s.threadId = r.threadId;
         s.seen = 0;
+        await remember(ctx.params.sessionId, s.agent, s.threadId);
       }
       s.seen += 1; // our own message
       // Wait for the agent's reply in this thread; the agent keeps working afterwards on its own.
@@ -103,6 +140,7 @@ export async function runAcpServer(): Promise<void> {
           done = true;
           waiters.delete(check);
           clearTimeout(timer);
+          clearInterval(poll);
           resolve(v);
         };
         const check = () => {
@@ -115,6 +153,8 @@ export async function runAcpServer(): Promise<void> {
           }).catch(() => {});
         };
         const timer = setTimeout(() => finish("timeout"), REPLY_TIMEOUT_MS);
+        // Events are the fast path; this catches a reply that landed while the daemon was reconnecting.
+        const poll = setInterval(check, 10_000);
         s.cancel = () => finish("cancelled");
         waiters.add(check);
         check();

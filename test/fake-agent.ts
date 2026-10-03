@@ -16,6 +16,12 @@ interface S {
   cost: number;
 }
 const sessions = new Map<string, S>();
+let cancelled = false;
+/** SLOW: wait up to a minute, ending early (as a real backend does) when the turn is cancelled. */
+async function slow(): Promise<boolean> {
+  for (let i = 0; i < 600 && !cancelled; i++) await new Promise((r) => setTimeout(r, 100));
+  return cancelled;
+}
 
 async function tools(url: string) {
   const c = new Client({ name: "fake-agent", version: "1" });
@@ -46,6 +52,10 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
   const threads = [...new Set([...text.matchAll(/\(thread (th_[a-z0-9_]+)\)/g)].map((m) => m[1]))];
   try {
     if (/You are a helper/.test(text) || /a helper working for/.test(text)) {
+      if (/SLOW/.test(text)) {
+        await t.call("done", { result: "partial: got halfway" });
+        if (await slow()) return { stopReason: "cancelled" };
+      }
       writeFileSync(join(s.cwd, "result.txt"), "helper output\n");
       await t.call("done", { result: `wrote ${join(s.cwd, "result.txt")}` });
       await say("helper done");
@@ -56,12 +66,16 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
       else await say(`final words as reply to: ${msg}`);
     } else {
       if (/This is your first conversation/.test(text) && folder) {
+        // Real backends report their file writes as tool calls; so does the fake.
+        await cx.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "tool_call", toolCallId: "w1", title: "Write AGENT.md", kind: "edit", status: "completed", locations: [{ path: join(folder, "AGENT.md") }] } as any });
         writeFileSync(join(folder, "AGENT.md"), "# fake\n\n## Job\nTest job.\n\n## Rules\n- Ask before publishing.\n");
         mkdirSync(join(folder, "notes"), { recursive: true });
         writeFileSync(join(folder, "INDEX.md"), "# Index\n\n- notes/: what I learned\n");
       }
       for (const th of threads) await t.call("send", { to: th, text: `main reply in ${th}` });
-      if (/SPAWN/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "write result.txt" });
+      if (/SPAWN_SLOW/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "SLOW write result.txt" });
+      else if (/SPAWN/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "write result.txt" });
+      if (/SLOW/.test(text) && !/SPAWN_SLOW/.test(text) && !/Helper result/.test(text) && (await slow())) return { stopReason: "cancelled" };
       if (/WATCH_LONG/.test(text)) await t.call("wake", { watch: "for i in 1 2 3; do echo tick $i; sleep 1; done; sleep 600", reason: "long test", cooldown: "1s" });
       if (/WATCH_REPEAT/.test(text)) await t.call("wake", { watch: "cat watched.txt 2>/dev/null || echo none", every: "10s", reason: "repeat test", cooldown: "1s" });
       if (/ASK/.test(text) && !/answered one of your questions/.test(text)) await t.call("ask", { question: "Bridge or ferry?", why: "test", recommendation: "Bridge", options: ["Bridge", "Ferry"], category: "test-choice" });
@@ -101,5 +115,7 @@ acp
   })
   .onRequest("session/set_mode", () => ({}) as any)
   .onRequest("session/prompt", (ctx: any) => turn(ctx.params.sessionId, ctx.params.prompt.map((p: any) => p.text ?? "").join("\n"), ctx.client))
-  .onNotification("session/cancel", () => {})
+  .onNotification("session/cancel", () => {
+    cancelled = true;
+  })
   .connect(stream);

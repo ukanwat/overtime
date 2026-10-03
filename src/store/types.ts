@@ -99,5 +99,7 @@ export interface HelperRecord {
   status: "running" | "done" | "failed" | "cancelled";
   startedAt: string;
   finishedAt?: string;
+  /** When its folder was removed (a week after it finished). */
+  cleanedAt?: string;
   result?: string;
 }
