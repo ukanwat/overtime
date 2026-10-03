@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
+process.env.OVERTIME_STILL = "1"; // still frames: screenshots compared across moments must not differ by an animation
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
