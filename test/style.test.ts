@@ -23,3 +23,19 @@ describe("the working shimmer", () => {
     expect(cut("short", 12)).toBe("short");
   });
 });
+
+describe("links in messages", () => {
+  it("become clickable where they're written, longest first, with your home shown as ~", async () => {
+    const { linkify } = await import("../src/tui/app.js");
+    const text = "See /Users/me/a/story and /Users/me/a/story/review.md, or https://example.com/x.";
+    const out = linkify(text, [
+      { label: "/Users/me/a/story", target: "/Users/me/a/story", kind: "folder" },
+      { label: "/Users/me/a/story/review.md", target: "/Users/me/a/story/review.md", kind: "file" },
+      { label: "https://example.com/x", target: "https://example.com/x", kind: "url" },
+    ], "/Users/me");
+    const visible = out.replace(/\x1b\]8;;[^\x07]*\x07/g, "").replace(/\x1b\[[0-9;]*m/g, "");
+    expect(visible).toBe("See ~/a/story and ~/a/story/review.md, or https://example.com/x.");
+    expect(out).toContain("\x1b]8;;file:///Users/me/a/story/review.md\x07");
+    expect(out).toContain("\x1b]8;;https://example.com/x\x07");
+  });
+});
