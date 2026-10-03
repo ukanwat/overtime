@@ -486,7 +486,10 @@ export class Runtime extends EventEmitter implements ToolHost {
     const spend = s.costReported ? `Spent today: $${s.usd.toFixed(2)} of $${s.budgetUsd.toFixed(2)} (as your backend reports it).` : s.tokens ? `Used today: ${s.tokens.toLocaleString()} tokens${s.budgetTokens != null ? ` of ${s.budgetTokens.toLocaleString()}` : ""}.` : `Nothing spent yet today (budget $${s.budgetUsd.toFixed(2)}).`;
     const running = (await this.store(agentName).helpers()).filter((h) => h.status === "running");
     const helpers = running.length ? `Helpers still running: ${running.map((h) => `${h.id} (${h.task.split("\n")[0].slice(0, 60)})`).join("; ")}.` : "";
-    return [spend, helpers].filter(Boolean).join("\n");
+    const { liveBackground } = await import("../runtime/leftovers.js");
+    const bg = await liveBackground(agentName).catch(() => []);
+    const kept = bg.length ? `Still running in the background (you started these; stop what you no longer need with kill <pid>): ${bg.map((b) => `pid ${b.pid} \`${b.command.slice(0, 100)}\` since ${b.started}`).join("; ")}.` : "";
+    return [spend, helpers, kept].filter(Boolean).join("\n");
   }
 
   /** Keep state.nextWake in sync: the earliest of its wake-up and loops. */
@@ -653,6 +656,11 @@ export class Runtime extends EventEmitter implements ToolHost {
       `Status: ${a.state.status}${a.state.activity ? ` — ${a.state.activity}` : ""}`,
       `Next wake: ${sched.wakeAt ?? "not set"}${sched.wakeReason ? ` (${sched.wakeReason})` : ""}`,
       helpers.length ? `Helpers running: ${helpers.map((h) => h.task.split("\n")[0].slice(0, 80)).join("; ")}` : "Helpers running: none",
+      ...(await (async () => {
+        const { liveBackground } = await import("../runtime/leftovers.js");
+        const bg = await liveBackground(agentName).catch(() => []);
+        return bg.length ? [`Running in the background: ${bg.map((b) => `pid ${b.pid} ${b.command.slice(0, 80)}`).join("; ")}`] : [];
+      })()),
       reports.length ? `Recent reports:\n${reports.map((r) => `- ${r.t}: ${r.text.split("\n")[0].slice(0, 200)}`).join("\n")}` : "Recent reports: none",
     ];
     return lines.join("\n");
@@ -868,6 +876,10 @@ export class Runtime extends EventEmitter implements ToolHost {
     this.agentAborts.get(name)?.abort();
     this.agentAborts.delete(name);
     this.pendingWake.delete(name);
+    // And what it kept running in the background: a stopped agent leaves nothing behind.
+    const { stopBackground } = await import("../runtime/leftovers.js");
+    const n = await stopBackground(name).catch(() => 0);
+    if (n) this.log(`[${name}] stopped ${n} background process(es) it had kept running`);
     this.changed(name, "state");
   }
 

@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { stopLeftovers } from "./leftovers.js";
+import { recordLeftovers } from "./leftovers.js";
 import { paths } from "../paths.js";
 import { appendJsonl, newId } from "../fsutil.js";
 import { AcpSession, type SessionUpdate, type PromptResult } from "../acp/session.js";
@@ -138,7 +138,7 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
   const onAbort = () => stop("cancelled");
   o.signal?.addEventListener("abort", onAbort);
 
-  // Count this session in: what it starts in the background is stopped once the agent's last session ends.
+  // Count this session in: what its sessions leave running is recorded once the agent's last session ends.
   const act = activeSessions.get(agent.name) ?? { count: 0, since: Date.now(), roots: new Set<string>() };
   if (act.count === 0) act.since = Date.now();
   act.count++;
@@ -261,8 +261,9 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
     act.count--;
     if (act.count === 0) {
       activeSessions.delete(agent.name);
-      const n = await stopLeftovers(act.since, [...act.roots]).catch(() => 0);
-      if (n) o.log?.(`[${agent.name}] stopped ${n} process(es) its sessions left running in the background`);
+      // Kept running (the agent decides), but recorded so it and the person can see and control them.
+      const fresh = await recordLeftovers(agent.name, act.since, [...act.roots]).catch(() => []);
+      if (fresh.length) o.log?.(`[${agent.name}] keeps running in the background: ${fresh.map((b) => `${b.pid} ${b.command.slice(0, 80)}`).join("; ")}`);
     }
     // The settings block is the person's. If an agent session wrote AGENT.md since this turn began, a
     // changed block is the agent's doing and is put back; if none did, the change is the person's edit.
