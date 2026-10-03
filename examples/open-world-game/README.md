@@ -13,7 +13,6 @@
   Built by <a href="https://utkarshkanwat.com">Utkarsh Kanwat</a> · <a href="https://x.com/ukanwat">𝕏</a>
 </p>
 
-
 Chat is how you manage a junior. A brief is how you manage a senior: the goal, the constraints,
 what "done" looks like, and a budget. Overtime gives a coding agent a brief and then stays out
 of the way. The agent plans its own work across many sessions, writes its own status reports, and
