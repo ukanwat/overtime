@@ -13,6 +13,7 @@ export interface AgentSettings {
   backend?: string;
   model?: string | null;
   dailyBudgetUsd?: number;
+  dailyTokenBudget?: number | null;
   /** Where the work lives. Defaults to the agent's own folder. */
   workspace?: string;
   /** Extra MCP servers for this agent only. */
@@ -21,7 +22,7 @@ export interface AgentSettings {
   disableMcp?: string[];
 }
 
-export type AgentStatus = "new" | "working" | "asleep" | "stopped" | "error";
+export type AgentStatus = "new" | "working" | "asleep" | "paused" | "stopped" | "error";
 
 export interface AgentState {
   formatVersion: number;
@@ -37,6 +38,10 @@ export interface AgentState {
   createdAt: string;
   lastRunAt: string | null;
   lastError: string | null;
+  /** When paused by a subscription usage limit: when it resumes. */
+  pausedUntil?: string | null;
+  /** Consecutive failed turns, for back-off. */
+  failures?: number;
 }
 
 export interface Agent {
@@ -55,8 +60,13 @@ export interface EffectiveSettings {
   backend: string;
   model: string | null;
   dailyBudgetUsd: number;
+  dailyTokenBudget: number | null;
   workspace: string;
   mcpServers: McpServerConfig[];
+}
+
+export function expandHome(p: string): string {
+  return p === "~" ? (process.env.HOME ?? p) : p.startsWith("~/") ? join(process.env.HOME ?? "", p.slice(2)) : p;
 }
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
@@ -141,6 +151,33 @@ export async function updateState(name: string, patch: Partial<AgentState>): Pro
   return next;
 }
 
+/**
+ * The agent owns AGENT.md and rewrites it, but its settings (front matter) are the person's.
+ * If a rewrite dropped or changed them, put the previous settings back.
+ */
+export async function protectSettings(name: string, before: AgentSettings): Promise<boolean> {
+  if (!Object.keys(before).length) return false;
+  const file = join(paths.agent(name), "AGENT.md");
+  let text: string;
+  try {
+    text = await readFile(file, "utf8");
+  } catch {
+    return false;
+  }
+  const { data, body } = parseFrontMatter(text);
+  const same = JSON.stringify(sortKeys(data)) === JSON.stringify(sortKeys(before as Record<string, unknown>));
+  if (same) return false;
+  const { stringifyFrontMatter } = await import("./frontmatter.js");
+  // Keep any settings the agent added on its own only if the person hadn't set that key.
+  const merged = { ...data, ...before };
+  await writeFile(file, stringifyFrontMatter(merged, body));
+  return true;
+}
+
+function sortKeys(o: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.keys(o).sort().map((k) => [k, o[k]]));
+}
+
 export async function effectiveSettings(agent: Agent): Promise<EffectiveSettings> {
   const g = await loadSettings();
   const disabled = new Set(agent.settings.disableMcp ?? []);
@@ -149,7 +186,8 @@ export async function effectiveSettings(agent: Agent): Promise<EffectiveSettings
     backend: agent.settings.backend ?? g.backend,
     model: agent.settings.model ?? g.model,
     dailyBudgetUsd: agent.settings.dailyBudgetUsd ?? g.dailyBudgetUsd,
-    workspace: agent.settings.workspace ?? agent.dir,
+    dailyTokenBudget: agent.settings.dailyTokenBudget !== undefined ? agent.settings.dailyTokenBudget : g.dailyTokenBudget,
+    workspace: agent.settings.workspace ? expandHome(agent.settings.workspace) : agent.dir,
     mcpServers: [...shared, ...(agent.settings.mcpServers ?? [])],
   };
 }

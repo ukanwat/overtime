@@ -22,6 +22,14 @@ export interface OpenOptions {
   onStderr?: (line: string) => void;
 }
 
+/** A readable message from an ACP error: JSON-RPC errors often carry the real reason in `data`. */
+export function describeAcpError(e: any, backend: string): string {
+  const base = String(e?.message ?? e);
+  const d = e?.data;
+  const detail = typeof d === "string" ? d : d?.message ?? d?.details ?? d?.error ?? (d ? JSON.stringify(d).slice(0, 300) : "");
+  return detail && !base.includes(String(detail)) ? `${backend}: ${base}: ${detail}` : `${backend}: ${base}`;
+}
+
 export function toAcpMcp(servers: McpServerConfig[]): acp.McpServer[] {
   return servers.map((s): acp.McpServer => {
     if (s.url) {
@@ -68,9 +76,15 @@ export class AcpSession {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, ...opts.env },
     });
+    const stderrTail: string[] = [];
     proc.stderr?.setEncoding("utf8");
     proc.stderr?.on("data", (chunk: string) => {
-      for (const line of chunk.split("\n")) if (line.trim()) opts.onStderr?.(line);
+      for (const line of chunk.split("\n")) {
+        if (!line.trim()) continue;
+        stderrTail.push(line);
+        if (stderrTail.length > 40) stderrTail.shift();
+        opts.onStderr?.(line);
+      }
     });
     const spawned = await new Promise<Error | null>((resolve) => {
       proc.once("spawn", () => resolve(null));
@@ -87,12 +101,42 @@ export class AcpSession {
       .onRequest(acp.methods.client.session.requestPermission, async (ctx) => opts.onPermission(ctx.params));
     const stream = acp.ndJsonStream(Writable.toWeb(proc.stdin!) as WritableStream<Uint8Array>, Readable.toWeb(proc.stdout!) as ReadableStream<Uint8Array>);
     const conn = app.connect(stream);
-    const init = await conn.agent.request(acp.methods.agent.initialize, {
-      protocolVersion: acp.PROTOCOL_VERSION,
-      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
-    });
+    const exited = new Promise<void>((r) => proc.once("exit", () => r()));
+    const init = await AcpSession.explain(
+      conn.agent.request(acp.methods.agent.initialize, {
+        protocolVersion: acp.PROTOCOL_VERSION,
+        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+      }),
+      proc,
+      stderrTail,
+      opts.backend,
+      exited,
+    );
     self = new AcpSession(proc, conn, init, opts.backend, opts);
+    self.stderrTail = stderrTail;
+    self.exited = exited;
     return self;
+  }
+
+  stderrTail: string[] = [];
+  exited: Promise<void> = Promise.resolve();
+
+  /** Turn "connection closed" into the backend's own last words, so failures say what actually went wrong. */
+  static async explain<T>(p: Promise<T>, proc: ChildProcess, tail: string[], backend: string, exited: Promise<void>): Promise<T> {
+    try {
+      return await p;
+    } catch (e: any) {
+      await Promise.race([exited, new Promise((r) => setTimeout(r, 500))]);
+      if (proc.exitCode !== null || proc.signalCode) {
+        const last = tail.filter((l) => !/^\s+at /.test(l)).slice(-6).join(" | ");
+        throw new Error(`The ${backend} backend stopped (${proc.signalCode ?? `exit ${proc.exitCode}`})${last ? `: ${last}` : ""}`);
+      }
+      throw new Error(describeAcpError(e, backend));
+    }
+  }
+
+  private wrap<T>(p: Promise<T>): Promise<T> {
+    return AcpSession.explain(p, this.proc, this.stderrTail, this.backend, this.exited);
   }
 
   get canLoad(): boolean {
@@ -100,11 +144,13 @@ export class AcpSession {
   }
 
   async newSession(): Promise<string> {
-    const res: acp.NewSessionResponse = await this.conn.agent.request<acp.NewSessionResponse>(acp.methods.agent.session.new, {
-      cwd: this.opts.cwd,
-      mcpServers: toAcpMcp(this.opts.mcpServers),
-      _meta: isolationMeta(this.backend),
-    } as any);
+    const res: acp.NewSessionResponse = await this.wrap(
+      this.conn.agent.request<acp.NewSessionResponse>(acp.methods.agent.session.new, {
+        cwd: this.opts.cwd,
+        mcpServers: toAcpMcp(this.opts.mcpServers),
+        _meta: isolationMeta(this.backend),
+      } as any),
+    );
     this.sessionId = res.sessionId;
     this.newSessionInfo = res;
     await this.goAutonomous(res.modes as any);
@@ -166,10 +212,12 @@ export class AcpSession {
   }
 
   async prompt(text: string): Promise<PromptResult> {
-    return this.conn.agent.request(acp.methods.agent.session.prompt, {
-      sessionId: this.sessionId,
-      prompt: [{ type: "text", text }],
-    });
+    return this.wrap(
+      this.conn.agent.request(acp.methods.agent.session.prompt, {
+        sessionId: this.sessionId,
+        prompt: [{ type: "text", text }],
+      }),
+    );
   }
 
   async cancel(): Promise<void> {
