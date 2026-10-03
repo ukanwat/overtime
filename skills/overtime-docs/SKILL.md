@@ -1,5 +1,5 @@
 ---
-name: overtime
+name: overtime-docs
 description: How Overtime works, for answering the person's questions and acting correctly - where settings, MCP servers, budgets, backends, files and logs live, what each tool does, and the exact commands the person runs.
 ---
 

@@ -131,7 +131,7 @@ top, then the instructions) and any scripts or references it needs. Agents see t
 every session, by name and description only, and load one with the `skill` tool when it's relevant, so
 skills cost almost nothing until they're used. They come from three places:
 
-- **Built in.** The `overtime` skill is Overtime's own manual: where settings, MCP servers, budgets,
+- **Built in.** The `overtime-docs` skill is Overtime's own manual: where settings, MCP servers, budgets,
   files and logs live, what each tool does, and the exact commands you run. Ask an agent "how do I give
   you a GitHub MCP server?" and it answers from this, not from guesswork.
 - **Yours**, for every agent: `~/overtime/skills/<name>/SKILL.md`.
