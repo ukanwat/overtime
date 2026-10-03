@@ -10,6 +10,7 @@ import type { McpServerConfig } from "../settings.js";
 import { INSTRUCTIONS_VERSION, workingInstructions } from "./instructions.js";
 import { answer, judge } from "./permissions.js";
 import { recordTurnUsage, writeLimit, type TurnUsage } from "./usage.js";
+import { classify } from "./errors.js";
 
 export type SessionKind = "main" | "chat" | "helper";
 
@@ -245,6 +246,12 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
       const lim = limitRejected as { resetsAt: Date | null } | null;
       if (lim) throw new UsageLimitError(eff.backend, lim.resetsAt);
       if (stopped) throw new TurnIncompleteError(stopped, promptSent);
+      // A usage limit, whichever backend says so: noted for the backend, so every agent on it waits
+      // (see blockedUntil), and reported as a limit rather than a failure.
+      if (classify(e) === "limit") {
+        await writeLimit({ backend: eff.backend, status: "rejected", updatedAt: new Date().toISOString() });
+        throw new UsageLimitError(eff.backend, null);
+      }
       throw e;
     }
     await record("end", { stopReason: res.stopReason, usage: res.usage ?? null, sessionCost, context });

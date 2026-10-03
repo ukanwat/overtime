@@ -21,7 +21,7 @@ import { runTurn, sessionPreamble, TurnIncompleteError, UsageLimitError, type Tu
 import { blockedUntil, usageToday, type TurnUsage } from "../runtime/usage.js";
 import { workingInstructions } from "../runtime/instructions.js";
 import { MonitorRunner, reapStaleMonitors } from "./monitors.js";
-import { classify, isTransient, needsPerson } from "../runtime/errors.js";
+import { isTransient, needsPerson } from "../runtime/errors.js";
 import { ownToolStep } from "./steps.js";
 
 const exec = promisify(execFile);
@@ -477,9 +477,8 @@ export class Runtime extends EventEmitter implements ToolHost {
         this.log(`[${agentName}] main turn ended because the agent was stopped`);
         return true;
       }
-      if (e instanceof UsageLimitError || classify(e) === "limit") {
-        const resetsAt = e instanceof UsageLimitError ? e.resetsAt : null;
-        const until = resetsAt ?? new Date(Date.now() + 15 * 60_000);
+      if (e instanceof UsageLimitError) {
+        const until = e.resetsAt ?? new Date(Date.now() + 15 * 60_000);
         await updateState(agentName, { status: "paused", pausedUntil: until.toISOString(), activity: `paused: ${eff.backend} usage limit`, activityByAgent: false, pauseReason: "limit" });
         this.log(`[${agentName}] paused until ${until.toISOString()}: usage limit`);
         return true;
@@ -897,8 +896,10 @@ export class Runtime extends EventEmitter implements ToolHost {
     const preamble = helperPreamble(agentName, rec, instructions, workspace, note);
     try {
       // A passing provider problem (a 502, overloaded) doesn't fail the helper: it waits and tries again,
-      // up to 3 attempts, carrying on from what's already in its folder.
+      // up to 3 attempts, carrying on from what's already in its folder. A usage limit doesn't fail it
+      // either: it waits for the limit to lift (up to a day), then carries on the same way.
       let attempt = 0;
+      const limitedSince = { t: 0 };
       const run = async (): Promise<TurnResult> => {
         try {
           return await runTurn({
@@ -918,6 +919,17 @@ export class Runtime extends EventEmitter implements ToolHost {
           });
         } catch (e: any) {
           const msg = String(e?.message ?? e);
+          if (e instanceof UsageLimitError && !cancel.aborted && !this.stopping) {
+            limitedSince.t ||= Date.now();
+            if (Date.now() - limitedSince.t < 24 * 3600_000) {
+              const until = e.resetsAt ?? (await blockedUntil(e.backend)) ?? new Date(Date.now() + 15 * 60_000);
+              this.log(`[${agentName}] helper ${rec.id}: ${e.backend} usage limit, waiting until ${until.toISOString()}`);
+              await sleep(Math.max(60_000, until.getTime() - Date.now()), cancel);
+              if (cancel.aborted || this.stopping) throw e;
+              attempt = Math.max(attempt, 1); // so it's told to carry on from its folder
+              return run();
+            }
+          }
           if (attempt >= HELPER_RETRY_MS.length || cancel.aborted || this.stopping || !isTransient(e)) throw e;
           this.log(`[${agentName}] helper ${rec.id}: provider trouble, retrying (${msg.slice(0, 120)})`);
           await sleep(HELPER_RETRY_MS[attempt++], cancel);
