@@ -77,6 +77,7 @@ export function sessionPreamble(agent: Agent, kind: "main" | "chat" = "main"): s
 
 const KILL_GRACE_MS = 20_000;
 
+
 /** When an agent's own session last wrote (or may have written) its AGENT.md, per agent. */
 const agentMdTouched = new Map<string, number>();
 /** Sessions still running that wrote AGENT.md: until they end, no change to it can be the person's. */

@@ -21,8 +21,7 @@ describe("MCP servers", () => {
     await rt.create("mcpbot");
     const md = join(home, "agents", "mcpbot", "AGENT.md");
     writeFileSync(md, `---\nmcpServers:\n  - name: own-c\n    command: node\n    args: ["-e", "0"]\ndisableMcp:\n  - shared-b\n---\n\n` + readFileSync(md, "utf8"));
-    const [g] = await rt.store("mcpbot").threads();
-    await rt.send("mcpbot", "go", g.id);
+    await rt.send("mcpbot", "go");
     await until(async () => (await loadAgent("mcpbot")).state.status === "asleep", 30_000, "turn");
     const seen = readFileSync(join(home, "agents", "mcpbot", ".mcp-seen"), "utf8").trim().split(",");
     expect(seen).toContain("shared-a");

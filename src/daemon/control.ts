@@ -102,21 +102,44 @@ export class ControlServer {
         reports: await store.reports(30),
       };
     },
-    threads: async ({ name }) => (await this.rt.store(name).threads()).sort((x, y) => x.updatedAt.localeCompare(y.updatedAt)),
-    thread: async ({ name, id, markRead }) => {
+    messages: async ({ name, limit, before, markRead }) => {
       const store = this.rt.store(name);
-      const th = await store.thread(id);
-      if (!th) throw new Error(`No thread ${id}.`);
-      if (markRead && th.meta.unread) {
-        await store.markRead(id);
-        this.rt.changed(name, "threads");
+      let all = await store.messages();
+      if (before) {
+        const i = all.findIndex((m) => m.id === before);
+        if (i >= 0) all = all.slice(0, i);
       }
-      return th;
+      const n = Math.max(1, Math.min(2000, Number(limit) || 300));
+      const page = all.slice(-n);
+      if (markRead && !before && (await store.unread())) {
+        await store.markRead();
+        this.rt.changed(name, "messages");
+      }
+      return { messages: page, hasMore: all.length > page.length };
     },
-    send: async ({ name, text, threadId }) => ({ threadId: await this.rt.send(name, String(text), threadId || undefined) }),
-    answer: async ({ name, threadId, choice, text }) => {
-      await this.rt.answer(name, threadId, choice ? Number(choice) : undefined, text);
+    send: async ({ name, text, attachments }) => {
+      const m = await this.rt.send(name, String(text ?? ""), Array.isArray(attachments) ? attachments.map(String) : []);
+      return { id: m.id };
+    },
+    answer: async ({ name, questionId, choice, text }) => {
+      await this.rt.answer(name, questionId || undefined, choice ? Number(choice) : undefined, text || undefined);
       return { ok: true };
+    },
+    settings: async ({ name }) => {
+      const a = await loadAgent(name);
+      const eff = await effectiveSettings(a);
+      const today = await usageToday(name);
+      return {
+        backend: eff.backend,
+        model: eff.model,
+        dailyBudgetUsd: eff.dailyBudgetUsd,
+        dailyTokenBudget: eff.dailyTokenBudget,
+        workspace: eff.workspace,
+        workspaceIsDefault: !a.settings.workspace,
+        spentUsd: today.usd,
+        costReported: today.costReported,
+        tokensToday: today.tokens,
+      };
     },
     new: async ({ name, backend, model }) => {
       const a = await this.rt.create(name, { backend, model });
@@ -138,12 +161,14 @@ export class ControlServer {
     live: async () => [...this.live.values()].map(({ timer, ...rest }) => rest),
     backends: async () => this.rt.backends(),
     models: async ({ backend }) => this.rt.models(String(backend)),
-    set: async ({ name, backend, model, dailyBudgetUsd }) => {
-      await this.rt.setAgentSettings(name, { backend: backend || undefined, model, dailyBudgetUsd: dailyBudgetUsd === undefined ? undefined : Number(dailyBudgetUsd) });
-      return { ok: true };
-    },
-    close: async ({ name, id }) => {
-      await this.rt.closeThread(name, id);
+    set: async ({ name, backend, model, dailyBudgetUsd, dailyTokenBudget, workspace }) => {
+      await this.rt.setAgentSettings(name, {
+        backend: backend || undefined,
+        model,
+        dailyBudgetUsd: dailyBudgetUsd === undefined ? undefined : Number(dailyBudgetUsd),
+        dailyTokenBudget: dailyTokenBudget === undefined ? undefined : dailyTokenBudget === null ? null : Number(dailyTokenBudget),
+        workspace,
+      });
       return { ok: true };
     },
     archive: async ({ name }) => ({ dir: await this.rt.archive(name) }),
@@ -162,7 +187,8 @@ export class ControlServer {
     const a = await loadAgent(name);
     const store = this.rt.store(name);
     const eff = await effectiveSettings(a);
-    const threads = await store.threads();
+    const open = (await store.openQuestions()).length;
+    const unread = await store.unread();
     const today = await usageToday(name);
     return {
       name,
@@ -170,8 +196,8 @@ export class ControlServer {
       activity: a.state.activity,
       nextWake: a.state.nextWake,
       pausedUntil: a.state.pausedUntil ?? null,
-      waiting: threads.filter((t) => t.status === "waiting_on_you").length,
-      unread: threads.reduce((n, t) => n + (t.unread || 0), 0),
+      waiting: open,
+      unread,
       helpersRunning: (await store.helpers()).filter((h) => h.status === "running").length,
       spentUsd: today.usd,
       costReported: today.costReported,

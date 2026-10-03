@@ -249,7 +249,7 @@ export async function effectiveSettings(agent: Agent): Promise<EffectiveSettings
 }
 
 /** The person changed an agent's settings (from the app or the CLI): update the copy that counts and AGENT.md. */
-export async function setSettings(name: string, patch: Partial<AgentSettings>): Promise<AgentSettings> {
+export async function setSettings(name: string, patch: { [K in keyof AgentSettings]?: AgentSettings[K] | null }): Promise<AgentSettings> {
   return withLock(`settings:${name}`, async () => {
     const cur = (await readSettingsSnapshot(name)) ?? {};
     const next: AgentSettings = { ...cur };

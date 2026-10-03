@@ -24,8 +24,7 @@ async function employ(name: string, md?: string) {
     const f = join(home, "agents", name, "AGENT.md");
     writeFileSync(f, `---\n${md}\n---\n\n` + readFileSync(f, "utf8"));
   }
-  const [g] = await rt.store(name).threads();
-  await rt.send(name, "Your job is testing.", g.id);
+  await rt.send(name, "Your job is testing.");
   await until(async () => (await loadAgent(name)).state.status === "asleep", 30_000, `${name} settled`);
 }
 
@@ -40,7 +39,7 @@ describe("after a crash, nothing is lost", () => {
     mkdirSync(join(meta("crashy"), "inflight"), { recursive: true });
     writeFileSync(join(meta("crashy"), "inflight", "main_dead.json"), JSON.stringify([{ id: "in_x", t: new Date().toISOString(), type: "message", text: "RECOVERED_MSG" }]));
     await store.saveHelper({ id: "helper_dead", task: "a task", workdir: join(meta("crashy"), "helpers", "helper_dead", "work"), parent: "main", depth: 1, status: "running", startedAt: new Date().toISOString() });
-    const tid = await store.startThread({ kind: "conversation", title: "ping", from: "you", text: "unanswered PING", baseDir: join(home, "agents", "crashy") });
+    const ping = await store.addMessage({ from: "you", kind: "message", text: "unanswered PING", baseDir: join(home, "agents", "crashy") });
 
     rt = new Runtime((l) => logs.push(l));
     await rt.start();
@@ -48,7 +47,7 @@ describe("after a crash, nothing is lost", () => {
     const h = (await rt.store("crashy").helpers()).find((x) => x.id === "helper_dead")!;
     expect(h.status).toBe("failed");
     await until(async () => delivered("crashy").includes("helper_dead"), 30_000, "cut-off helper reported");
-    await until(async () => (await rt.store("crashy").thread(tid))?.entries.some((e) => e.from === "agent" && e.text.includes("unanswered PING")), 30_000, "chat answered");
+    await until(async () => (await rt.store("crashy").messages()).some((e) => e.from === "agent" && e.text.includes("unanswered PING") && e.t >= ping.t), 30_000, "chat answered");
     expect(existsSync(join(meta("crashy"), "inflight", "main_dead.json"))).toBe(false);
   });
 });
@@ -56,8 +55,7 @@ describe("after a crash, nothing is lost", () => {
 describe("stopping an agent", () => {
   it("cancels its running turn, stays stopped, and keeps the message for later", async () => {
     await employ("stoppy");
-    const [g] = await rt.store("stoppy").threads();
-    await rt.send("stoppy", "PASS SLOW", g.id);
+    await rt.send("stoppy", "PASS SLOW");
     await until(async () => (await loadAgent("stoppy")).state.status === "working", 30_000, "working");
     await rt.stopAgent("stoppy");
     // The interrupted turn hands its message back; on a slow machine that takes a moment.
@@ -102,15 +100,14 @@ describe("helpers", () => {
 describe("budgets and settings", () => {
   it("doesn't spend in chats once the daily budget is used, and keeps the message", async () => {
     await employ("thrifty", "dailyBudgetUsd: 0.005");
-    const tid = await rt.send("thrifty", "are you there?");
-    await until(async () => (await rt.store("thrifty").thread(tid))?.entries.some((e) => e.from === "overtime" && /budget/.test(e.text)), 20_000, "budget note");
-    expect((await rt.store("thrifty").inbox()).some((i) => i.threadId === tid)).toBe(true);
+    const m = await rt.send("thrifty", "are you there?");
+    await until(async () => (await rt.store("thrifty").messages()).some((e) => e.from === "overtime" && /budget/.test(e.text)), 20_000, "budget note");
+    expect((await rt.store("thrifty").inbox()).some((i) => i.messageId === m.id)).toBe(true);
   });
 
   it("keeps a settings edit the person makes while a turn is running", async () => {
     await employ("edited");
-    const [g] = await rt.store("edited").threads();
-    await rt.send("edited", "PASS SLOW", g.id);
+    await rt.send("edited", "PASS SLOW");
     await until(async () => (await loadAgent("edited")).state.status === "working", 30_000, "working");
     const f = join(home, "agents", "edited", "AGENT.md");
     writeFileSync(f, `---\ndailyBudgetUsd: 42\n---\n\n` + readFileSync(f, "utf8").replace(/^---[\s\S]*?---\n\n?/, ""));
@@ -157,14 +154,8 @@ describe("schedules, models and settings", () => {
     await until(async () => (await loadAgent("thrifty")).state.status !== "paused", 30_000, "unpaused");
   });
 
-  it("closes threads, reopens them on a new message, and archives agents without deleting them", async () => {
-    await rt.create("tidy");
-    const [g] = await rt.store("tidy").threads();
-    await rt.closeThread("tidy", g.id);
-    expect((await rt.store("tidy").thread(g.id))!.meta.status).toBe("closed");
-    await rt.send("tidy", "Your job is testing.", g.id);
-    expect((await rt.store("tidy").thread(g.id))!.meta.status).not.toBe("closed");
-    await until(async () => (await loadAgent("tidy")).state.status === "asleep", 30_000, "settled");
+  it("archives agents without deleting them", async () => {
+    await employ("tidy");
     const dir = await rt.archive("tidy");
     expect(existsSync(join(dir, "AGENT.md"))).toBe(true);
     expect(existsSync(join(home, "agents", "tidy"))).toBe(false);
@@ -178,8 +169,7 @@ describe("schedules, models and settings", () => {
 describe("what turns cost and see", () => {
   it("counts what a failed turn spent", async () => {
     await rt.create("spender");
-    const [g] = await rt.store("spender").threads();
-    await rt.send("spender", "COSTLY_FAIL", g.id);
+    await rt.send("spender", "COSTLY_FAIL");
     await until(async () => ((await loadAgent("spender")).state.failures ?? 0) >= 1, 30_000, "failure");
     const { usageToday } = await import("../src/runtime/usage.js");
     expect((await usageToday("spender")).usd).toBeCloseTo(0.25, 5);
@@ -197,8 +187,7 @@ describe("what turns cost and see", () => {
 
   it("doesn't add an hourly wake-up when a watch already wakes it", async () => {
     await employ("watcher");
-    const [g] = await rt.store("watcher").threads();
-    await rt.send("watcher", "PASS WATCH_REPEAT NOSLEEP", g.id);
+    await rt.send("watcher", "PASS WATCH_REPEAT NOSLEEP");
     await until(async () => (await rt.store("watcher").monitors()).length > 0, 30_000, "watch set");
     await until(async () => (await loadAgent("watcher")).state.status === "asleep", 30_000, "turn over");
     const s = await rt.store("watcher").schedule();
@@ -209,12 +198,9 @@ describe("what turns cost and see", () => {
 describe("common problems", () => {
   it("says exactly what to do when the backend isn't signed in, once", async () => {
     await rt.create("unsigned");
-    const [g] = await rt.store("unsigned").threads();
-    await rt.send("unsigned", "NOT_SIGNED_IN", g.id);
-    await until(async () => (await rt.store("unsigned").threads()).some((t) => t.kind === "alert"), 30_000, "alert");
-    const alert = (await rt.store("unsigned").threads()).find((t) => t.kind === "alert")!;
-    const th = await rt.store("unsigned").thread(alert.id);
-    expect(th!.entries[0].text).toMatch(/isn't signed in/);
+    await rt.send("unsigned", "NOT_SIGNED_IN");
+    const alert = await until(async () => (await rt.store("unsigned").messages()).find((m) => m.kind === "alert"), 30_000, "alert");
+    expect(alert.text).toMatch(/isn't signed in/);
     // It retries slowly, not every minute.
     const s = await rt.store("unsigned").schedule();
     expect(new Date(s.wakeAt!).getTime() - Date.now()).toBeGreaterThan(30 * 60_000);
@@ -229,15 +215,14 @@ describe("common problems", () => {
 
   it("survives a damaged state file and keeps the damaged copy", async () => {
     await rt.create("damaged");
-    const f = join(meta("damaged"), "threads.json");
+    const f = join(meta("damaged"), "conversation.json");
     writeFileSync(f, "{ not json");
-    const ths = await rt.store("damaged").threads();
-    expect(ths).toEqual([]);
+    expect(await rt.store("damaged").unread()).toBe(1);
     const { readdirSync } = await import("node:fs");
-    expect(readdirSync(meta("damaged")).some((x) => x.startsWith("threads.json.damaged-"))).toBe(true);
+    expect(readdirSync(meta("damaged")).some((x) => x.startsWith("conversation.json.damaged-"))).toBe(true);
     // And keeps working.
     await rt.send("damaged", "Your job is testing.");
-    expect((await rt.store("damaged").threads()).length).toBe(1);
+    expect((await rt.store("damaged").messages()).length).toBe(2);
   });
 
   it("never wipes AGENT.md settings when its saved copy is lost", async () => {
@@ -248,5 +233,49 @@ describe("common problems", () => {
     await restoreSettings("lostcopy");
     expect((await loadAgent("lostcopy")).settings.dailyBudgetUsd).toBe(7);
     expect(readFileSync(join(home, "agents", "lostcopy", "AGENT.md"), "utf8")).toContain("dailyBudgetUsd: 7");
+  });
+});
+
+describe("one conversation per agent", () => {
+  it("copies attached files into the agent's folder and tells the agent where they are", async () => {
+    await employ("viewer");
+    const src = join(home, "photo.png");
+    writeFileSync(src, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const m = await rt.send("viewer", "PASS look at this", [src]);
+    expect(m.attachments![0].kind).toBe("image");
+    expect(m.attachments![0].path).toContain(join("agents", "viewer", "files", "received"));
+    expect(existsSync(m.attachments![0].path)).toBe(true);
+    const { readdirSync } = await import("node:fs");
+    const runs = join(meta("viewer"), "runs");
+    await until(async () => readdirSync(runs).some((x) => readFileSync(join(runs, x), "utf8").includes(m.attachments![0].path)), 30_000, "path given to agent");
+    await expect(rt.send("viewer", "x", [join(home, "nope.png")])).rejects.toThrow(/no file/);
+  });
+
+  it("merges an older agent's threads into one conversation, keeping answers", async () => {
+    const name = "oldtimer";
+    await rt.create(name);
+    const dir = meta(name);
+    const { rmSync, mkdirSync: mk } = await import("node:fs");
+    rmSync(join(dir, "messages.jsonl"), { force: true });
+    rmSync(join(dir, "conversation.json"), { force: true });
+    mk(join(dir, "threads"), { recursive: true });
+    writeFileSync(join(dir, "threads.json"), JSON.stringify([
+      { id: "th_a", kind: "conversation", title: "hi", status: "open", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:01:00Z", unread: 0 },
+      { id: "th_q", kind: "question", title: "Bridge?", status: "answered", createdAt: "2026-01-01T00:02:00Z", updatedAt: "2026-01-01T00:03:00Z", unread: 0, category: "c" },
+    ]));
+    writeFileSync(join(dir, "threads", "th_a.jsonl"), [
+      { id: "m1", t: "2026-01-01T00:00:00Z", from: "agent", text: "hello" },
+      { id: "m2", t: "2026-01-01T00:01:00Z", from: "you", text: "hi back" },
+    ].map((x) => JSON.stringify(x)).join("\n") + "\n");
+    writeFileSync(join(dir, "threads", "th_q.jsonl"), [
+      { id: "m3", t: "2026-01-01T00:02:00Z", from: "agent", text: "Bridge?", options: ["Yes", "No"] },
+      { id: "m4", t: "2026-01-01T00:03:00Z", from: "you", text: "1. Yes", choice: 1 },
+    ].map((x) => JSON.stringify(x)).join("\n") + "\n");
+    const { Store: S } = await import("../src/store/store.js");
+    const ms = await new S(name).messages();
+    expect(ms.map((m) => m.id)).toEqual(["m1", "m2", "m3", "m4"]);
+    expect(ms[2].kind).toBe("question");
+    expect(ms[2].answer?.choice).toBe(1);
+    expect(existsSync(join(dir, "threads.json.before-single-conversation"))).toBe(true);
   });
 });

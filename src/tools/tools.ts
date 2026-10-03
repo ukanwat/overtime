@@ -6,6 +6,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolContext, ToolHost } from "./host.js";
 import { clampWake, MAX_SLEEP_MS, MIN_SLEEP_MS, parseDuration } from "../store/store.js";
 import { parseFrontMatter } from "../agent/frontmatter.js";
+import { describeAttachment } from "../store/attachments.js";
 
 type Result = { content: { type: "text"; text: string }[]; isError?: boolean };
 const ok = (text: string): Result => ({ content: [{ type: "text", text }] });
@@ -107,7 +108,7 @@ Messages, answers and finished helpers always wake you early.`,
       "ask",
       {
         description:
-          "Ask the person something without stopping. It becomes a question they answer when they can; the answer reaches you later. Only for what is genuinely theirs to decide or genuinely unsafe. Give your recommendation and short options so they can answer with one key.",
+          "Ask the person something without stopping. It shows in your conversation with them as a question they answer when they can; the answer reaches you later. Only for what is genuinely theirs to decide or genuinely unsafe. Give your recommendation and short options so they can answer with one key.",
         inputSchema: {
           question: z.string(),
           why: z.string().optional(),
@@ -118,10 +119,11 @@ Messages, answers and finished helpers always wake you early.`,
         },
       },
       safe(async ({ question, why, recommendation, options, category, urgent }) => {
-        const id = await store.startThread({ kind: "question", title: question, from: "agent", text: question, why, recommendation, options, urgent, category, baseDir: dir });
+        ctx.sent = true;
+        const m = await store.addMessage({ from: "agent", kind: "question", text: question, why, recommendation, options, urgent, category, baseDir: dir });
         if (urgent) host.notify(`${ctx.agent} has a question`, question);
-        host.changed(ctx.agent, "threads");
-        return ok(`Asked (${id}). Carry on with anything that doesn't depend on the answer.`);
+        host.changed(ctx.agent, "messages");
+        return ok(`Asked (${m.id}). Carry on with anything that doesn't depend on the answer.`);
       }),
     );
 
@@ -129,36 +131,36 @@ Messages, answers and finished helpers always wake you early.`,
       "send",
       {
         description: chat
-          ? 'Reply to the person in this conversation (text). To hand something to your main work session, a change of plan or real work to do, use to: "main" and then tell the person you have.'
-          : "Talk to the person. to: a thread id replies in that thread; without it, starts a new thread (give a title). status: one short line shown next to your name, for what you're doing now. Use a new thread only for what deserves their attention (finished work, a problem, a decision); keep routine progress in your own notes. Mention files and links by full path or URL so they can open them.",
+          ? 'Reply to the person (text). files: paths of files to share with them. To hand something to your main work session, a change of plan or real work to do, use to: "main" and then tell the person you have.'
+          : "Message the person; you have one conversation with them. text: what to say. report: true for finished work or something they should see (give a title); plain messages for replies. files: paths of files to share (images show as previews). status: one short line shown next to your name for what you're doing now. Keep routine progress in your own notes, not in messages. Mention files and links by full path or URL.",
         inputSchema: {
           text: z.string().optional(),
-          to: z.string().optional(),
+          to: z.literal("main").optional(),
+          report: z.boolean().optional(),
           title: z.string().optional(),
+          files: z.array(z.string()).max(20).optional(),
           status: z.string().max(80).optional(),
           urgent: z.boolean().optional(),
         },
       },
-      safe(async ({ text, to, title, status, urgent }) => {
+      safe(async ({ text, to, report, title, files, status, urgent }) => {
         if (status) {
           await host.setActivity(ctx.agent, status);
           await store.addReport(status);
         }
-        if (!text) return status ? ok("Status updated.") : fail("Nothing to send: give text or status.");
+        if (!text && !files?.length) return status ? ok("Status updated.") : fail("Nothing to send: give text, files or status.");
         if (chat && to === "main") {
-          await store.pushInbox({ type: "message", text, threadId: ctx.threadId });
-          host.wakeMain(ctx.agent, "your chat session passed you something from a conversation");
+          await store.pushInbox({ type: "message", text: text ?? "", messageId: undefined, data: { fromChat: true } });
+          host.wakeMain(ctx.agent, "your chat session passed you something from the conversation");
           return ok("Passed to your main session.");
         }
-        const threadId = to ?? (chat ? ctx.threadId : undefined);
-        if (threadId) {
-          await store.addToThread(threadId, { from: "agent", text, baseDir: dir });
-        } else {
-          await store.startThread({ kind: "report", title: title ?? text.split("\n")[0], from: "agent", text, urgent, baseDir: dir });
-          if (urgent) host.notify(ctx.agent, title ?? text.split("\n")[0]);
-        }
-        await store.addReport(text);
-        host.changed(ctx.agent, "threads");
+        const attachments = files?.length ? await Promise.all(files.map((f) => describeAttachment(f, dir))) : undefined;
+        const kind = report || title ? "report" : "message";
+        await store.addMessage({ from: "agent", kind, title: kind === "report" ? title ?? (text ?? "").split("\n")[0] : undefined, text: text ?? "", urgent, attachments, baseDir: dir });
+        if (urgent) host.notify(ctx.agent, title ?? (text ?? "").split("\n")[0]);
+        if (text) await store.addReport(text);
+        ctx.sent = true;
+        host.changed(ctx.agent, "messages");
         return ok("Sent.");
       }),
     );

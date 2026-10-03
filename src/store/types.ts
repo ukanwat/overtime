@@ -1,37 +1,56 @@
-export type ThreadKind = "conversation" | "question" | "report" | "alert";
-export type ThreadStatus = "open" | "waiting_on_you" | "answered" | "closed";
+/** What a message is: an ordinary message, a question for you, a report of finished work, or an alert. */
+export type MessageKind = "message" | "question" | "report" | "alert";
 
-export interface ThreadMeta {
-  id: string;
-  kind: ThreadKind;
-  title: string;
-  status: ThreadStatus;
-  createdAt: string;
-  updatedAt: string;
-  /** Messages from the agent you haven't seen yet. */
-  unread: number;
-  urgent?: boolean;
-  /** For questions: the kind of decision, for earned autonomy. */
-  category?: string;
-  /** ACP session id of this thread's chat session, so a reply continues it. */
-  chatSessionId?: string | null;
-  /** Fingerprints of AGENT.md and INDEX.md when this thread's chat session last ended. */
-  chatFiles?: { agent: string; index: string };
+export interface Attachment {
+  name: string;
+  /** Where it lives now: a copy in the agent's folder (for files you sent), or the agent's own file. */
+  path: string;
+  /** Where it came from, for files you sent. */
+  original?: string;
+  kind: "image" | "file" | "folder";
+  bytes: number;
 }
 
-export interface ThreadEntry {
+export interface Link {
+  label: string;
+  target: string;
+  kind: "file" | "folder" | "url";
+}
+
+/** One message in an agent's conversation with the person. Each agent has exactly one conversation. */
+export interface Message {
   id: string;
   t: string;
   from: "agent" | "you" | "overtime";
+  kind: MessageKind;
   text: string;
+  /** Short headline for reports and alerts. */
+  title?: string;
   /** For questions. */
   why?: string;
   recommendation?: string;
   options?: string[];
-  /** For your answers to a question: the option you picked (1-based), if any. */
+  /** For questions: the kind of decision, for earned autonomy. */
+  category?: string;
+  urgent?: boolean;
+  /** For your answer to a question: which question, and the option picked (1-based). */
+  replyTo?: string;
   choice?: number;
+  /** On a question once answered (derived from the answer message when read). */
+  answer?: { choice?: number; text: string; t: string };
+  attachments?: Attachment[];
   /** Paths and URLs found in the text, checked to exist (paths) when written. */
-  links?: { label: string; target: string; kind: "file" | "folder" | "url" }[];
+  links?: Link[];
+}
+
+/** The conversation's bookkeeping. */
+export interface Conversation {
+  /** The newest message the person has seen. */
+  lastReadId: string | null;
+  /** ACP session of the chat session answering the person, so replies continue it. */
+  chatSessionId?: string | null;
+  /** Fingerprints of AGENT.md and INDEX.md when the chat session last ended. */
+  chatFiles?: { agent: string; index: string };
 }
 
 export type InboxType = "message" | "answer" | "monitor" | "helper" | "system" | "loop";
@@ -41,7 +60,9 @@ export interface InboxItem {
   t: string;
   type: InboxType;
   text: string;
-  threadId?: string;
+  /** The message this came from, if any (yours, or your answer). */
+  messageId?: string;
+  attachments?: Attachment[];
   data?: unknown;
 }
 
