@@ -78,7 +78,7 @@ export function toAcpMcp(servers: McpServerConfig[], http = true): acp.McpServer
  */
 export const CLAUDE_BUILTINS_OFF = [
   "Agent", "Task", "SendMessage", "ListAgents", "ScheduleWakeup", "CronCreate", "CronDelete", "CronList",
-  "RemoteTrigger", "PushNotification", "AskUserQuestion", "EnterPlanMode", "ExitPlanMode", "EnterWorktree", "ExitWorktree",
+  "Skill", "RemoteTrigger", "PushNotification", "AskUserQuestion", "EnterPlanMode", "ExitPlanMode", "EnterWorktree", "ExitWorktree",
   "Workflow", "Artifact", "SendFeedback", "ClaudeDesign", "Projects", "ProposeGoal", "ProposeSkills", "ShowOnboardingRolePicker", "ReadNotifications",
 ];
 

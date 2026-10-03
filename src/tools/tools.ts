@@ -7,6 +7,10 @@ import type { ToolContext, ToolHost } from "./host.js";
 import { clampWake, MAX_SLEEP_MS, MIN_SLEEP_MS, parseDuration } from "../store/store.js";
 import { parseFrontMatter } from "../agent/frontmatter.js";
 import { listSkills, readSkill } from "../skills.js";
+import { home } from "../paths.js";
+import { homedir } from "node:os";
+
+const tildeHome = () => (home().startsWith(homedir() + "/") ? "~" + home().slice(homedir().length) : home());
 import { describeAttachment } from "../store/attachments.js";
 
 type Result = { content: { type: "text"; text: string }[]; isError?: boolean };
@@ -217,7 +221,9 @@ Messages, answers and finished helpers always wake you early.`,
       const r = readSkill(dir, name);
       if (!r) return fail(`No skill called "${name}". Skills you have: ${listSkills(dir).map((s) => s.name).join(", ") || "none"}.`);
       const files = r.files.length ? `\n\n---\nOther files in this skill (read or run them as the skill says):\n${r.files.join("\n")}` : "";
-      return ok(`${r.text.trim()}\n\n---\nThis skill is at ${r.skill.file} (${r.skill.source}).${files}`);
+      // Overtime's manual is written for the default home; show this machine's real paths instead.
+      const text = r.skill.source === "built-in" ? r.text.replaceAll("~/overtime", tildeHome()) : r.text;
+      return ok(`${text.trim()}\n\n---\nThis skill is at ${r.skill.file} (${r.skill.source}).${files}`);
     }),
   );
 
