@@ -83,7 +83,14 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
         mkdirSync(join(folder, "notes"), { recursive: true });
         writeFileSync(join(folder, "INDEX.md"), "# Index\n\n- notes/: what I learned\n");
       }
-      if (/Message from the person|The person answered|Passed on from your conversation/.test(text)) await t.call("send", { text: "main reply" });
+      if (/Message from the person|The person answered|Passed on from your conversation/.test(text)) {
+        // Echo each thing the person said, so tests can tell which message got which reply.
+        for (const m of text.matchAll(/(?:Message from the person|The person answered)[^\n]*\n([^\n]*)/g)) {
+          const said = m[1];
+          if (/NOREPLYTOOL/.test(said)) await say(`final words as reply to: ${said}`);
+          else await t.call("send", { text: `main reply to: ${said}` });
+        }
+      }
       if (/SKILLCHECK/.test(text)) writeFileSync(join(s.cwd, "skill-result.txt"), await t.call("skill", { name: "overtime-docs" }));
       if (/ESCAPE/.test(text)) {
         // Try to write into a protected path, as a script or program it wrote would.
@@ -101,7 +108,7 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
       if (/SLOW/.test(text) && !/SPAWN_SLOW/.test(text) && !/Helper result/.test(text) && (await slow())) return { stopReason: "cancelled" };
       if (/WATCH_LONG/.test(text)) await t.call("wake", { watch: "for i in 1 2 3; do echo tick $i; sleep 1; done; sleep 600", reason: "long test", cooldown: "1s" });
       if (/WATCH_REPEAT/.test(text)) await t.call("wake", { watch: "cat watched.txt 2>/dev/null || echo none", every: "10s", reason: "repeat test", cooldown: "1s" });
-      if (/ASK/.test(text) && !/answered one of your questions/.test(text)) await t.call("ask", { question: "Bridge or ferry?", why: "test", recommendation: "Bridge", options: ["Bridge", "Ferry"], category: "test-choice" });
+      if (/Message from the person[^\n]*\n[^\n]*\bASK\b/.test(text)) await t.call("ask", { question: "Bridge or ferry?", why: "test", recommendation: "Bridge", options: ["Bridge", "Ferry"], category: "test-choice" });
       if (/LOOP/.test(text)) await t.call("wake", { every: "1m", reason: "loop task" });
       await t.call("send", { status: "fake is working" });
       if (/NOTIFY/.test(text)) await t.call("send", { title: "Fake update", text: "Did a fake thing." });

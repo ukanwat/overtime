@@ -66,7 +66,12 @@ export class UsageLimitError extends Error {
 }
 
 /** A turn that didn't finish: cancelled, aborted or past its deadline. Its work must not count as done. */
-export class TurnIncompleteError extends Error {}
+export class TurnIncompleteError extends Error {
+  /** Whether the agent was sent this turn's prompt before it stopped (so it saw what it was handed). */
+  constructor(message: string, readonly promptSent = false) {
+    super(message);
+  }
+}
 
 /** The context every fresh session starts with: how to work, who it is, and where things are. */
 export function sessionPreamble(agent: Agent, kind: "main" | "chat" = "main"): string {
@@ -119,6 +124,7 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
   let sessionCost: number | null = null;
   let firstCost: number | null = null;
   let afterTool = false;
+  let promptSent = false;
   let context: { used: number; size: number } | null = null;
   let limitRejected: { resetsAt: Date | null } | null = null;
   let stopped: string | null = null;
@@ -227,11 +233,12 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
 
     let res: PromptResult;
     try {
+      promptSent = true;
       res = await session.prompt(prompt);
     } catch (e) {
       const lim = limitRejected as { resetsAt: Date | null } | null;
       if (lim) throw new UsageLimitError(eff.backend, lim.resetsAt);
-      if (stopped) throw new TurnIncompleteError(stopped);
+      if (stopped) throw new TurnIncompleteError(stopped, promptSent);
       throw e;
     }
     await record("end", { stopReason: res.stopReason, usage: res.usage ?? null, sessionCost, context });
@@ -249,7 +256,7 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
     recorded = true;
     if (limitRejected) throw new UsageLimitError(eff.backend, (limitRejected as { resetsAt: Date | null }).resetsAt);
     if (o.kind === "main") await updateState(agent.name, { mainSessionId: session.sessionId, mainSessionBackend: eff.backend, mainSessionModel: eff.model ?? null, lastRunAt: new Date().toISOString() });
-    if (stopped || res.stopReason === "cancelled") throw new TurnIncompleteError(stopped ?? "the backend cancelled the turn");
+    if (stopped || res.stopReason === "cancelled") throw new TurnIncompleteError(stopped ?? "the backend cancelled the turn", true);
     return { runId, sessionId: session.sessionId, fresh, reply: reply.trim(), stopReason: res.stopReason, usage: res.usage ?? null, backend: eff.backend, usage2, context, modelIssue };
   } catch (e: any) {
     await record("error", { message: String(e?.message ?? e) });

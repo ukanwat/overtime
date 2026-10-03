@@ -1124,12 +1124,12 @@ export class App implements Component {
       prev = m;
     }
 
-    const live = this.chatLive(a.name);
-    if (live) {
+    // While the agent works on what you just said, show that it's on it (and what it's doing right now).
+    const live = this.chatLive(a.name) ?? this.mainLive(a.name);
+    const waitingOnIt = [...this.messages].reverse().find((m) => !m.closes)?.from === "you";
+    if (live && waitingOnIt) {
       if (body.length && body.at(-1) !== "") body.push("");
-      body.push(`  ${accent(bold(a.name))}  ${muted(`${spinner()} ${live.step ?? (live.text ? "writing…" : "thinking…")}`)}`);
-      const text = live.text.trim();
-      if (text) for (const l of text.split("\n").slice(-40).flatMap((p) => wrap(p))) body.push("  " + l);
+      body.push(`  ${accent(bold(a.name))}  ${muted(`${spinner()} ${live.step ?? "thinking…"}`)}`);
     }
     body.push("");
 

@@ -68,9 +68,11 @@ export class Runtime extends EventEmitter implements ToolHost {
   private mainRunning = new Map<string, Promise<boolean>>();
   /** Wake reasons that arrived while a main turn was running. */
   private pendingWake = new Map<string, string[]>();
-  /** One chat turn at a time per thread. */
-  private chatQueues = new Map<string, Promise<void>>();
   private helperRuns = new Map<string, Promise<void>>();
+  /** Cancels the running main turn of an agent, to answer the person (see deliver). */
+  private mainAborts = new Map<string, AbortController>();
+  /** Agents whose running main turn was interrupted by the person: not a failure, it carries on next turn. */
+  private interrupted = new Set<string>();
   /** Cancels a single helper. */
   private helperAborts = new Map<string, AbortController>();
   /** Cancels everything one agent is running (stopping it). */
@@ -131,13 +133,13 @@ export class Runtime extends EventEmitter implements ToolHost {
       await store.pushInbox({ type: "helper", text: helperInboxText(h), data: { helperId: h.id } });
     }
     if (a.state.status !== "stopped") await this.monitors.startAll(a.name);
-    // Conversation messages whose chat turn never ran: answer them now.
-    if (a.state.status === "new" || a.state.status === "stopped") return;
-    // A message from the person that never got its chat turn: answer it now.
+    // A last message from the person that never reached the agent (an older version answered messages
+    // in a separate session): hand it over now, so it's answered.
+    if (a.state.status === "stopped") return;
     const all = await store.messages();
     const last = all.at(-1);
     const queued = new Set((await store.inbox()).map((i) => i.messageId).filter(Boolean));
-    if (last?.from === "you" && !last.replyTo && !queued.has(last.id)) this.queueChat(a.name, last);
+    if (last?.from === "you" && !last.replyTo && !last.closes && !queued.has(last.id)) await store.pushInbox({ type: "message", text: withFiles(last.text, last.attachments), messageId: last.id, attachments: last.attachments });
   }
 
   async stop(): Promise<void> {
@@ -145,7 +147,7 @@ export class Runtime extends EventEmitter implements ToolHost {
     if (this.timer) clearInterval(this.timer);
     this.monitors.stopAll();
     this.abort.abort();
-    const all = [...this.mainRunning.values(), ...this.chatQueues.values(), ...this.helperRuns.values()];
+    const all = [...this.mainRunning.values(), ...this.helperRuns.values()];
     await Promise.race([Promise.allSettled(all), new Promise((r) => setTimeout(r, 25_000))]);
     // Whatever didn't stop politely is killed, so no backend outlives the daemon.
     await AcpSession.closeAll();
@@ -183,6 +185,8 @@ export class Runtime extends EventEmitter implements ToolHost {
   }
 
   notify(title: string, body: string): void {
+    // Tests (and anything else that sets this) never pop real notifications on your desktop.
+    if (process.env.OVERTIME_NO_NOTIFY) return;
     // Passed as arguments to a fixed script, never spliced into code, so no text can run as AppleScript.
     const clean = (s: string) => s.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 200);
     if (process.platform === "darwin") {
@@ -271,7 +275,6 @@ export class Runtime extends EventEmitter implements ToolHost {
   /** Whether any session of this agent is running (its AGENT.md may be mid-rewrite), other than `self`. */
   private busy(agent: string, self?: "main" | string): boolean {
     if (self !== "main" && this.mainRunning.has(agent)) return true;
-    for (const k of this.chatQueues.keys()) if (k.startsWith(`${agent}/`) && k !== self) return true;
     return false;
   }
 
@@ -347,6 +350,7 @@ export class Runtime extends EventEmitter implements ToolHost {
     await updateState(agentName, { status: "paused", pausedUntil: b.until.toISOString(), activity: b.kind === "limit" ? `paused: ${b.backend} usage limit` : "paused: daily budget used" });
     if (b.kind === "budget" && !already) {
       await this.store(agentName).addMessage({ from: "overtime", kind: "alert", title: "Daily budget used", text: b.text, baseDir: agent.dir });
+      this.notify(`${agentName} paused`, "Its daily budget is used. Raise it in its settings to keep it going today.");
       this.changed(agentName, "messages");
     }
     this.changed(agentName, "state");
@@ -375,6 +379,9 @@ export class Runtime extends EventEmitter implements ToolHost {
     const firstJob = !hasIdentity(agent);
     const runId = newId("main");
     const items = await store.takeInbox(runId);
+    const turnCtl = new AbortController();
+    this.mainAborts.set(agentName, turnCtl);
+    this.interrupted.delete(agentName);
     const { ctx, mcp } = this.tools.open({ agent: agentName, kind: "main", depth: 0 });
     let result: TurnResult | null = null;
     try {
@@ -402,11 +409,14 @@ export class Runtime extends EventEmitter implements ToolHost {
         resumeSessionId: resume,
         extraMcp: [mcp],
         timeoutMs: settings.turnTimeoutMinutes * 60_000,
-        signal: this.signalFor(agentName),
+        signal: this.signalFor(agentName, turnCtl.signal),
+        // Recorded as soon as the session exists, so a turn interrupted to answer you resumes this session.
+        onSession: (id) => void updateState(agentName, { mainSessionId: id, mainSessionBackend: eff.backend, mainSessionModel: eff.model ?? null, mainSessionPrompt: promptVersion("main") }).catch(() => {}),
         onUpdate: (u) => this.emit("update", { agent: agentName, kind: "main", update: u }),
         log: this.log,
       });
       await store.ackInbox(runId);
+      this.interrupted.delete(agentName); // an interrupt that came too late to stop this turn
       // The person wrote and the agent never answered with send or ask: its final words are the answer,
       // so a message is never left without a reply (whatever the backend made of the tools).
       if (!ctx.sent && result.reply.trim() && items.some((i) => (i.type === "message" && !(i.data as any)?.fromChat) || i.type === "answer")) {
@@ -427,9 +437,21 @@ export class Runtime extends EventEmitter implements ToolHost {
       }
       return true;
     } catch (e: any) {
-      await store.returnInbox(runId);
       agent = await loadAgent(agentName);
       const idle: AgentState["status"] = hasIdentity(agent) ? "asleep" : "new";
+      if (this.interrupted.has(agentName) && e instanceof TurnIncompleteError && !this.stopping && agent.state.status !== "stopped") {
+        // Interrupted to answer the person: what it was handed this turn was seen (the session goes on
+        // from where it stopped), so it isn't handed over again, and it isn't a failure.
+        this.interrupted.delete(agentName);
+        // Only what the agent was actually shown counts as delivered; stopped before its prompt went out,
+        // the items go back and come with the next turn.
+        if (e.promptSent) await store.ackInbox(runId);
+        else await store.returnInbox(runId);
+        await updateState(agentName, { status: idle });
+        this.log(`[${agentName}] paused its work to answer you`);
+        return true;
+      }
+      await store.returnInbox(runId);
       if (agent.state.status === "stopped") {
         this.log(`[${agentName}] main turn ended because the agent was stopped`);
         return true;
@@ -464,6 +486,7 @@ export class Runtime extends EventEmitter implements ToolHost {
       }
       return false;
     } finally {
+      if (this.mainAborts.get(agentName) === turnCtl) this.mainAborts.delete(agentName);
       this.tools.close(ctx.token);
       this.emit("turnEnd", { agent: agentName, kind: "main" });
       await this.refreshNextWake(agentName).catch(() => {});
@@ -511,13 +534,9 @@ export class Runtime extends EventEmitter implements ToolHost {
     const attachments = files.length ? await receiveAttachments(files, agent.dir) : undefined;
     const m = await store.addMessage({ from: "you", kind: "message", text, attachments, baseDir: agent.dir });
     this.changed(agentName, "messages");
-    if (agent.state.status === "new" || agent.state.status === "stopped") {
-      // Before it has a job, and while stopped, every message goes straight to its main session.
-      await store.pushInbox({ type: "message", text: withFiles(text, attachments), messageId: m.id, attachments });
-      if (agent.state.status === "new") this.wakeMain(agentName, "the person sent you your first message");
-    } else {
-      this.queueChat(agentName, m);
-    }
+    // You always talk to the agent itself: its one main session, never a stand-in.
+    await store.pushInbox({ type: "message", text: withFiles(text, attachments), messageId: m.id, attachments });
+    await this.deliver(agentName, agent.state.status === "new" ? "the person sent you your first message" : "the person sent you a message");
     return m;
   }
 
@@ -539,7 +558,32 @@ export class Runtime extends EventEmitter implements ToolHost {
     await store.recordDecision({ threadId: q.id, category: q.category ?? "uncategorised", question: q.text, answer: answerText });
     await store.pushInbox({ type: "answer", text: answerText + (await this.autonomyHint(agentName, q.category)), messageId: m.id, data: { question: q.text } });
     this.changed(agentName, "messages");
-    if (agent.state.status !== "stopped") this.wakeMain(agentName, "the person answered one of your questions");
+    await this.deliver(agentName, "the person answered one of your questions");
+  }
+
+  /**
+   * Get something from the person to the agent now. Asleep: it wakes. Busy: its turn is interrupted at
+   * the next step and it answers with everything it knows, then carries on with its work. Stopped: it
+   * waits. Paused (budget or usage limit): it waits, and the person is told why.
+   */
+  private async deliver(agentName: string, reason: string): Promise<void> {
+    const agent = await loadAgent(agentName);
+    if (agent.state.status === "stopped") return;
+    const b = await this.blocked(agentName);
+    if (b) {
+      await this.pauseFor(agentName, b);
+      await this.store(agentName).addMessage({ from: "overtime", kind: "message", text: `${agentName} is ${this.blockedLine(b)}. Your message is kept and it will pick it up then.`, baseDir: agent.dir });
+      this.changed(agentName, "messages");
+      return;
+    }
+    const running = this.mainAborts.get(agentName);
+    if (running && !running.signal.aborted) {
+      this.interrupted.add(agentName);
+      running.abort();
+      this.wakeMain(agentName, `${reason} (you paused your work to answer: reply first, then carry on where you left off)`);
+      return;
+    }
+    this.wakeMain(agentName, reason);
   }
 
   /** The person closed a question without answering it: the agent stops waiting on it. */
@@ -578,98 +622,6 @@ export class Runtime extends EventEmitter implements ToolHost {
     const first = norm(recent[0].answer);
     if (!recent.every((d) => norm(d.answer) === first)) return "";
     return `\n\n(Overtime: this is the ${same.length}th "${category}" question, and the last ${recent.length} answers were all "${recent[0].answer.replace(/^\d+\.\s*/, "").split(" — ")[0]}". If it fits, ask whether you can decide these yourself from now on; if they agree, add the rule to AGENT.md.)`;
-  }
-
-  /** One chat turn at a time per agent; messages sent meanwhile are answered in order. */
-  private queueChat(agentName: string, m: Message): void {
-    const key = `${agentName}/chat`;
-    const prev = this.chatQueues.get(key) ?? Promise.resolve();
-    const next = prev
-      .then(() => this.runChat(agentName, m))
-      .catch((e) => this.log(`[${agentName}] chat failed: ${e?.stack ?? e}`))
-      .finally(() => {
-        if (this.chatQueues.get(key) === next) this.chatQueues.delete(key);
-      });
-    this.chatQueues.set(key, next);
-  }
-
-  private async runChat(agentName: string, m: Message): Promise<void> {
-    if (this.stopping) return;
-    const store = this.store(agentName);
-    await this.adoptEdits(agentName, `${agentName}/chat`);
-    const agent = await loadAgent(agentName);
-    const text = withFiles(m.text, m.attachments);
-    if (agent.state.status === "stopped") {
-      // Stopped while this was queued: it waits for the agent's main session instead.
-      await store.pushInbox({ type: "message", text, messageId: m.id, attachments: m.attachments });
-      return;
-    }
-    const b = await this.blocked(agentName);
-    if (b) {
-      await this.pauseFor(agentName, b);
-      await store.addMessage({ from: "overtime", kind: "message", text: `${agentName} is ${this.blockedLine(b)}. Your message is kept and it will pick it up then.`, baseDir: agent.dir });
-      await store.pushInbox({ type: "message", text, messageId: m.id, attachments: m.attachments });
-      this.changed(agentName, "messages");
-      return;
-    }
-    const conv = await store.conversation();
-    const { ctx, mcp } = this.tools.open({ agent: agentName, kind: "chat", depth: 0 });
-    const all = await store.messages();
-    try {
-      const state = await this.stateSummary(agentName);
-      const idx = all.findIndex((x) => x.id === m.id);
-      const history = all
-        .slice(Math.max(0, idx - 40), idx)
-        .map((e) => `${e.from === "you" ? "Person" : e.from === "agent" ? "You" : "Overtime"} (${e.t})${e.kind === "question" ? " [question]" : e.kind === "report" ? " [report]" : ""}: ${withFiles(e.text, e.attachments)}${e.answer ? `\n  (answered: ${e.answer.text})` : ""}`)
-        .join("\n\n");
-      const resume = conv.chatSessionId && conv.chatPrompt === promptVersion("chat") && !full(await lastContext(agentName, conv.chatSessionId)) ? conv.chatSessionId : null;
-      const editsText = resume ? await editedSince(agent, conv.chatFiles) : "";
-      // What the chat session hasn't seen: everything since its last turn (main's replies, reports, answers).
-      const filesAtStart = fileHashes(agent);
-      const seenIdx = conv.chatSeen ? all.findIndex((x) => x.id === conv.chatSeen) : -1;
-      const since = (seenIdx >= 0 ? all.slice(seenIdx + 1, idx) : [])
-        .map((e) => `${e.from === "you" ? "Person" : e.from === "agent" ? "You" : "Overtime"} (${e.t})${e.kind === "question" ? " [question]" : e.kind === "report" ? " [report]" : ""}: ${withFiles(e.text, e.attachments)}${e.answer ? `\n  (answered: ${e.answer.text})` : ""}`)
-        .join("\n\n");
-      const catchUp = `${since ? `Since you last answered here (most recent last):\n${since}\n\n` : ""}What you are doing right now (from your main session):\n${state}\n\n`;
-      const r = await runTurn({
-        agent: agentName,
-        kind: "chat",
-        reason: "the person sent you a message",
-        preamble: chatPreamble(agent),
-        resumeSessionId: resume,
-        // A fresh session (first message, or the old one couldn't be resumed) gets the recent conversation.
-        text: (fresh) =>
-          `${fresh ? `What you are doing right now (from your main session):\n${state}\n\n${history ? `The conversation so far (most recent last):\n${history}\n\n` : ""}` : `${editsText}${catchUp}`}The person just wrote:\n\n${text}\n\nAnswer them with send. If it changes your work or needs real work done, send it to: "main" and tell them you have.`,
-        extraMcp: [mcp],
-        timeoutMs: 20 * 60_000,
-        signal: this.signalFor(agentName),
-        onUpdate: (u) => this.emit("update", { agent: agentName, kind: "chat", update: u }),
-        log: this.log,
-      });
-      // Fingerprints from when this turn began: a rewrite by main during the turn still counts as unseen next time.
-      await store.patchConversation({ chatSessionId: r.sessionId, chatFiles: filesAtStart, chatSeen: m.id, chatPrompt: promptVersion("chat") });
-      if (r.modelIssue) await this.modelIssue(agentName, r.modelIssue);
-      // If it didn't use send, its final words are the reply, so the person always gets an answer.
-      if (!ctx.sent) await store.addMessage({ from: "agent", kind: "message", text: r.reply || "(I read this, but didn't write a reply.)", baseDir: agent.dir });
-    } catch (e: any) {
-      const stoppedNow = (await loadAgent(agentName)).state.status === "stopped";
-      if (this.stopping && e instanceof TurnIncompleteError) return; // answered after the restart
-      const msg =
-        e instanceof UsageLimitError
-          ? `I'm paused by the ${e.backend} usage limit${e.resetsAt ? ` until ${e.resetsAt.toLocaleString()}` : ""}. I've kept your message and will pick it up then.`
-          : stoppedNow
-            ? "I was stopped before I could answer. I've kept your message for when I'm started again."
-            : (needsPerson(String(e?.message ?? e), (await effectiveSettings(agent)).backend, agentName) ?? `I couldn't answer just now (${String(e?.message ?? e).slice(0, 200)}). I've passed your message to my main session.`);
-      await store.addMessage({ from: "overtime", kind: "message", text: msg, baseDir: agent.dir });
-      await store.pushInbox({ type: "message", text, messageId: m.id, attachments: m.attachments });
-      // A session that failed may be broken: the next message starts a fresh one.
-      if (!(e instanceof UsageLimitError)) await store.patchConversation({ chatSessionId: null });
-      if (!(e instanceof UsageLimitError) && !stoppedNow) this.wakeMain(agentName, "a chat session failed, so the person's message came to you");
-    } finally {
-      this.tools.close(ctx.token);
-      this.emit("turnEnd", { agent: agentName, kind: "chat" });
-      this.changed(agentName, "messages");
-    }
   }
 
   private async stateSummary(agentName: string): Promise<string> {
@@ -898,7 +850,7 @@ export class Runtime extends EventEmitter implements ToolHost {
   async stopAgent(name: string): Promise<void> {
     await updateState(name, { status: "stopped", nextWake: null, activity: "stopped" });
     this.monitors.stopAgent(name);
-    // Cancel whatever it's running now: main turn, chats and helpers.
+    // Cancel whatever it's running now: its main turn and helpers.
     this.agentAborts.get(name)?.abort();
     this.agentAborts.delete(name);
     this.pendingWake.delete(name);
@@ -1081,19 +1033,12 @@ function mainTurnText(items: InboxItem[], firstJob: boolean, contextReset: boole
   return parts.join("\n\n");
 }
 
-/** What a chat session is told about itself (part of its instructions' version, see promptVersion). */
-const CHAT_RULES = `# This session\n\nThis session answers the person in your conversation with them, separately from your main work session. Answer from what you know and what's in your folder. Keep replies short and plain. To the person you are one agent: never mention sessions, your main session or handing things over; just say what you'll do ("Got it, I'm holding"). Don't do real work here: if answering needs more than reading a few files or one quick command, or it changes your work, send it to your main session (send with to: "main") and tell the person you have.`;
-
-function chatPreamble(agent: Agent): string {
-  return `${sessionPreamble(agent, "chat")}\n\n---\n\n${CHAT_RULES}`;
-}
-
 /**
  * Which version of Overtime's instructions a session started with. Instructions are sent when a session
  * starts, so when they change (an update), the next turn starts a fresh session that gets the new ones.
  */
-function promptVersion(kind: "main" | "chat"): string {
-  return createHash("sha1").update(workingInstructions("_", kind) + (kind === "chat" ? CHAT_RULES : "")).digest("hex").slice(0, 12);
+function promptVersion(kind: "main"): string {
+  return createHash("sha1").update(workingInstructions("_", kind)).digest("hex").slice(0, 12);
 }
 
 function helperInboxText(h: HelperRecord): string {

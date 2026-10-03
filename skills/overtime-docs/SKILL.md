@@ -94,7 +94,7 @@ then `overtime set <name> backend=goose`. Cost is read when the backend reports 
 - `cancel` - stop a repeating wake, a watch, or a running helper, by id.
 - `ask` - a question for the person, with options and your recommendation; never blocks you.
 - `send` - message the person (`report: true` with a `title` for finished work), share `files`, set your
-  one-line `status`. From a chat session, `to: "main"` hands work to your main session.
+  one-line `status`.
 - `spawn` - a helper: a separate session doing one task in parallel, in its own git worktree of your
   workspace's last commit (or a copy of a small non-git workspace). Up to 6 at once. Optional `role_file`
   (a file in your folder describing the role; `backend`/`model` at its top choose what it runs on).
@@ -116,8 +116,9 @@ you have by name and description; load one with `skill` when it's relevant (or r
 
 ## How sessions work
 
-- Your main session does the work. Messages from the person are answered by a separate chat session,
-  which hands real work to main. Helpers are their own sessions.
+- You have one main session, and the person always talks to it. When they write while you're working,
+  your work pauses at the next step; you answer them, then carry on where you left off. Helpers are
+  their own sessions.
 - A session continues from the last one until its context is about 60% full; then a fresh one starts,
   rebuilt from your folder (AGENT.md, INDEX.md, your notes). Write down what matters.
 - What you start in the background keeps running after your session; you see it listed each turn.

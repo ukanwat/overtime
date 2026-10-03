@@ -29,7 +29,7 @@ async function employ(name: string, md?: string) {
 }
 
 describe("after a crash, nothing is lost", () => {
-  it("returns in-flight inbox items, reports cut-off helpers, and answers unanswered chats", async () => {
+  it("returns in-flight inbox items, reports cut-off helpers, and answers a message that never reached the agent", async () => {
     await rt.start();
     await employ("crashy");
     await rt.stop();
@@ -47,7 +47,7 @@ describe("after a crash, nothing is lost", () => {
     const h = (await rt.store("crashy").helpers()).find((x) => x.id === "helper_dead")!;
     expect(h.status).toBe("failed");
     await until(async () => delivered("crashy").includes("helper_dead"), 30_000, "cut-off helper reported");
-    await until(async () => (await rt.store("crashy").messages()).some((e) => e.from === "agent" && e.text.includes("unanswered PING") && e.t >= ping.t), 30_000, "chat answered");
+    await until(async () => (await rt.store("crashy").messages()).some((e) => e.from === "agent" && e.text.includes("unanswered PING") && e.t >= ping.t), 30_000, "message answered");
     expect(existsSync(join(meta("crashy"), "inflight", "main_dead.json"))).toBe(false);
   });
 });
@@ -107,37 +107,53 @@ describe.runIf(process.platform === "darwin")("protected paths", () => {
   });
 });
 
+describe("talking to a busy agent", () => {
+  it("interrupts its work to answer you within seconds, without counting it as a failure", async () => {
+    await employ("busy");
+    await rt.send("busy", "SLOW job please"); // the fake works on SLOW for up to a minute
+    await until(async () => (await loadAgent("busy")).state.status === "working", 30_000, "working");
+    const started = Date.now();
+    const m = await rt.send("busy", "quick question");
+    await until(async () => (await rt.store("busy").messages()).some((e) => e.from === "agent" && e.text.includes("quick question") && e.t >= m.t), 30_000, "reply while busy");
+    expect(Date.now() - started).toBeLessThan(25_000); // not after the minute-long job
+    const a = await loadAgent("busy");
+    expect(a.state.failures ?? 0).toBe(0);
+    expect(a.state.lastError ?? null).toBeNull();
+  });
+});
+
 describe("instruction updates", () => {
-  it("reach a running conversation: a session started under older instructions starts fresh", async () => {
+  it("reach a running agent: a session started under older instructions starts fresh, others continue", async () => {
     const { readdirSync } = await import("node:fs");
     await employ("updated");
     const runs = join(meta("updated"), "runs");
-    // The most recent chat run by its start time (run ids from the same second don't sort by time).
-    const lastChatStart = () =>
+    // The most recent main run by its start time (run ids from the same second don't sort by time).
+    const lastStart = () =>
       readdirSync(runs)
-        .filter((x) => x.startsWith("chat"))
+        .filter((x) => x.startsWith("main"))
         .map((f) => readFileSync(join(runs, f), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((e) => e.event === "start"))
         .filter(Boolean)
         .sort((a, b) => a.t.localeCompare(b.t))
         .at(-1).data;
-    // Send, and wait until that chat turn has completely finished (the conversation records it as seen).
-    const chat = async (text: string) => {
+    // Send, and wait for the reply and for the turn to be over.
+    const ask = async (text: string) => {
       const m = await rt.send("updated", text);
-      await until(async () => (await rt.store("updated").conversation()).chatSeen === m.id, 30_000, `chat turn for "${text}"`);
+      await until(async () => (await rt.store("updated").messages()).some((e) => e.from === "agent" && e.text.includes(text) && e.t >= m.t), 30_000, `reply to "${text}"`);
+      await until(async () => (await loadAgent("updated")).state.status === "asleep", 30_000, "turn over");
     };
-    await chat("first question");
-    await chat("second question");
-    expect(lastChatStart().fresh).toBe(false); // same instructions: the session continues
-    await rt.store("updated").patchConversation({ chatPrompt: "older-version" });
-    await chat("third question");
-    expect(lastChatStart().fresh).toBe(true); // instructions changed: a fresh session with the new ones
-    await chat("fourth question");
-    expect(lastChatStart().fresh).toBe(false); // and that one continues from then on
+    await ask("second question");
+    expect(lastStart().fresh).toBe(false); // same instructions: the session continues (and its cache)
+    const { updateState } = await import("../src/agent/agent.js");
+    await updateState("updated", { mainSessionPrompt: "older-version" });
+    await ask("third question");
+    expect(lastStart().fresh).toBe(true); // instructions changed: a fresh session with the new ones
+    await ask("fourth question");
+    expect(lastStart().fresh).toBe(false); // and that one continues from then on
   });
 });
 
 describe("budgets and settings", () => {
-  it("doesn't spend in chats once the daily budget is used, and keeps the message", async () => {
+  it("doesn't spend once the daily budget is used, says so, and keeps the message", async () => {
     await employ("thrifty", "dailyBudgetUsd: 0.005");
     const m = await rt.send("thrifty", "are you there?");
     await until(async () => (await rt.store("thrifty").messages()).some((e) => e.from === "overtime" && /budget/.test(e.text)), 20_000, "budget note");

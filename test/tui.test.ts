@@ -289,16 +289,18 @@ describe("terminal app, with a scripted daemon", () => {
     await until(async () => c.calls.some((k) => k.method === "answer" && k.params.choice === 2), 5_000, "answered by click");
   });
 
-  it("streams what the agent is writing, and its current step in the list", async () => {
+  it("shows the agent is on what you just wrote, with its current step", async () => {
     const { t, app, seen } = await open();
     await seen("Merge the dependency fix?");
-    app.onLive({ agent: "repo-keeper", kind: "chat", text: "Checking the last three CI runs now", step: null, startedAt: new Date().toISOString() });
-    app.onLive({ agent: "game-builder", kind: "main", text: "", step: "Bash: npm test", startedAt: new Date().toISOString() });
-    await seen("Checking the last three CI runs now");
-    await seen("writing…");
-    await seen("Bash: npm test");
-    app.onLive({ agent: "repo-keeper", kind: "chat", text: "", step: null, startedAt: "", done: true });
-    await until(async () => !(await t.screen()).includes("Checking the last three"), 5_000, "stream cleared");
+    t.press(KEY.down); // game-builder: no open question, so typing sends a message
+    await seen("Harbour blockout done");
+    t.type("how is the harbour going?");
+    t.press(KEY.enter);
+    await seen("how is the harbour going?");
+    app.onLive({ agent: "game-builder", kind: "main", text: "", step: "Reading the build log", startedAt: new Date().toISOString() });
+    await seen("Reading the build log");
+    app.onLive({ agent: "game-builder", kind: "main", text: "", step: null, startedAt: "", done: true });
+    await until(async () => !(await t.screen()).includes("Reading the build log"), 5_000, "indicator cleared");
   });
 
   it("drops a non-file paste into the composer as text", async () => {
