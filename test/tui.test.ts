@@ -272,6 +272,35 @@ describe("terminal app, with a scripted daemon", () => {
     expect(await t.screen()).not.toContain("📎 just");
   });
 
+  it("keeps the line breaks of a pasted block and sends it as written", async () => {
+    const { t, c, seen } = await open();
+    await seen("Merge the dependency fix?");
+    t.press(paste("first line\nsecond line\nthird line"));
+    await seen("second line");
+    const s = (await t.screen()).split("\n");
+    // Three separate rows in the message box, not one run-together line.
+    expect(s.some((l) => l.includes("first line") && !l.includes("second"))).toBe(true);
+    t.press(KEY.enter);
+    await new Promise((r) => setTimeout(r, 300));
+    const sent = c.calls.find((x) => x.method === "send");
+    expect(sent?.params.text).toBe("first line\nsecond line\nthird line");
+  });
+
+  it("starts a new line with Shift+Enter (or Ctrl+J), and ↑↓ move through its lines", async () => {
+    const { t, c, seen } = await open();
+    await seen("Merge the dependency fix?");
+    t.type("one");
+    t.press("\n"); // Ctrl+J
+    t.type("two");
+    await seen("two");
+    t.press(KEY.up); // moves within the message, not to another agent
+    await new Promise((r) => setTimeout(r, 200));
+    expect(await t.screen()).toContain("▌ repo-keeper");
+    t.press(KEY.enter);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(c.calls.find((x) => x.method === "send")?.params.text).toBe("one\ntwo");
+  });
+
   it("shows one pane on a narrow terminal and still switches agents with ↑↓", async () => {
     const { t, seen } = await open(70, 24);
     await seen("1/5 ↑↓");
