@@ -574,6 +574,7 @@ export class App implements Component {
       for (const m of x.monitors ?? []) rows.push({ label: "Watching", note: `${m.why} · ${m.run}` });
       const running = (x.helpers ?? []).filter((h: any) => h.status === "running");
       if (running.length) rows.push({ label: `${running.length} helper${running.length === 1 ? "" : "s"} running`, note: running.map((h: any) => h.task.split("\n")[0]).join("; ") });
+      for (const b of x.background ?? []) rows.push({ label: "In the background", note: `pid ${b.pid} · ${b.command}` });
     }
     return rows;
   }

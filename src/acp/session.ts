@@ -71,13 +71,13 @@ export function toAcpMcp(servers: McpServerConfig[], http = true): acp.McpServer
 }
 
 /**
- * Claude Code's own tools that do Overtime's jobs (messaging, waking, watching, scheduling, subagents,
+ * Claude Code's own tools that do Overtime's jobs across sessions (messaging, waking, scheduling, subagents,
  * asking) or wait on a person in an interactive app. Inside Overtime they do nothing useful, or never
  * return, and the model mistakes them for the real ones; the agent uses Overtime's send, wake, ask and
  * spawn instead. Unknown names are ignored, so the list is safe across Claude Code versions.
  */
 export const CLAUDE_BUILTINS_OFF = [
-  "Agent", "Task", "SendMessage", "ListAgents", "ScheduleWakeup", "Monitor", "CronCreate", "CronDelete", "CronList",
+  "Agent", "Task", "SendMessage", "ListAgents", "ScheduleWakeup", "CronCreate", "CronDelete", "CronList",
   "RemoteTrigger", "PushNotification", "AskUserQuestion", "EnterPlanMode", "ExitPlanMode", "EnterWorktree", "ExitWorktree",
   "Workflow", "Artifact", "SendFeedback", "ClaudeDesign", "Projects", "ProposeGoal", "ProposeSkills", "ShowOnboardingRolePicker", "ReadNotifications",
 ];
@@ -136,9 +136,7 @@ export class AcpSession {
     const proc = spawn(cmd.command, cmd.args, {
       cwd: opts.cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      // Claude's background shells start in their own process group and outlive the session; agents
-      // use watches for anything long-running instead.
-      env: { ...process.env, ...(opts.backend === "claude" ? { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" } : {}), ...opts.env },
+      env: { ...process.env, ...opts.env },
       detached: true,
     });
     const stderrTail: string[] = [];

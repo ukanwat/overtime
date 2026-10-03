@@ -102,6 +102,7 @@ export class ControlServer {
         schedule: await store.schedule(),
         monitors: (await store.monitors()).filter((m) => m.status !== "removed"),
         helpers: await store.helpers(),
+        background: await (await import("../runtime/leftovers.js")).liveBackground(name).catch(() => []),
         reports: await store.reports(30),
       };
     },
