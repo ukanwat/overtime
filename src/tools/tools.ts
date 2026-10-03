@@ -6,6 +6,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolContext, ToolHost } from "./host.js";
 import { clampWake, MAX_SLEEP_MS, MIN_SLEEP_MS, parseDuration } from "../store/store.js";
 import { parseFrontMatter } from "../agent/frontmatter.js";
+import { listSkills, readSkill } from "../skills.js";
 import { describeAttachment } from "../store/attachments.js";
 
 type Result = { content: { type: "text"; text: string }[]; isError?: boolean };
@@ -199,6 +200,26 @@ Messages, answers and finished helpers always wake you early.`,
       }),
     );
   }
+
+  // Every kind of session can load skills: know-how written down by Overtime, the person, or the agent.
+  reg(
+    "skill",
+    {
+      description:
+        "Load a skill: written-down know-how (how Overtime works, how to do a task you've done before). Give its name to get its full instructions and the paths of its other files; leave the name out to list the skills you have. Write your own as skills/<name>/SKILL.md in your folder (front matter: name, description).",
+      inputSchema: { name: z.string().optional().describe("The skill's name, as listed. Leave out to list them all.") },
+    },
+    safe(async ({ name }) => {
+      if (!name) {
+        const all = listSkills(dir);
+        return ok(all.length ? all.map((s) => `${s.name} (${s.source}): ${s.description}\n  ${s.file}`).join("\n") : "No skills yet. Write one as skills/<name>/SKILL.md in your folder.");
+      }
+      const r = readSkill(dir, name);
+      if (!r) return fail(`No skill called "${name}". Skills you have: ${listSkills(dir).map((s) => s.name).join(", ") || "none"}.`);
+      const files = r.files.length ? `\n\n---\nOther files in this skill (read or run them as the skill says):\n${r.files.join("\n")}` : "";
+      return ok(`${r.text.trim()}\n\n---\nThis skill is at ${r.skill.file} (${r.skill.source}).${files}`);
+    }),
+  );
 
   if (helper) {
     reg(

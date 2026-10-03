@@ -48,3 +48,16 @@ describe("a backend that only runs MCP servers as local commands", () => {
     expect((await rt.store("bridged").schedule()).wakeReason).toBe("fake rest");
   });
 });
+
+describe("skills in a real session", () => {
+  it("an agent loads one with the skill tool", async () => {
+    await rt.create("skilled");
+    await rt.send("skilled", "Your job is testing.", []);
+    await until(async () => (await loadAgent("skilled")).state.status === "asleep", 40_000, "first turn");
+    await rt.send("skilled", "PASS SKILLCHECK", []);
+    const f = join(home, "agents", "skilled", "skill-result.txt");
+    const { existsSync } = await import("node:fs");
+    await until(async () => existsSync(f), 40_000, "skill loaded");
+    expect(readFileSync(f, "utf8")).toContain("# How Overtime works");
+  });
+});

@@ -578,6 +578,10 @@ export class App implements Component {
       const running = (x.helpers ?? []).filter((h: any) => h.status === "running");
       if (running.length) rows.push({ label: `${running.length} helper${running.length === 1 ? "" : "s"} running`, note: running.map((h: any) => h.task.split("\n")[0]).join("; ") });
       for (const b of x.background ?? []) rows.push({ label: "In the background", note: `pid ${b.pid} · ${b.command}` });
+      if (x.skills?.length) {
+        rows.push({ label: "Skills", heading: true });
+        for (const k of x.skills) rows.push({ label: k.name, note: `${k.source === "built-in" ? "" : `${k.source} · `}${k.description}`, stay: true, run: () => this.openLink(k.file) });
+      }
     }
     return rows;
   }

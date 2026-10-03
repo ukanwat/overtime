@@ -84,6 +84,7 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
         writeFileSync(join(folder, "INDEX.md"), "# Index\n\n- notes/: what I learned\n");
       }
       if (/Message from the person|The person answered|Passed on by your chat session/.test(text)) await t.call("send", { text: "main reply" });
+      if (/SKILLCHECK/.test(text)) writeFileSync(join(s.cwd, "skill-result.txt"), await t.call("skill", { name: "overtime" }));
       if (/ESCAPE/.test(text)) {
         // Try to write into a protected path, as a script or program it wrote would.
         const target = join(process.env.OVERTIME_HOME ?? homedir(), "protected", `escape-${process.pid}`);

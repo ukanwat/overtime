@@ -103,6 +103,7 @@ export class ControlServer {
         monitors: (await store.monitors()).filter((m) => m.status !== "removed"),
         helpers: await store.helpers(),
         background: await (await import("../runtime/leftovers.js")).liveBackground(name).catch(() => []),
+        skills: (await import("../skills.js")).listSkills(a.dir).map((k) => ({ name: k.name, description: k.description, source: k.source, file: k.file })),
         reports: await store.reports(30),
       };
     },
