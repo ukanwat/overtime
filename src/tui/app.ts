@@ -379,6 +379,9 @@ export class App implements Component {
       else if (this.pending.length) this.pending = [];
       return this.tui.requestRender();
     }
+    // Shift+↑↓ (or Option+↑↓) scroll the messages a few lines; plain ↑↓ move between agents.
+    if (matchesKey(data, Key.shift("up")) || matchesKey(data, Key.alt("up"))) return this.scrollBy(-3);
+    if (matchesKey(data, Key.shift("down")) || matchesKey(data, Key.alt("down"))) return this.scrollBy(3);
     if (matchesKey(data, Key.up) || matchesKey(data, Key.down)) {
       // In a message of several lines, ↑↓ move through its lines; otherwise between agents.
       if (this.input.getLines().length > 1) {
@@ -1010,7 +1013,7 @@ export class App implements Component {
     let lastStart = 0;
     let questionStart = -1;
 
-    if (this.hasMore) body.push(muted("   ↑ older messages: PgUp at the top loads them"), "");
+    if (this.hasMore) body.push(muted("   ↑ older messages: ⇧↑ at the top loads them"), "");
     if (!this.messages.length) body.push("", muted(`   No messages with ${a.name} yet.`));
 
     for (const m of this.messages) {
@@ -1131,8 +1134,8 @@ export class App implements Component {
       const v = view[i];
       if (typeof v !== "string" && i + v.rows > view.length) view[i] = "";
     }
-    if (s > 0 && view.length > 1 && typeof view[0] === "string") view[0] = muted(`   ↑ ${s} line${s === 1 ? "" : "s"} above · PgUp`);
-    if (s < maxScroll && view.length === h && h > 1) view[h - 1] = muted(`   ↓ newer below · PgDn`);
+    if (s > 0 && view.length > 1 && typeof view[0] === "string") view[0] = muted(`   ↑ ${s} line${s === 1 ? "" : "s"} above · ⇧↑`);
+    if (s < maxScroll && view.length === h && h > 1) view[h - 1] = muted(`   ↓ newer below · ⇧↓`);
     for (const bh of bodyHits) {
       const row = bh.line - s;
       if (row >= 0 && row < h) this.hits.push({ row: top + row, x0: x, x1: x + w, act: bh.act });
@@ -1283,7 +1286,7 @@ export class App implements Component {
         ...row("↑ ↓", "move between agents, and to + New agent"),
         ...row("→ or Tab", "open the selected agent's settings"),
         ...row("← or Esc", "close a panel"),
-        ...row("PgUp PgDn", "scroll the messages (or the mouse wheel)"),
+        ...row("⇧↑ ⇧↓", "scroll the messages (Option+↑↓, PgUp PgDn and the mouse wheel work too)"),
         "",
         muted("MESSAGES"),
         ...row("type, Enter", "write a message and send it"),
@@ -1429,7 +1432,7 @@ export class App implements Component {
     else if (this.onNewRow) hints = [keyHint("enter", "create"), keyHint("↑↓", "agents"), keyHint("?", "keys")];
     else if (this.typing() || this.pending.length) hints = [keyHint("enter", "send"), keyHint("⌥/⇧ enter", "new line"), keyHint("esc", "clear")];
     else if (this.choosing) hints = [keyHint("enter", "answer"), keyHint("1–9", "change"), keyHint("esc", "cancel")];
-    else hints = [q?.options?.length ? keyHint(`1–${q.options.length}`, "choose") : "", keyHint("↑↓", "agents"), keyHint("→", "settings"), keyHint("pgup", "scroll"), this.targets().length ? keyHint("^L", "links") : "", keyHint("?", "keys")].filter(Boolean);
+    else hints = [q?.options?.length ? keyHint(`1–${q.options.length}`, "choose") : "", keyHint("↑↓", "agents"), keyHint("→", "settings"), keyHint("⇧↑↓", "scroll"), this.targets().length ? keyHint("^L", "links") : "", keyHint("?", "keys")].filter(Boolean);
     const left = this.agent && !this.onNewRow ? muted(` ${this.agent.backend}${this.agent.model ? ` · ${this.agent.model}` : ""}`) : "";
     while (hints.length > 1 && visibleWidth(hints.join(sep)) + visibleWidth(left) + 3 > w) hints.pop();
     return spread(left, hints.join(sep) + " ", w);

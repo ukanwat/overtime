@@ -220,6 +220,20 @@ describe("terminal app, with a scripted daemon", () => {
     expect(s).not.toContain("Press 1–2");
   });
 
+  it("scrolls the messages with Shift+↑↓ while plain ↑↓ still move between agents", async () => {
+    const { t, seen } = await open(120, 14);
+    await seen("lines above");
+    const before = await t.screen();
+    t.press("\x1b[1;2A"); // Shift+↑
+    await new Promise((r) => setTimeout(r, 300));
+    const up = await t.screen();
+    expect(up).not.toEqual(before);
+    expect(up).toContain("▌ repo-keeper"); // still on the same agent
+    t.press("\x1b[1;2B"); // Shift+↓
+    await new Promise((r) => setTimeout(r, 300));
+    expect(await t.screen()).toEqual(before);
+  });
+
   it("lets you scroll past an open question to newer messages without pulling you back", async () => {
     const c: any = new FakeClient();
     const iso = (m: number) => new Date(Date.now() - m * 60000).toISOString();
