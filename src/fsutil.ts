@@ -66,3 +66,12 @@ export function newId(prefix: string): string {
   const t = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
   return `${prefix}_${t}_${randomBytes(3).toString("hex")}`;
 }
+
+/** Keep only the rows of a JSON-lines file that pass `keep` (rewritten atomically; torn lines dropped). */
+export async function trimJsonl<T>(path: string, keep: (row: T, index: number, all: T[]) => boolean): Promise<number> {
+  const rows = await readJsonl<T>(path);
+  const kept = rows.filter(keep);
+  if (kept.length === rows.length) return 0;
+  await writeAtomic(path, kept.map((r) => JSON.stringify(r)).join("\n") + (kept.length ? "\n" : ""));
+  return rows.length - kept.length;
+}

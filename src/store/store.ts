@@ -2,7 +2,7 @@ import { existsSync, statSync } from "node:fs";
 import { readdir, rename, rm } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { paths } from "../paths.js";
-import { appendJsonl, newId, readJson, readJsonl, writeJson } from "../fsutil.js";
+import { appendJsonl, newId, readJson, readJsonl, trimJsonl, writeJson } from "../fsutil.js";
 import { withLock } from "./mutex.js";
 import type { Conversation, Decision, HelperRecord, InboxItem, Link, Loop, Message, MessageKind, Monitor, Schedule } from "./types.js";
 
@@ -57,6 +57,14 @@ export class Store {
   private p(...parts: string[]) {
     return join(paths.meta(this.agent), ...parts);
   }
+  /** Old bookkeeping goes: delivered-inbox records older than `cutoff`, and all but the last 500 reports. */
+  async trimLogs(cutoff: number): Promise<void> {
+    await this.lock(async () => {
+      await trimJsonl<{ t?: string }>(this.p("inbox-delivered.jsonl"), (r) => !r.t || new Date(r.t).getTime() >= cutoff);
+      await trimJsonl(this.p("reports.jsonl"), (_r, i, all) => i >= all.length - 500);
+    });
+  }
+
   private lock<T>(fn: () => Promise<T>) {
     return withLock(`store:${this.agent}`, fn);
   }

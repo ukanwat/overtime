@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { paths } from "../paths.js";
-import { appendJsonl, readJson, readJsonl, writeJson } from "../fsutil.js";
+import { appendJsonl, readJson, readJsonl, trimJsonl, writeJson } from "../fsutil.js";
 import { withLock } from "../store/mutex.js";
 
 /** Exactly what the backend reported for one turn. Nothing here is estimated by Overtime. */
@@ -104,4 +104,9 @@ export async function blockedUntil(backend: string, now = Date.now()): Promise<D
   if (l.resetsAt && l.resetsAt * 1000 > now) return new Date(l.resetsAt * 1000);
   if (!l.resetsAt && now - new Date(l.updatedAt).getTime() < 15 * 60_000) return new Date(new Date(l.updatedAt).getTime() + 15 * 60_000);
   return null;
+}
+
+/** Usage rows older than `cutoff` go (budgets only count today; resumed sessions are recent). */
+export async function trimUsage(agent: string, cutoff: number): Promise<void> {
+  await withLock(`usage:${agent}`, () => trimJsonl<TurnUsage>(usagePath(agent), (r) => new Date(r.t).getTime() >= cutoff));
 }

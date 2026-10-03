@@ -199,7 +199,9 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
     const now = new Date();
     // Protected paths go in every turn's header, so a change reaches a session that is being continued.
     const prot = base.protect.length ? `\nRead-only for you (the person's protected paths): ${base.protect.join(", ")}. If your work needs a change there, ask.` : "";
-    const header = `Time now: ${now.toISOString()} (${now.toString()}).\nWhy you are awake: ${o.reason}${o.header ? `\n${o.header}` : ""}${prot}`;
+    // Like protected paths, the workspace is restated every turn, so a change reaches a continued session.
+    const ws = o.kind !== "helper" && base.workspace !== agent.dir ? `\nYour workspace (where the work lives): ${base.workspace}` : "";
+    const header = `Time now: ${now.toISOString()} (${now.toString()}).\nWhy you are awake: ${o.reason}${o.header ? `\n${o.header}` : ""}${ws}${prot}`;
     const body = typeof o.text === "function" ? o.text(fresh) : o.text;
     const preamble = o.preamble ?? sessionPreamble(agent);
     const prompt = fresh ? `${preamble}\n\n---\n\n${header}\n\n${body}` : `${header}\n\n${body}`;

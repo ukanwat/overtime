@@ -79,7 +79,10 @@ export async function runAcpServer(): Promise<void> {
     .onRequest("session/new", async () => {
       const list = await agents();
       if (!list.length) throw new Error("No Overtime agents yet. Create one with `overtime new <name>`.");
-      const first = list.find((a) => a.status !== "stopped") ?? list[0];
+      // Start with the agent you're most likely after: one waiting on you, else the most recently active.
+      const live = list.filter((a) => a.status !== "stopped");
+      const pool = live.length ? live : list;
+      const first = pool.find((a) => a.waiting) ?? [...pool].sort((x, y) => (y.lastRunAt ?? "").localeCompare(x.lastRunAt ?? ""))[0];
       const id = sid();
       sessions.set(id, { agent: first.name });
       await remember(id, first.name);

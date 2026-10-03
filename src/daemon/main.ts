@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { DaemonClient } from "./client.js";
 import { execFileSync } from "node:child_process";
 import { paths, home } from "../paths.js";
@@ -8,9 +8,15 @@ import { ControlServer } from "./control.js";
 /** overtimed: the always-on process. One per machine (per OVERTIME_HOME). */
 async function main() {
   mkdirSync(home(), { recursive: true });
+  // The log rotates at 10 MB (one older file kept), so it never grows without limit.
+  let written = 0;
   const log = (line: string) => {
     const l = `${new Date().toISOString()} ${line}\n`;
     try {
+      if ((written += l.length) > 256 * 1024) {
+        written = 0;
+        if (statSync(paths.daemonLog()).size > 10 * 1024 * 1024) renameSync(paths.daemonLog(), paths.daemonLog() + ".1");
+      }
       appendFileSync(paths.daemonLog(), l);
     } catch {}
     if (process.stdout.isTTY) process.stdout.write(l);

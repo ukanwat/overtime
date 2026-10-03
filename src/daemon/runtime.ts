@@ -339,6 +339,18 @@ export class Runtime extends EventEmitter implements ToolHost {
     return { kind: "budget", until: tomorrow, text };
   }
 
+  /** Pause an agent that can't spend; the budget alert is posted once per pause, before any other note about it. */
+  private async pauseFor(agentName: string, b: Blocked): Promise<void> {
+    const agent = await loadAgent(agentName);
+    const already = agent.state.status === "paused" && agent.state.pausedUntil && new Date(agent.state.pausedUntil) >= b.until;
+    await updateState(agentName, { status: "paused", pausedUntil: b.until.toISOString(), activity: b.kind === "limit" ? `paused: ${b.backend} usage limit` : "paused: daily budget used" });
+    if (b.kind === "budget" && !already) {
+      await this.store(agentName).addMessage({ from: "overtime", kind: "alert", title: "Daily budget used", text: b.text, baseDir: agent.dir });
+      this.changed(agentName, "messages");
+    }
+    this.changed(agentName, "state");
+  }
+
   private blockedLine(b: Blocked): string {
     return b.kind === "limit" ? `paused by the ${b.backend} usage limit until ${b.until.toLocaleString()}` : `paused: today's budget is used, back ${b.until.toLocaleString()}`;
   }
@@ -355,13 +367,7 @@ export class Runtime extends EventEmitter implements ToolHost {
 
     const b = await this.blocked(agentName);
     if (b) {
-      const already = agent.state.status === "paused" && agent.state.pausedUntil && new Date(agent.state.pausedUntil) >= b.until;
-      await updateState(agentName, { status: "paused", pausedUntil: b.until.toISOString(), activity: b.kind === "limit" ? `paused: ${b.backend} usage limit` : "paused: daily budget used" });
-      if (b.kind === "budget" && !already) {
-        await store.addMessage({ from: "overtime", kind: "alert", title: "Daily budget used", text: b.text, baseDir: agent.dir });
-        this.changed(agentName, "messages");
-      }
-      this.changed(agentName, "state");
+      await this.pauseFor(agentName, b);
       return true;
     }
 
@@ -571,6 +577,7 @@ export class Runtime extends EventEmitter implements ToolHost {
     }
     const b = await this.blocked(agentName);
     if (b) {
+      await this.pauseFor(agentName, b);
       await store.addMessage({ from: "overtime", kind: "message", text: `${agentName} is ${this.blockedLine(b)}. Your message is kept and it will pick it up then.`, baseDir: agent.dir });
       await store.pushInbox({ type: "message", text, messageId: m.id, attachments: m.attachments });
       this.changed(agentName, "messages");
@@ -795,20 +802,21 @@ export class Runtime extends EventEmitter implements ToolHost {
     if (!this.stopping && rec.status !== "stopped") this.wakeMain(agentName, `helper ${rec.id} ${rec.status === "done" ? "finished" : rec.status}`);
   }
 
-  /** Transcripts are kept for 30 days, then removed, so an agent's folder doesn't grow forever. */
+  /** Transcripts and bookkeeping are kept for 30 days, then removed, so an agent's folder doesn't grow forever. */
   private async cleanupRuns(agentName: string): Promise<void> {
     const dir = join(paths.meta(agentName), "runs");
     let files: string[] = [];
     try {
       files = await readdir(dir);
-    } catch {
-      return;
-    }
+    } catch {}
     const cutoff = Date.now() - RUN_KEEP_MS;
     for (const f of files) {
       const st = await lstat(join(dir, f)).catch(() => null);
       if (st && st.mtimeMs < cutoff) await rm(join(dir, f), { force: true });
     }
+    await this.store(agentName).trimLogs(cutoff);
+    const { trimUsage } = await import("../runtime/usage.js");
+    await trimUsage(agentName, cutoff);
   }
 
   /** Remove finished helpers' folders after a week. Git branches stay, so committed work is never lost. */
