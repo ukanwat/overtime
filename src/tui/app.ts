@@ -110,17 +110,15 @@ interface SettingsRow {
   danger?: boolean;
 }
 
-type McpEntry = { name: string; scope: "all" | "agent"; enabled: boolean; describe: string };
-type SettingsOverlay = { kind: "settings"; data: AgentSettingsView | null; extra: any; mcp?: McpEntry[]; idx: number; editing?: Field; error?: string };
-/** Adding an MCP server: what starts it (or its URL), its name, then for whom. */
-type McpAddOverlay = { kind: "mcpAdd"; step: "input" | "name" | "scope"; input: string; name: string; scope: 0 | 1; error?: string; busy?: string; /** What was typed, with secrets hidden. */ shown?: string };
+type McpEntry = { name: string; source: "shared" | "person" | "agent"; enabled: boolean; describe: string };
+type McpStatus = Record<string, { ok: boolean; tools: string[]; error?: string }>;
+type SettingsOverlay = { kind: "settings"; data: AgentSettingsView | null; extra: any; mcp?: McpEntry[]; mcpStatus?: McpStatus; idx: number; editing?: Field; error?: string };
 type Overlay =
   | null
   | { kind: "help" }
   | SettingsOverlay
   | { kind: "pick"; title: string; items: PickItem[]; idx: number; loading?: string; back?: boolean }
-  | { kind: "confirm"; title: string; body: string[]; yes: string; run: () => Promise<void>; danger?: boolean; focus: 0 | 1 }
-  | McpAddOverlay;
+  | { kind: "confirm"; title: string; body: string[]; yes: string; run: () => Promise<void>; danger?: boolean; focus: 0 | 1 };
 
 /**
  * Links and paths in a message, clickable right where they're written (underlined), instead of a
@@ -652,31 +650,32 @@ export class App implements Component {
 
   // ---------- settings ----------
 
-  /** What you can do with one MCP server: check it, switch a shared one for this agent, remove it. */
-  private showMcpMenu(m: McpEntry): void {
+  /** What you can do with one MCP server, like Claude Code's /mcp: connect or disconnect it, check it again, see its tools, remove it. */
+  private showMcpMenu(m: McpEntry, st?: { ok: boolean; tools: string[]; error?: string }): void {
     const a = this.needAgent();
     if (!a) return;
     const items: PickItem[] = [
-      { label: "Check its connection", note: "start it and list its tools", run: () => this.checkMcp(m.name) },
-      ...(m.scope === "all"
-        ? [
-            m.enabled
-              ? { label: `Turn off for ${a.name}`, note: "other agents keep it", run: () => this.setMcpEnabled(m.name, false) }
-              : { label: `Turn on for ${a.name}`, run: () => this.setMcpEnabled(m.name, true) },
-          ]
-        : []),
-      { label: m.scope === "all" ? "Remove for all agents…" : `Remove from ${a.name}…`, run: () => this.confirmMcpRemove(m) },
+      m.enabled
+        ? { label: `Disconnect from ${a.name}`, note: "from its next turn", run: () => this.setMcpEnabled(m.name, false) }
+        : { label: `Connect to ${a.name}`, note: "from its next turn", run: () => this.setMcpEnabled(m.name, true) },
+      ...(m.enabled ? [{ label: "Check again", note: "start it and list its tools", run: () => this.recheckMcp() }] : []),
+      ...(st?.ok && st.tools.length ? [{ label: `See its ${st.tools.length} tools`, run: () => this.showMcpTools(m.name, st.tools) }] : []),
+      { label: m.source === "shared" ? "Remove for all agents…" : `Remove from ${a.name}…`, run: () => this.confirmMcpRemove(m) },
     ];
-    this.show({ kind: "pick", title: `${m.name} · ${m.scope === "all" ? "all agents" : `only ${a.name}`}`, items, idx: 0, back: true });
+    const title = `${m.name} · ${!m.enabled ? "off" : st?.ok ? "connected" : st ? "failed" : "checking"}`;
+    if (st && !st.ok && st.error) items.unshift({ label: st.error, info: true });
+    this.show({ kind: "pick", title, items, idx: st && !st.ok && st.error ? 1 : 0, back: true });
   }
 
-  private async checkMcp(name: string): Promise<void> {
+  private showMcpTools(name: string, tools: string[]): void {
+    this.show({ kind: "pick", title: `${name} · ${tools.length} tools`, items: tools.map((t) => ({ label: t, info: true })), idx: 0, back: true });
+  }
+
+  private async recheckMcp(): Promise<void> {
     const a = this.needAgent();
     if (!a) return;
-    this.say(`Checking ${name}…`, "info");
-    const r = await this.c.call<{ ok: boolean; tools: string[]; error?: string }>("mcpCheck", { name: a.name, serverName: name }, 60_000);
-    if (r.ok) this.say(`${name} works · ${r.tools.length} tool${r.tools.length === 1 ? "" : "s"}${r.tools.length ? `: ${r.tools.slice(0, 6).join(", ")}${r.tools.length > 6 ? "…" : ""}` : ""}`, "ok");
-    else this.say(`${name} didn't connect: ${r.error ?? "no answer"}`, "err");
+    this.say("Checking its servers…", "info");
+    await this.c.call("mcpStatus", { name: a.name, fresh: true }, 60_000).catch(() => {});
     await this.showSettings();
   }
 
@@ -684,7 +683,7 @@ export class App implements Component {
     const a = this.needAgent();
     if (!a) return;
     await this.c.call("mcpSetEnabled", { name: a.name, serverName: name, enabled });
-    this.say(`${name} ${enabled ? "on" : "off"} for ${a.name}, from its next turn.`, "ok");
+    this.say(`${name} ${enabled ? "connected to" : "disconnected from"} ${a.name}, from its next turn.`, "ok");
     await this.showSettings();
   }
 
@@ -694,7 +693,7 @@ export class App implements Component {
     this.show({
       kind: "confirm",
       title: `Remove ${m.name}?`,
-      body: [m.scope === "all" ? `Every agent loses ${m.name} from its next turn.` : `${a.name} loses ${m.name} from its next turn.`, "", muted(m.describe)],
+      body: [m.source === "shared" ? `Every agent loses ${m.name} from its next turn.` : `${a.name} loses ${m.name} from its next turn.`, "", muted(m.describe)],
       yes: "Remove",
       danger: true,
       focus: 1,
@@ -704,64 +703,6 @@ export class App implements Component {
         await this.showSettings();
       },
     });
-  }
-
-  private startMcpAdd(): void {
-    setText(this.fieldInput, "");
-    this.show({ kind: "mcpAdd", step: "input", input: "", name: "", scope: 0 });
-  }
-
-  /** Enter in the add form: on to the next step, or add the server and check it connects. */
-  private async mcpAddNext(o: McpAddOverlay): Promise<void> {
-    const a = this.needAgent();
-    if (!a || o.busy) return;
-    o.error = undefined;
-    if (o.step === "input") {
-      const text = this.fieldInput.getValue().trim();
-      try {
-        const { parseServerInput, describeServer } = await import("../daemon/mcp-admin.js");
-        const cfg = parseServerInput(text);
-        o.name = cfg.name;
-        o.shown = describeServer(cfg); // tokens and keys never echoed on screen
-      } catch (e) {
-        o.error = friendly(e);
-        return this.tui.requestRender();
-      }
-      o.input = text;
-      o.step = "name";
-      setText(this.fieldInput, o.name);
-      return this.tui.requestRender();
-    }
-    if (o.step === "name") {
-      const name = this.fieldInput.getValue().trim();
-      const { checkName } = await import("../daemon/mcp-admin.js");
-      const bad = checkName(name, []);
-      if (bad) {
-        o.error = bad;
-        return this.tui.requestRender();
-      }
-      o.name = name;
-      o.step = "scope";
-      return this.tui.requestRender();
-    }
-    o.busy = `Adding ${o.name} and checking it connects…`;
-    this.tui.requestRender();
-    try {
-      const r = await this.c.call<{ name: string; check: { ok: boolean; tools: string[]; error?: string } }>("mcpAdd", { name: a.name, scope: o.scope === 1 ? "all" : "agent", input: o.input, serverName: o.name }, 90_000);
-      this.overlay = null;
-      const who = o.scope === 1 ? "all agents" : a.name;
-      if (r.check.ok) this.say(`Added ${r.name} for ${who} · connected · ${r.check.tools.length} tool${r.check.tools.length === 1 ? "" : "s"}. It's available from the next turn.`, "ok");
-      else this.say(`Added ${r.name} for ${who}, but it didn't connect: ${r.check.error ?? "no answer"}. Fix or remove it in settings.`, "err");
-      await this.showSettings();
-    } catch (e) {
-      o.busy = undefined;
-      o.error = friendly(e);
-      if (/already a server|lowercase/.test(o.error)) {
-        o.step = "name";
-        setText(this.fieldInput, o.name);
-      }
-      this.tui.requestRender();
-    }
   }
 
   private async showSettings(): Promise<void> {
@@ -788,6 +729,13 @@ export class App implements Component {
     } catch {}
     try {
       o.mcp = await this.get<McpEntry[]>("mcpList", { name: a.name });
+      // Status takes a moment (each server is started or reached), so it fills in when ready.
+      void this.c
+        .call<McpStatus>("mcpStatus", { name: a.name }, 60_000)
+        .then((st) => {
+          if (this.overlay === o) (o.mcpStatus = cleanDeep(st)), this.tui.requestRender();
+        })
+        .catch(() => {});
     } catch {
       o.mcp = undefined; // an older background process: the section just doesn't show
     }
@@ -813,19 +761,16 @@ export class App implements Component {
         value: d ? (d.protect?.length ? d.protect.map(tilde).join(", ") : "nothing") : "…",
         note: d?.protect?.length ? "read-only for it" : "full access",
       },
-      ...(o.mcp
+      ...(o.mcp?.length
         ? [
             { label: "MCP servers", heading: true } as SettingsRow,
-            ...o.mcp.map(
-              (m): SettingsRow => ({
-                label: m.name,
-                value: m.enabled ? "on" : "off",
-                note: `${m.scope === "all" ? "all agents" : `only ${a.name}`} · ${m.describe}`,
-                stay: true,
-                run: () => this.showMcpMenu(m),
-              }),
-            ),
-            { label: "+ Add a server…", note: "a command or a URL", stay: true, run: () => this.startMcpAdd() } as SettingsRow,
+            ...o.mcp.map((m): SettingsRow => {
+              const st = o.mcpStatus?.[m.name];
+              const value = !m.enabled ? "○ off" : !o.mcpStatus ? "… checking" : st?.ok ? "✓ connected" : "✗ failed";
+              const from = m.source === "shared" ? "all agents" : m.source === "person" ? "set by you" : `added by ${a.name}`;
+              const detail = !m.enabled ? from : st?.ok ? `${st.tools.length} tool${st.tools.length === 1 ? "" : "s"} · ${from}` : st?.error ? `${st.error} · ${from}` : from;
+              return { label: m.name, value, note: detail, stay: true, run: () => this.showMcpMenu(m, st) };
+            }),
           ]
         : []),
       { label: "Control", heading: true },
@@ -1007,15 +952,6 @@ export class App implements Component {
         o.error = undefined;
       } else if (matchesKey(data, Key.enter)) await this.saveField(o);
       else this.fieldInput.handleInput(data);
-      return this.tui.requestRender();
-    }
-    if (o.kind === "mcpAdd") {
-      if (matchesKey(data, Key.escape)) return this.showSettings();
-      if (o.busy) return;
-      if (matchesKey(data, Key.enter)) return this.mcpAddNext(o);
-      if (o.step === "scope") {
-        if (matchesKey(data, Key.left) || matchesKey(data, Key.right) || matchesKey(data, Key.tab)) o.scope = o.scope === 0 ? 1 : 0;
-      } else this.fieldInput.handleInput(data);
       return this.tui.requestRender();
     }
     const closeKey = matchesKey(data, Key.escape) || (o.kind === "settings" && (matchesKey(data, Key.tab) || matchesKey(data, Key.ctrl("p")) || matchesKey(data, Key.left)));
@@ -1536,32 +1472,6 @@ export class App implements Component {
       ];
       return this.framed("Keys", body.slice(0, Math.max(3, h - 3)), [], w, x, top);
     }
-    if (o.kind === "mcpAdd") {
-      const a = this.agent!;
-      const body: string[] = [""];
-      const field = () => {
-        this.fieldInput.focused = !o.busy;
-        const fw = Math.max(10, iw - 2);
-        return hasTints() ? element(" " + (this.fieldInput.render(fw - 2)[0] ?? ""), fw) : accent("[") + fit(this.fieldInput.render(fw - 2)[0] ?? "", fw - 2) + accent("]");
-      };
-      if (o.step === "input") {
-        body.push("The command that starts the server, or its URL:", "", field(), "");
-        body.push(muted("For example:"));
-        body.push(muted("  npx -y @modelcontextprotocol/server-github"));
-        body.push(muted("  GITHUB_TOKEN=ghp_… npx -y @modelcontextprotocol/server-github"));
-        body.push(muted("  https://mcp.example.com/mcp   Authorization: Bearer …"));
-      } else if (o.step === "name") {
-        body.push(muted(cut(o.shown ?? o.input, iw)), "", "Its name (how agents will see it):", "", field());
-      } else {
-        body.push(muted(cut(o.shown ?? o.input, iw)), "", `Give ${bold(o.name)} to:`, "");
-        const btn = (label: string, on: boolean) => (on ? bold(inverse(hasTints() ? `  ${label}  ` : `[ ${label} ]`)) : hasTints() ? element(`  ${label}  `, visibleWidth(label) + 4) : `[ ${label} ]`);
-        body.push(`${btn(`Only ${a.name}`, o.scope === 0)}   ${btn("All agents", o.scope === 1)}`);
-      }
-      if (o.error) body.push("", red(o.error));
-      if (o.busy) body.push("", muted(`${spinner()} ${o.busy}`));
-      body.push("");
-      return this.framed("Add an MCP server", body, [], w, x, top);
-    }
     if (o.kind === "confirm") {
       const body: string[] = [""];
       for (const l of o.body) body.push(...(l ? wrapTextWithAnsi(l, iw) : [""]));
@@ -1621,7 +1531,7 @@ export class App implements Component {
 
   private placeholder(): string {
     const o = this.overlay;
-    if (o) return `Esc closes ${o.kind === "settings" ? "settings" : o.kind === "help" ? "the keys" : o.kind === "confirm" || o.kind === "mcpAdd" ? "this without changing anything" : "the list"}`;
+    if (o) return `Esc closes ${o.kind === "settings" ? "settings" : o.kind === "help" ? "the keys" : o.kind === "confirm" ? "this without changing anything" : "the list"}`;
     if (this.onNewRow) return "Name the new agent, e.g. repo-keeper";
     const a = this.agent;
     if (!a) return "";
@@ -1684,7 +1594,6 @@ export class App implements Component {
     if (o?.kind === "settings") hints = o.editing ? [keyHint("enter", "save"), keyHint("esc", "cancel")] : [keyHint("↑↓", "move"), keyHint("enter", "change"), keyHint("esc", "close")];
     else if (o?.kind === "help") hints = [keyHint("any key", "close")];
     else if (o?.kind === "confirm") hints = [keyHint("←→", "choose"), keyHint("enter", "confirm"), keyHint("esc", "cancel")];
-    else if (o?.kind === "mcpAdd") hints = o.step === "scope" ? [keyHint("←→", "choose"), keyHint("enter", "add"), keyHint("esc", "cancel")] : [keyHint("enter", "next"), keyHint("esc", "cancel")];
     else if (o) hints = [keyHint("↑↓", "move"), keyHint("enter", "choose"), keyHint("esc", o.kind === "pick" && o.back ? "back" : "close")];
     else if (this.onNewRow) hints = [keyHint("enter", "create"), keyHint("↑↓", "agents"), keyHint("?", "keys")];
     else if (this.typing() || this.pending.length) hints = [keyHint("enter", "send"), keyHint("⌥/⇧ enter", "new line"), keyHint("esc", "clear")];

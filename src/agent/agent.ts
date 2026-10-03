@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -244,17 +245,45 @@ function sortKeys(o: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.keys(o).sort().map((k) => [k, o[k]]));
 }
 
+/**
+ * MCP servers the agent added for itself: mcp.json in its folder ({"servers": [...]} or a plain list),
+ * in the same shape as settings.json. The agent manages this file; the person turns servers on and off.
+ */
+export function agentMcpServers(dir: string): McpServerConfig[] {
+  try {
+    const raw = JSON.parse(readFileSync(join(dir, "mcp.json"), "utf8"));
+    const list = Array.isArray(raw) ? raw : Array.isArray(raw?.servers) ? raw.servers : Array.isArray(raw?.mcpServers) ? raw.mcpServers : [];
+    return list.filter((x: any) => x && typeof x.name === "string" && (typeof x.command === "string" || typeof x.url === "string"));
+  } catch {
+    return [];
+  }
+}
+
+/** Every MCP server an agent has, by where it came from (shared, the person's for it, its own); first name wins. */
+export async function allMcpServers(agent: Agent): Promise<{ server: McpServerConfig; source: "shared" | "person" | "agent" }[]> {
+  const g = await loadSettings();
+  const out: { server: McpServerConfig; source: "shared" | "person" | "agent" }[] = [];
+  const seen = new Set<string>(["overtime"]);
+  const add = (list: McpServerConfig[], source: "shared" | "person" | "agent") => {
+    for (const server of list) if (!seen.has(server.name)) (seen.add(server.name), out.push({ server, source }));
+  };
+  add(g.mcpServers, "shared");
+  add(agent.settings.mcpServers ?? [], "person");
+  add(agentMcpServers(agent.dir), "agent");
+  return out;
+}
+
 export async function effectiveSettings(agent: Agent): Promise<EffectiveSettings> {
   const g = await loadSettings();
   const disabled = new Set(agent.settings.disableMcp ?? []);
-  const shared = g.mcpServers.filter((s) => !disabled.has(s.name));
   return {
     backend: agent.settings.backend ?? g.backend,
     model: agent.settings.model ?? g.model,
     dailyBudgetUsd: agent.settings.dailyBudgetUsd ?? g.dailyBudgetUsd,
     dailyTokenBudget: agent.settings.dailyTokenBudget !== undefined ? agent.settings.dailyTokenBudget : g.dailyTokenBudget,
     workspace: agent.settings.workspace ? expandHome(agent.settings.workspace) : agent.dir,
-    mcpServers: [...shared, ...(agent.settings.mcpServers ?? [])],
+    // Shared, the person's for this agent, and the agent's own mcp.json; minus what the person turned off.
+    mcpServers: (await allMcpServers(agent)).map((x) => x.server).filter((x) => !disabled.has(x.name)),
     protect: [...new Set([...(g.protect ?? []), ...(agent.settings.protect ?? [])])],
   };
 }
