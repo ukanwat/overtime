@@ -186,6 +186,11 @@ export class App implements Component {
   private again = false;
   private flashTimer: NodeJS.Timeout | null = null;
   private lastMax = 0;
+  /**
+   * Where the view jumps once (an open question when you arrive, or the start of a new message), after
+   * which it stays wherever you scroll. Applying it on every frame would pull the view back as you scroll.
+   */
+  private anchor: "question" | "last" | null = "question";
   private lastTop = 0;
   private leftW = 0;
   private loadedFor = "";
@@ -250,7 +255,13 @@ export class App implements Component {
         const r = await this.get<{ messages: Message[]; hasMore: boolean }>("messages", { name: a.name, markRead: true, limit: 300 });
         if (this.agent?.name !== a.name) return;
         const fresh = r?.messages ?? [];
-        if (this.loadedFor !== a.name) this.scroll = Number.MAX_SAFE_INTEGER;
+        if (this.loadedFor !== a.name) {
+          this.scroll = Number.MAX_SAFE_INTEGER;
+          this.anchor = "question";
+        } else if (this.scroll === Number.MAX_SAFE_INTEGER && fresh.at(-1)?.id !== this.messages.at(-1)?.id) {
+          // Something new while you're at the bottom: show it (from its start if it's long), once.
+          this.anchor = openQuestion(fresh)?.id === fresh.at(-1)?.id ? "question" : "last";
+        }
         this.messages = fresh;
         this.hasMore = !!r?.hasMore;
         this.loadedFor = a.name;
@@ -387,6 +398,7 @@ export class App implements Component {
       if (q?.options?.length && n <= q.options.length) {
         this.choosing = { id: q.id, n };
         this.scroll = Number.MAX_SAFE_INTEGER;
+        this.anchor = "question"; // bring the question into view, once
         return this.tui.requestRender();
       }
     }
@@ -439,7 +451,11 @@ export class App implements Component {
   }
 
   private scrollBy(d: number): void {
-    const cur = this.scroll === Number.MAX_SAFE_INTEGER ? this.lastTop : this.scroll;
+    this.anchor = null; // you scrolled: no pending jump may override that
+    const atBottom = this.scroll === Number.MAX_SAFE_INTEGER;
+    // Already at the bottom: scrolling further down does nothing (it must never move the view up).
+    if (atBottom && d > 0) return;
+    const cur = atBottom ? this.lastMax : this.scroll;
     this.scroll = Math.max(0, cur + d);
     if (this.scroll >= this.lastMax) this.scroll = Number.MAX_SAFE_INTEGER;
     if (this.scroll === 0 && d < 0) void this.loadOlder();
@@ -1100,11 +1116,14 @@ export class App implements Component {
     this.lastMax = maxScroll;
     let s: number;
     if (this.scroll !== Number.MAX_SAFE_INTEGER) s = Math.min(this.scroll, maxScroll);
-    // Following the newest: a last message longer than the view is shown from its start.
-    // An open question is what needs you, so it is kept in view from its top.
     else if (live) s = maxScroll;
-    else if (questionStart >= 0) s = Math.min(maxScroll, Math.max(0, questionStart - 1));
-    else s = Math.min(maxScroll, Math.max(0, body.length - lastStart > h ? lastStart - 1 : maxScroll));
+    else if (this.anchor) {
+      // A one-time jump: the open question from its top, or a long new message from its start.
+      const target = this.anchor === "question" && questionStart >= 0 ? questionStart - 1 : body.length - lastStart > h ? lastStart - 1 : maxScroll;
+      s = Math.min(maxScroll, Math.max(0, target));
+      this.anchor = null;
+      if (s < maxScroll) this.scroll = s; // from here on, your scrolling decides
+    } else s = maxScroll;
     this.lastTop = s;
     const view = body.slice(s, s + h);
     // Images only when all their rows are in view; otherwise just their file line shows.
