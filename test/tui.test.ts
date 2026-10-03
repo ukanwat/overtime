@@ -220,6 +220,27 @@ describe("terminal app, with a scripted daemon", () => {
     expect(s).not.toContain("Press 1–2");
   });
 
+  it("lets you scroll past an open question to newer messages without pulling you back", async () => {
+    const c: any = new FakeClient();
+    const iso = (m: number) => new Date(Date.now() - m * 60000).toISOString();
+    const long = Array.from({ length: 12 }, (_, i) => `Line ${i + 1} of the newer update.`).join("\n");
+    const orig = c.call.bind(c);
+    c.call = async (m: string, p: any) =>
+      m === "messages" && p?.name === "repo-keeper"
+        ? { messages: [{ id: "q", t: iso(5), from: "agent", kind: "question", text: "Bridge or ferry?", options: ["Bridge", "Ferry"] }, { id: "n", t: iso(1), from: "agent", kind: "message", text: long }], hasMore: false }
+        : orig(m, p);
+    const { t, app, seen } = await open(100, 18, c);
+    await seen("Bridge or ferry?"); // arrives on the open question
+    for (let i = 0; i < 5; i++) t.press("\x1b[6~"); // PgDn to the bottom
+    await seen("Line 12 of the newer update.");
+    // Redraws (a spinner tick, a refresh) must not move the view back up.
+    for (let i = 0; i < 5; i++) {
+      await (app as any).refresh();
+      await new Promise((r) => setTimeout(r, 50));
+      expect(await t.screen()).toContain("Line 12 of the newer update.");
+    }
+  });
+
   it("asks before archiving, with Cancel selected first", async () => {
     const { t, c, seen } = await open();
     await seen("Merge the dependency fix?");
