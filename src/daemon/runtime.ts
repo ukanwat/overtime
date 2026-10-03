@@ -651,12 +651,40 @@ export class Runtime extends EventEmitter implements ToolHost {
 
   // ---------- helpers ----------
 
-  async spawnHelper(ctx: ToolContext, req: { role?: string; instructions?: string; task: string; backend?: string; model?: string }): Promise<{ id: string; workdir: string }> {
+  async spawnHelper(ctx: ToolContext, req: { role?: string; instructions?: string; task: string; backend?: string; model?: string }): Promise<{ id: string; workdir: string; note?: string }> {
     if (ctx.kind !== "main") throw new Error("Only your main session can start helpers.");
     if (this.stopping) throw new Error("Overtime is shutting down; start the helper next turn.");
     const store = this.store(ctx.agent);
     const agent = await loadAgent(ctx.agent);
     const eff = await effectiveSettings(agent);
+    // A helper's backend and model are checked before it starts. One that can't run as asked runs on
+    // what can, and the agent is told why, so it can fix the role: a helper never fails over this.
+    const notes: string[] = [];
+    const { backendMissing } = await import("../acp/backends.js");
+    if (req.backend && req.backend !== eff.backend) {
+      const missing = await backendMissing(req.backend).catch(() => null);
+      if (missing) {
+        const asked = req.backend;
+        notes.push(`It asked for backend "${asked}", which can't run here (${missing}), so it runs on your backend, ${eff.backend}.`);
+        req.backend = undefined;
+        if (req.model) {
+          notes.push(`Its model "${req.model}" was for ${asked}, so it runs on ${eff.backend}'s default model.`);
+          req.model = undefined;
+        }
+      }
+    }
+    if (req.model && req.model !== "default") {
+      const backend = req.backend ?? eff.backend;
+      let offered: { id: string; name: string }[] = [];
+      try {
+        offered = await this.models(backend);
+      } catch {}
+      const want = req.model.toLowerCase();
+      if (offered.length && !offered.some((m) => m.id.toLowerCase() === want || m.name.toLowerCase() === want)) {
+        notes.push(`${backend} doesn't offer the model "${req.model}", so this helper runs on ${backend}'s default. It offers: ${offered.map((m) => m.id).join(", ")}. Fix the role file if you'll start this kind of helper again.`);
+        req.model = undefined;
+      }
+    }
     const b = await this.blocked(ctx.agent, req.backend);
     if (b) throw new Error(`Can't start a helper: ${this.blockedLine(b)}.`);
     // Checked and recorded under one lock, so two spawns at once can't both slip under the cap.
@@ -702,7 +730,7 @@ export class Runtime extends EventEmitter implements ToolHost {
         this.helperAborts.delete(key);
       });
     this.helperRuns.set(key, run);
-    return { id: rec.id, workdir: rec.workdir };
+    return { id: rec.id, workdir: rec.workdir, note: notes.join(" ") || undefined };
   }
 
   /** A folder of its own for each helper: a git worktree of the workspace, or a copy of a small workspace. */

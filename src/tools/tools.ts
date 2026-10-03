@@ -184,7 +184,7 @@ Messages, answers and finished helpers always wake you early.`,
       "spawn",
       {
         description:
-          "Start a helper: a separate session that does one task in parallel and hands the result back to you. It starts clean, so put everything it needs in task. For a helper you'll want again, write its role (what it does, what done means) to a file in your folder and pass role_file; optional settings at the top of that file (backend, model) choose what it runs on. Parallel helpers each get their own copy of the workspace: for a git repo, a worktree of the last commit (commit first if they need your uncommitted changes); otherwise a copy of a small workspace. You review and merge their work.",
+          "Start a helper: a separate session that does one task in parallel and hands the result back to you. It starts clean, so put everything it needs in task. For a helper you'll want again, write its role (what it does, what done means) to a file in your folder and pass role_file; optional settings at the top of that file (backend, model) choose what it runs on: a model belongs to its backend, so set both together, or neither to use yours. If the backend or model can't run, the helper runs on what can and you're told. Parallel helpers each get their own copy of the workspace: for a git repo, a worktree of the last commit (commit first if they need your uncommitted changes); otherwise a copy of a small workspace. You review and merge their work.",
         inputSchema: {
           task: z.string(),
           role_file: z.string().optional().describe("Path of a role you wrote, inside your folder (relative to it, or absolute)."),
@@ -205,7 +205,7 @@ Messages, answers and finished helpers always wake you early.`,
         }
         const h = await host.spawnHelper(ctx, { task, instructions, role: role_file, backend: backend ?? roleBackend, model: model ?? roleModel });
         host.changed(ctx.agent, "helpers");
-        return ok(`Helper ${h.id} started in ${h.workdir}. Its result will come to you.`);
+        return ok(`Helper ${h.id} started in ${h.workdir}. Its result will come to you.${h.note ? `\n\nNote: ${h.note}` : ""}`);
       }),
     );
   }
