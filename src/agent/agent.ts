@@ -42,6 +42,8 @@ export interface AgentState {
   mainSessionModel?: string | null;
   /** Fingerprints of AGENT.md and INDEX.md when the main session last ended. */
   mainSessionFiles?: { agent: string; index: string };
+  /** The version of Overtime's instructions the main session started with (see promptVersion). */
+  mainSessionPrompt?: string;
   /** The backend/model a "model isn't available" alert was already raised for. */
   modelIssueFor?: string;
   createdAt: string;

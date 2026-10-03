@@ -126,6 +126,10 @@ export class ControlServer {
       const m = await this.rt.send(name, String(text ?? ""), Array.isArray(attachments) ? attachments.map(String) : []);
       return { id: m.id };
     },
+    dismiss: async ({ name, questionId }) => {
+      await this.rt.dismissQuestion(name, String(questionId));
+      return { ok: true };
+    },
     answer: async ({ name, questionId, choice, text }) => {
       await this.rt.answer(name, questionId || undefined, choice ? Number(choice) : undefined, text || undefined);
       return { ok: true };

@@ -386,7 +386,7 @@ export class Runtime extends EventEmitter implements ToolHost {
       const lastCtx = await lastContext(agentName, agent.state.mainSessionId);
       const sameModel = (agent.state.mainSessionModel ?? null) === (eff.model ?? null) || agent.state.mainSessionModel === undefined;
       const resume =
-        agent.state.mainSessionId && agent.state.mainSessionBackend === eff.backend && sameModel && (agent.state.failures ?? 0) < 2 && !full(lastCtx)
+        agent.state.mainSessionId && agent.state.mainSessionBackend === eff.backend && sameModel && (agent.state.failures ?? 0) < 2 && !full(lastCtx) && agent.state.mainSessionPrompt === promptVersion("main")
           ? agent.state.mainSessionId
           : null;
       const edits = resume ? await editedSince(agent, agent.state.mainSessionFiles) : "";
@@ -409,13 +409,13 @@ export class Runtime extends EventEmitter implements ToolHost {
       await store.ackInbox(runId);
       // The person wrote and the agent never answered with send or ask: its final words are the answer,
       // so a message is never left without a reply (whatever the backend made of the tools).
-      if (!ctx.sent && result.reply.trim() && items.some((i) => i.type === "message" || i.type === "answer")) {
+      if (!ctx.sent && result.reply.trim() && items.some((i) => (i.type === "message" && !(i.data as any)?.fromChat) || i.type === "answer")) {
         await store.addMessage({ from: "agent", kind: "message", text: result.reply.trim(), baseDir: agent.dir });
         this.changed(agentName, "messages");
       }
       agent = await loadAgent(agentName);
       if (result.modelIssue) await this.modelIssue(agentName, result.modelIssue);
-      const patch: Partial<AgentState> = { status: hasIdentity(agent) ? "asleep" : "new", failures: 0, lastError: null, mainSessionFiles: fileHashes(agent) };
+      const patch: Partial<AgentState> = { status: hasIdentity(agent) ? "asleep" : "new", failures: 0, lastError: null, mainSessionFiles: fileHashes(agent), mainSessionPrompt: promptVersion("main") };
       // Keep whatever status line the agent set itself; only replace Overtime's own placeholder.
       if (OVERTIME_ACTIVITY.test(agent.state.activity ?? "")) patch.activity = hasIdentity(agent) ? "resting" : "waiting for its job";
       await updateState(agentName, patch);
@@ -542,6 +542,29 @@ export class Runtime extends EventEmitter implements ToolHost {
     if (agent.state.status !== "stopped") this.wakeMain(agentName, "the person answered one of your questions");
   }
 
+  /** The person closed a question without answering it: the agent stops waiting on it. */
+  async dismissQuestion(agentName: string, questionId: string): Promise<void> {
+    const agent = await loadAgent(agentName);
+    const store = this.store(agentName);
+    const q = await store.message(questionId);
+    if (!q || q.kind !== "question") throw new Error(`There's no question ${questionId}.`);
+    if (q.answer) return;
+    await store.addMessage({ from: "you", kind: "message", text: "Dismissed", replyTo: q.id, closes: "dismissed", baseDir: agent.dir });
+    await store.pushInbox({ type: "answer", text: `The person dismissed your question without answering it: "${q.text.slice(0, 300)}". Don't wait on it: go with your own judgement, or ask again in a different way only if it really matters.`, data: { question: q.text } });
+    this.changed(agentName, "messages");
+  }
+
+  /** The agent withdrew a question it no longer needs answered. */
+  async withdrawQuestion(agentName: string, questionId: string): Promise<boolean> {
+    const agent = await loadAgent(agentName);
+    const store = this.store(agentName);
+    const q = await store.message(questionId);
+    if (!q || q.kind !== "question" || q.answer) return false;
+    await store.addMessage({ from: "agent", kind: "message", text: "Withdrawn", replyTo: q.id, closes: "withdrawn", baseDir: agent.dir });
+    this.changed(agentName, "messages");
+    return true;
+  }
+
   /**
    * Earned autonomy: when the person keeps giving the same answer to the same kind of question,
    * tell the agent so it can propose deciding those itself. Overtime counts; the agent asks.
@@ -599,7 +622,7 @@ export class Runtime extends EventEmitter implements ToolHost {
         .slice(Math.max(0, idx - 40), idx)
         .map((e) => `${e.from === "you" ? "Person" : e.from === "agent" ? "You" : "Overtime"} (${e.t})${e.kind === "question" ? " [question]" : e.kind === "report" ? " [report]" : ""}: ${withFiles(e.text, e.attachments)}${e.answer ? `\n  (answered: ${e.answer.text})` : ""}`)
         .join("\n\n");
-      const resume = conv.chatSessionId && !full(await lastContext(agentName, conv.chatSessionId)) ? conv.chatSessionId : null;
+      const resume = conv.chatSessionId && conv.chatPrompt === promptVersion("chat") && !full(await lastContext(agentName, conv.chatSessionId)) ? conv.chatSessionId : null;
       const editsText = resume ? await editedSince(agent, conv.chatFiles) : "";
       // What the chat session hasn't seen: everything since its last turn (main's replies, reports, answers).
       const filesAtStart = fileHashes(agent);
@@ -624,7 +647,7 @@ export class Runtime extends EventEmitter implements ToolHost {
         log: this.log,
       });
       // Fingerprints from when this turn began: a rewrite by main during the turn still counts as unseen next time.
-      await store.patchConversation({ chatSessionId: r.sessionId, chatFiles: filesAtStart, chatSeen: m.id });
+      await store.patchConversation({ chatSessionId: r.sessionId, chatFiles: filesAtStart, chatSeen: m.id, chatPrompt: promptVersion("chat") });
       if (r.modelIssue) await this.modelIssue(agentName, r.modelIssue);
       // If it didn't use send, its final words are the reply, so the person always gets an answer.
       if (!ctx.sent) await store.addMessage({ from: "agent", kind: "message", text: r.reply || "(I read this, but didn't write a reply.)", baseDir: agent.dir });
@@ -1028,7 +1051,7 @@ function inboxBlock(items: InboxItem[]): string {
         const head =
           i.type === "message"
             ? (i.data as any)?.fromChat
-              ? "Passed on by your chat session (from your conversation with the person)"
+              ? "Passed on from your conversation with the person. They have already been answered about this: don't reply to it or acknowledge it again. Do the work, and message them only with new results or questions"
               : "Message from the person"
             : i.type === "answer"
               ? `The person answered your question: "${String((i.data as any)?.question ?? "").slice(0, 200)}"`
@@ -1054,12 +1077,23 @@ function mainTurnText(items: InboxItem[], firstJob: boolean, contextReset: boole
   }
   if (contextReset) parts.push("Note: this is a fresh session. Your earlier conversation isn't carried over; your folder is. Check INDEX.md and your notes for where things stand.");
   parts.push(inboxBlock(items));
-  parts.push("Reply to the person's messages with send. Do the work, as part of your goals. Before this turn ends, bring your notes and INDEX.md up to date, decide the next useful step toward your goals, and choose when to wake.");
+  parts.push("Reply with send to new messages from the person (not to ones passed on from your conversation: those were already answered, so never acknowledge them twice). Do the work, as part of your goals. Before this turn ends, bring your notes and INDEX.md up to date, decide the next useful step toward your goals, and choose when to wake.");
   return parts.join("\n\n");
 }
 
+/** What a chat session is told about itself (part of its instructions' version, see promptVersion). */
+const CHAT_RULES = `# This session\n\nThis session answers the person in your conversation with them, separately from your main work session. Answer from what you know and what's in your folder. Keep replies short and plain. To the person you are one agent: never mention sessions, your main session or handing things over; just say what you'll do ("Got it, I'm holding"). Don't do real work here: if answering needs more than reading a few files or one quick command, or it changes your work, send it to your main session (send with to: "main") and tell the person you have.`;
+
 function chatPreamble(agent: Agent): string {
-  return `${sessionPreamble(agent, "chat")}\n\n---\n\n# This session\n\nThis session answers the person in your conversation with them, separately from your main work session. Answer from what you know and what's in your folder. Keep replies short and plain. To the person you are one agent: never mention sessions, your main session or handing things over; just say what you'll do ("Got it, I'm holding"). Don't do real work here: if answering needs more than reading a few files or one quick command, or it changes your work, send it to your main session (send with to: "main") and tell the person you have.`;
+  return `${sessionPreamble(agent, "chat")}\n\n---\n\n${CHAT_RULES}`;
+}
+
+/**
+ * Which version of Overtime's instructions a session started with. Instructions are sent when a session
+ * starts, so when they change (an update), the next turn starts a fresh session that gets the new ones.
+ */
+function promptVersion(kind: "main" | "chat"): string {
+  return createHash("sha1").update(workingInstructions("_", kind) + (kind === "chat" ? CHAT_RULES : "")).digest("hex").slice(0, 12);
 }
 
 function helperInboxText(h: HelperRecord): string {

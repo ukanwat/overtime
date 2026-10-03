@@ -133,7 +133,7 @@ export class Store {
     for (const m of all) {
       if (m.replyTo) {
         const q = byId.get(m.replyTo);
-        if (q && !q.answer) q.answer = { choice: m.choice, text: m.text, t: m.t };
+        if (q && !q.answer) q.answer = { choice: m.choice, text: m.text, t: m.t, ...(m.closes ? { closed: m.closes } : {}) };
       }
     }
     return all;

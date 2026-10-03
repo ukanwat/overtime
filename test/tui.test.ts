@@ -319,7 +319,8 @@ describe("terminal app, with a scripted daemon", () => {
     expect(s.some((l) => l.includes("first line") && !l.includes("second"))).toBe(true);
     t.press(KEY.enter);
     await new Promise((r) => setTimeout(r, 300));
-    const sent = c.calls.find((x) => x.method === "send");
+    // repo-keeper has a question open, so what you type answers it.
+    const sent = c.calls.find((x) => x.method === "send" || x.method === "answer");
     expect(sent?.params.text).toBe("first line\nsecond line\nthird line");
   });
 
@@ -335,7 +336,7 @@ describe("terminal app, with a scripted daemon", () => {
     expect(await t.screen()).toContain("▌ repo-keeper");
     t.press(KEY.enter);
     await new Promise((r) => setTimeout(r, 300));
-    expect(c.calls.find((x) => x.method === "send")?.params.text).toBe("one\ntwo");
+    expect(c.calls.find((x) => x.method === "send" || x.method === "answer")?.params.text).toBe("one\ntwo");
   });
 
   it("shows one pane on a narrow terminal and still switches agents with ↑↓", async () => {

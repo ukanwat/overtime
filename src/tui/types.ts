@@ -31,7 +31,8 @@ export interface Message {
   links?: Link[];
   attachments?: Attachment[];
   /** On a question, once answered. */
-  answer?: { choice?: number; text: string; t: string };
+  answer?: { choice?: number; text: string; t: string; closed?: "withdrawn" | "dismissed" };
+  closes?: "withdrawn" | "dismissed";
   /** On your answer: the question it answers. */
   replyTo?: string;
 }

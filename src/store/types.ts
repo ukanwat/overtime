@@ -36,8 +36,10 @@ export interface Message {
   /** For your answer to a question: which question, and the option picked (1-based). */
   replyTo?: string;
   choice?: number;
+  /** A reply that closes a question without answering it: the agent withdrew it, or the person dismissed it. Not shown as a message. */
+  closes?: "withdrawn" | "dismissed";
   /** On a question once answered (derived from the answer message when read). */
-  answer?: { choice?: number; text: string; t: string };
+  answer?: { choice?: number; text: string; t: string; closed?: "withdrawn" | "dismissed" };
   attachments?: Attachment[];
   /** Paths and URLs found in the text, checked to exist (paths) when written. */
   links?: Link[];
@@ -53,6 +55,8 @@ export interface Conversation {
   chatFiles?: { agent: string; index: string };
   /** The last message the chat session had seen, so a resumed one is told what happened since. */
   chatSeen?: string | null;
+  /** The version of Overtime's instructions the chat session started with. */
+  chatPrompt?: string;
 }
 
 export type InboxType = "message" | "answer" | "monitor" | "helper" | "system" | "loop";
