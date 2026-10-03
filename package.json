@@ -38,7 +38,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p .",
+    "build": "tsc -p . && node -e \"require('fs').chmodSync('dist/bin.js', 0o755)\"",
     "dev": "tsx src/cli.ts",
     "test": "vitest run",
     "typecheck": "tsc -p . --noEmit",
