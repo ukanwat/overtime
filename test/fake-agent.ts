@@ -87,6 +87,10 @@ acp
     const id = randomUUID();
     const http = (ctx.params.mcpServers ?? []).find((m: any) => m.type === "http" && m.name === "overtime");
     sessions.set(id, { cwd: ctx.params.cwd, tools: http?.url, cost: 0 });
+    // Record which MCP servers this session was given, so tests can check what reached the backend.
+    try {
+      writeFileSync(join(ctx.params.cwd, ".mcp-seen"), (ctx.params.mcpServers ?? []).map((m: any) => m.name).join(",") + "\n");
+    } catch {}
     return { sessionId: id, modes: { availableModes: [{ id: "default", name: "Default" }, { id: "bypassPermissions", name: "Bypass" }], currentModeId: "default" } } as any;
   })
   .onRequest("session/load", (ctx: any) => {
