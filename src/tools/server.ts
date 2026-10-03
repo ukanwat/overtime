@@ -32,7 +32,7 @@ export class ToolServer {
       }
       try {
         const body = await readBody(req);
-        const mcp = new McpServer({ name: "overtime", version: "0.2.1" });
+        const mcp = new McpServer({ name: "overtime", version: "0.3.0" });
         registerTools(mcp, ctx, this.host);
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
         res.on("close", () => {

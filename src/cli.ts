@@ -1,8 +1,9 @@
+import { homedir } from "node:os";
 import { DaemonClient, ensureDaemon } from "./daemon/client.js";
 import type { AgentSummary } from "./daemon/control.js";
 import { validateName } from "./agent/agent.js";
 import { accent, ago, bold, clean, cleanDeep, fit, friendly, gray, green, money, red, stamp, statusParts, yellow } from "./tui/style.js";
-import type { ThreadEntry, ThreadMeta } from "./store/types.js";
+import { headed, humanBytes, openQuestion, type AgentSettingsView, type Message } from "./tui/types.js";
 
 const [, , cmd, ...rest] = process.argv;
 
@@ -49,21 +50,14 @@ function HELP(): string {
       [
         ["overtime new <name>", "create an agent; it starts with no job"],
         ["overtime ls", "list your agents"],
-        ['overtime send <name> "<message>"', "start a new thread with an agent"],
+        ['overtime send <name> "<message>"', "message an agent  (--attach <file>, repeatable)"],
+        ["overtime messages <name>", "read your messages with an agent"],
+        ["overtime answer <name> <n> [note]", "answer its open question with option n"],
         ["overtime stop|start|wake <name>", "stop it, start it again, or wake it now"],
-        ["overtime set <name> key=value…", "backend=…  model=…  budget=… (dollars a day)"],
+        ["overtime settings <name>", "show its backend, model, budgets and workspace"],
+        ["overtime set <name> key=value…", "backend=  model=  budget=  tokens=  workspace="],
         ["overtime models [backend]", "the models a backend offers"],
         ["overtime archive <name>", "stop an agent for good and move its folder away"],
-      ],
-    ],
-    [
-      "Threads",
-      [
-        ["overtime threads <name>", "an agent's threads"],
-        ["overtime thread <name> <id>", "read one"],
-        ['overtime reply <name> <id> "<…>"', "reply in it"],
-        ["overtime answer <name> <id> <n>", "answer a question with option n"],
-        ["overtime close <name> <id>", "close it"],
       ],
     ],
     [
@@ -139,25 +133,48 @@ function agentRow(a: AgentSummary): string[] {
   return [name, state, gray(money(a)), doing || gray("—")];
 }
 
-function threadIcon(t: ThreadMeta): string {
-  return t.status === "waiting_on_you" ? yellow("?") : t.kind === "alert" ? red("!") : t.kind === "report" ? accent("•") : t.status === "closed" ? gray("✓") : gray("›");
+/** One message as plain lines, in the same voice as the app: yours marked with a bar, questions as cards. */
+function printMessage(name: string, m: Message, open: boolean): void {
+  const time = gray(stamp(m.t));
+  if (m.from === "you") {
+    print(`${accent("┃")} ${bold("You")}  ${time}${m.replyTo ? gray("  answered") : ""}`);
+    for (const l of (m.text || "").split("\n")) if (m.text) print(`${accent("┃")} ${l}`);
+    for (const a of m.attachments ?? []) print(`${accent("┃")} ${attachmentLine(a)}`);
+    print();
+    return;
+  }
+  if (m.kind === "question") {
+    const bar = open ? yellow("┃") : gray("┃");
+    const h = headed(m, "A question");
+    print(`${bar} ${open ? yellow(bold("?")) : gray("?")} ${bold(h.title)}  ${time}`);
+    if (h.body) for (const l of h.body.split("\n")) print(`${bar} ${l}`);
+    if (m.why) print(`${bar} ${gray(`Why it matters: ${m.why}`)}`);
+    if (m.recommendation) print(`${bar} ${bold("Recommended:")} ${m.recommendation}`);
+    m.options?.forEach((o, i) => print(`${bar}  ${open ? accent(bold(String(i + 1))) : m.answer?.choice === i + 1 ? accent("✓") : gray(String(i + 1))}  ${m.answer && m.answer.choice !== i + 1 ? gray(o) : o}`));
+    if (m.answer && !m.answer.choice) print(`${bar} ${gray(`You: ${m.answer.text}`)}`);
+    for (const l of m.links ?? []) print(`${bar} ${accent("↗")} ${l.target}`);
+    print();
+    return;
+  }
+  if (m.kind === "alert") {
+    const h = headed(m, "Something went wrong");
+    print(`${red("┃")} ${red(bold(h.title))}  ${time}`);
+    if (h.body) for (const l of h.body.split("\n")) print(`${red("┃")} ${l}`);
+    print();
+    return;
+  }
+  print(`${m.from === "agent" ? accent(bold(name)) : gray(bold("Overtime"))}  ${time}`);
+  if (m.kind === "report" && m.title) print(`  ${accent("▣")} ${bold(m.title)}`);
+  const text = m.kind === "report" && m.title && m.text.startsWith(m.title) ? m.text.slice(m.title.length).trim() : m.text;
+  for (const l of text.split("\n")) if (text) print(`  ${m.from === "overtime" ? gray(l) : l}`);
+  for (const l of m.links ?? []) print(`  ${accent("↗")} ${l.target}`);
+  for (const a of m.attachments ?? []) print(`  ${attachmentLine(a)}`);
+  print();
 }
 
-function printEntry(name: string, e: ThreadEntry, current: boolean): void {
-  const who = e.from === "you" ? bold("You") : e.from === "agent" ? accent(bold(name)) : yellow(bold("Overtime"));
-  print(`${who}  ${gray(stamp(e.t))}`);
-  for (const l of e.text.split("\n")) print(`  ${l}`);
-  if (e.why) print(`\n  ${gray("Why it matters ·")} ${e.why}`);
-  if (e.recommendation) print(`\n  ${accent("▍")} ${bold("Recommended ·")} ${e.recommendation}`);
-  if (e.options?.length) {
-    print();
-    e.options.forEach((o, i) => print(`   ${current ? accent(bold(String(i + 1))) : gray(String(i + 1))}  ${o}`));
-  }
-  if (e.links?.length) {
-    print();
-    for (const l of e.links) print(`   ${accent("↗")} ${l.target}`);
-  }
-  print();
+function attachmentLine(a: NonNullable<Message["attachments"]>[number]): string {
+  const icon = a.kind === "image" ? "🖼" : a.kind === "folder" ? "🗀" : "📎";
+  return `${icon} ${a.name}${a.bytes != null ? gray(`  ${humanBytes(a.bytes)}`) : ""}  ${gray(a.path)}`;
 }
 
 /** key=value arguments, with friendly names for the settings people change most. */
@@ -173,7 +190,22 @@ function parseSettings(args: string[]): Record<string, unknown> {
       const n = Number(v.replace(/^\$/, ""));
       if (!Number.isFinite(n) || n < 0) fail(`"${v}" isn't a budget.`, "Give dollars per day, e.g. budget=20");
       out.dailyBudgetUsd = n;
-    } else fail(`There's no setting "${k}".`, "You can set backend, model and budget.");
+    } else if (k === "tokens" || k === "dailyTokenBudget") {
+      if (v === "" || /^(none|off)$/i.test(v)) out.dailyTokenBudget = null;
+      else {
+        const m = /^([\d.]+)([km])?$/i.exec(v.replace(/[,_]/g, ""));
+        const n = m ? Number(m[1]) * (m[2]?.toLowerCase() === "m" ? 1e6 : m[2]?.toLowerCase() === "k" ? 1e3 : 1) : NaN;
+        if (!Number.isFinite(n) || n <= 0) fail(`"${v}" isn't a token budget.`, "e.g. tokens=500k, or tokens=none");
+        out.dailyTokenBudget = Math.round(n);
+      }
+    } else if (k === "workspace") {
+      if (v === "" || v === "default") out.workspace = null;
+      else {
+        const p = v === "~" || v.startsWith("~/") ? homedir() + v.slice(1) : v;
+        if (!p.startsWith("/")) fail(`"${v}" isn't a full path.`, "e.g. workspace=~/code/my-repo");
+        out.workspace = p;
+      }
+    } else fail(`There's no setting "${k}".`, "You can set backend, model, budget, tokens and workspace.");
   }
   if (!Object.keys(out).length) fail("Nothing to change.", "e.g. overtime set scout backend=codex model=default budget=20");
   return out;
@@ -181,7 +213,7 @@ function parseSettings(args: string[]): Record<string, unknown> {
 
 // ---------- commands ----------
 
-const KNOWN = ["new", "ls", "list", "send", "reply", "answer", "threads", "thread", "close", "stop", "start", "wake", "set", "models", "archive"];
+const KNOWN = ["new", "ls", "list", "send", "messages", "answer", "settings", "stop", "start", "wake", "set", "models", "archive"];
 
 async function main() {
   if (!cmd) {
@@ -256,62 +288,60 @@ async function main() {
         break;
       }
       case "send": {
-        const [name, ...words] = rest;
-        if (!name || !words.length) fail("Missing an argument.", 'Usage: overtime send <name> "message"');
-        const r = await call("send", { name, text: words.join(" ") });
-        ok(`Sent to ${bold(name)} ${gray(`(thread ${r.threadId})`)}`);
+        const [name, ...args] = rest;
+        const attach: string[] = [];
+        const words: string[] = [];
+        for (let i = 0; i < args.length; i++) {
+          if (args[i] === "--attach" || args[i] === "-a") {
+            const f = args[++i];
+            if (!f) fail("--attach needs a file.", 'Usage: overtime send <name> "message" --attach <file>');
+            attach.push(f);
+          } else words.push(args[i]);
+        }
+        if (!name || (!words.length && !attach.length)) fail("Missing an argument.", 'Usage: overtime send <name> "message" [--attach <file>]…');
+        const { resolve } = await import("node:path");
+        const { existsSync } = await import("node:fs");
+        const files = attach.map((f) => resolve(f.replace(/^~(?=\/|$)/, process.env.HOME ?? "~")));
+        for (const f of files) if (!existsSync(f)) fail(`There's no file at ${f}.`);
+        await call("send", files.length ? { name, text: words.join(" "), attachments: files } : { name, text: words.join(" ") });
+        ok(`Sent to ${bold(name)}${files.length ? ` with ${files.length} file${files.length === 1 ? "" : "s"}` : ""}. ${gray(`Read the reply with: overtime messages ${name}`)}`);
         break;
       }
-      case "reply": {
-        const [name, id, ...words] = rest;
-        if (!name || !id || !words.length) fail("Missing an argument.", 'Usage: overtime reply <name> <thread-id> "message"');
-        await call("send", { name, threadId: id, text: words.join(" ") });
-        ok("Sent.");
+      case "messages": {
+        const name = need(rest[0], "overtime messages <name>");
+        const r = await call<{ messages: Message[]; hasMore: boolean }>("messages", { name, markRead: true, limit: Number(rest[1]) || 50 });
+        const ms = r?.messages ?? [];
+        if (!ms.length) {
+          print(gray(`No messages with ${name} yet. Send one with: `) + cmdText(`overtime send ${name} "…"`));
+          break;
+        }
+        if (r.hasMore) print(gray(`(showing the latest ${ms.length}; add a number for more: overtime messages ${name} 200)\n`));
+        const q = openQuestion(ms);
+        for (const m of ms) printMessage(name, m, m === q);
+        if (q?.options?.length) print(gray(`Answer with: overtime answer ${name} <1-${q.options.length}> ["note"]`));
         break;
       }
       case "answer": {
-        const [name, id, choice, ...words] = rest;
-        if (!name || !id || !choice) fail("Missing an argument.", 'Usage: overtime answer <name> <thread-id> <option-number> ["note"]');
-        await call("answer", { name, threadId: id, choice: Number(choice), text: words.join(" ") || undefined });
+        const [name, choice, ...words] = rest;
+        if (!name || (!choice && !words.length)) fail("Missing an argument.", 'Usage: overtime answer <name> <option-number> ["note"]');
+        const n = Number(choice);
+        const params = Number.isInteger(n) && n > 0 ? { name, choice: n, text: words.join(" ") || undefined } : { name, text: [choice, ...words].join(" ") };
+        await call("answer", params);
         ok("Answered.");
         break;
       }
-      case "threads": {
-        const name = need(rest[0], "overtime threads <name>");
-        const ths: ThreadMeta[] = await call("threads", { name });
-        if (!ths.length) {
-          print(gray(`${name} has no threads yet.`));
-          break;
-        }
-        const rank = (t: ThreadMeta) => (t.status === "waiting_on_you" ? 0 : t.status === "closed" ? 2 : 1);
-        const sorted = [...ths].sort((a, b) => rank(a) - rank(b) || b.updatedAt.localeCompare(a.updatedAt));
-        table(
-          sorted.map((t) => [
-            threadIcon(t),
-            gray(t.id),
-            gray(ago(t.updatedAt)),
-            t.status === "waiting_on_you" ? yellow("needs you") : t.unread ? accent(`${t.unread} new`) : gray(t.status === "closed" ? "closed" : t.kind === "question" ? "answered" : ""),
-            t.status === "closed" ? gray(t.title) : t.title,
-          ]),
-        );
-        break;
-      }
-      case "thread": {
-        const [name, id] = rest;
-        if (!name || !id) fail("Missing an argument.", "Usage: overtime thread <name> <thread-id>");
-        const th = await call("thread", { name, id, markRead: true });
-        print(`${bold(th.meta.title)}  ${gray(`${name} · ${th.meta.id}`)}`);
-        print(gray("─".repeat(Math.min(80, process.stdout.columns || 80))));
-        const q = th.meta.status === "waiting_on_you" ? [...th.entries].reverse().find((e: ThreadEntry) => e.from === "agent") : undefined;
-        for (const e of th.entries as ThreadEntry[]) printEntry(name, e, e === q);
-        if (q?.options?.length) print(gray(`Answer with: overtime answer ${name} ${id} <1-${q.options.length}>`));
-        break;
-      }
-      case "close": {
-        const [name, id] = rest;
-        if (!name || !id) fail("Missing an argument.", "Usage: overtime close <name> <thread-id>");
-        await call("close", { name, id });
-        ok("Closed.");
+      case "settings": {
+        const name = need(rest[0], "overtime settings <name>");
+        const s = await call<AgentSettingsView>("settings", { name });
+        const row = (k: string, v: string, note = "") => print(`  ${gray(k.padEnd(14))}${v}${note ? gray(`   ${note}`) : ""}`);
+        print(bold(name));
+        row("backend", s.backend);
+        row("model", s.model ?? "default", s.model ? "" : "the backend's own choice");
+        row("budget", `$${s.dailyBudgetUsd} a day`, s.costReported ? `$${s.spentUsd.toFixed(2)} spent today` : "");
+        row("tokens", s.dailyTokenBudget ? `${s.dailyTokenBudget.toLocaleString()} a day` : "no limit", `${s.tokensToday.toLocaleString()} used today`);
+        row("workspace", s.workspace, s.workspaceIsDefault ? "its own folder" : "");
+        print();
+        print(gray("Change with: ") + cmdText(`overtime set ${name} budget=20 model=… workspace=~/code/…`));
         break;
       }
       case "stop":
@@ -326,7 +356,8 @@ async function main() {
         const name = need(rest[0], "overtime set <name> [backend=…] [model=…] [budget=…]");
         const changes = parseSettings(rest.slice(1));
         await call("set", { name, ...changes });
-        const said = Object.entries(changes).map(([k, v]) => `${k === "dailyBudgetUsd" ? "budget" : k} ${bold(v === null ? "default" : k === "dailyBudgetUsd" ? `$${v}/day` : String(v))}`);
+        const label: Record<string, string> = { dailyBudgetUsd: "budget", dailyTokenBudget: "tokens" };
+        const said = Object.entries(changes).map(([k, v]) => `${label[k] ?? k} ${bold(v === null ? (k === "dailyTokenBudget" ? "no limit" : "default") : k === "dailyBudgetUsd" ? `$${v}/day` : k === "dailyTokenBudget" ? `${Number(v).toLocaleString()} a day` : String(v))}`);
         ok(`${bold(name)}: ${said.join(", ")}. ${gray("Applies from its next session.")}`);
         break;
       }
