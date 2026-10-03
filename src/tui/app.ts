@@ -170,24 +170,6 @@ export function markdownLines(text: string, width: number): string[] {
   return lines;
 }
 
-/** The bits of Markdown agents write most, shown as styling instead of raw symbols: headings, **bold**, `code`. */
-export function md(text: string): string {
-  let inFence = false;
-  return text
-    .split("\n")
-    .map((line) => {
-      if (/^\s*```/.test(line)) {
-        inFence = !inFence;
-        return null;
-      }
-      if (inFence) return accent(line);
-      const h = /^#{1,6}\s+(.*)$/.exec(line);
-      if (h) return bold(h[1]);
-      return line.replace(/\*\*([^*\n]+)\*\*/g, (_, x) => bold(x)).replace(/`([^`\n]+)`/g, (_, x) => accent(x));
-    })
-    .filter((l): l is string => l !== null)
-    .join("\n");
-}
 
 /**
  * The message box: a multi-line editor. Enter sends; Shift+Enter or Ctrl+J starts a new line; a pasted
