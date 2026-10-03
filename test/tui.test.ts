@@ -118,7 +118,7 @@ describe("terminal app, against a real daemon", () => {
     t.press(KEY.down);
     t.press(KEY.down);
     t.press(KEY.enter);
-    await seen("Enter saves");
+    await seen("enter save"); // the key hints live in the bottom bar
     for (let i = 0; i < 6; i++) t.press(KEY.bs);
     t.type("abc");
     t.press(KEY.enter);
@@ -216,6 +216,29 @@ describe("terminal app, with a scripted daemon", () => {
     const s = await t.screen();
     expect(s).toContain("✓ Dusk");
     expect(s).not.toContain("Press 1–2");
+  });
+
+  it("asks before archiving, with Cancel selected first", async () => {
+    const { t, c, seen } = await open();
+    await seen("Merge the dependency fix?");
+    const archive = async () => {
+      t.press("\x1b[C"); // → settings
+      await seen("CONTROL");
+      for (let i = 0; i < 8; i++) t.press(KEY.down); // Backend, Model, budgets, workspace, protected, wake, stop, archive
+      t.press(KEY.enter);
+      await seen("Archive repo-keeper?");
+    };
+    await archive();
+    expect(await t.screen()).toContain("Nothing is deleted");
+    t.press(KEY.enter); // Cancel is selected: nothing happens
+    await new Promise((r) => setTimeout(r, 300));
+    expect(c.calls.some((x) => x.method === "archive")).toBe(false);
+    expect(await t.screen()).not.toContain("Archive repo-keeper?");
+    await archive();
+    t.press("\x1b[D"); // ← to Archive
+    t.press(KEY.enter);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(c.calls.some((x) => x.method === "archive" && x.params.name === "repo-keeper")).toBe(true);
   });
 
   it("answers by clicking an option", async () => {

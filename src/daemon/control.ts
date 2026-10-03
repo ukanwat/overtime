@@ -166,6 +166,11 @@ export class ControlServer {
     limits: async () => readLimits(),
     live: async () => [...this.live.values()].map(({ timer, ...rest }) => rest),
     backends: async () => this.rt.backends(),
+    /** Each backend, and why it can't run here if it can't (not installed). */
+    backendStatus: async () => {
+      const { backendMissing } = await import("../acp/backends.js");
+      return Promise.all((await this.rt.backends()).map(async (name) => ({ name, missing: await backendMissing(name) })));
+    },
     models: async ({ backend }) => this.rt.models(String(backend)),
     set: async ({ name, backend, model, dailyBudgetUsd, dailyTokenBudget, workspace, protect }) => {
       await this.rt.setAgentSettings(name, {

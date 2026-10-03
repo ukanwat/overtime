@@ -35,6 +35,7 @@ import {
   friendly,
   hasTints,
   inverse,
+  box,
   italic,
   link,
   money,
@@ -110,7 +111,7 @@ type Overlay =
   | { kind: "help" }
   | SettingsOverlay
   | { kind: "pick"; title: string; items: PickItem[]; idx: number; loading?: string; back?: boolean }
-  | { kind: "confirm"; title: string; body: string[]; yes: string; run: () => Promise<void> };
+  | { kind: "confirm"; title: string; body: string[]; yes: string; run: () => Promise<void>; danger?: boolean; focus: 0 | 1 };
 
 /** The bits of Markdown agents write most, shown as styling instead of raw symbols: headings, **bold**, `code`. */
 export function md(text: string): string {
@@ -496,8 +497,10 @@ export class App implements Component {
     this.show({
       kind: "confirm",
       title: `Archive ${a.name}?`,
-      body: [`${a.name} stops for good and its folder moves to`, muted(tilde(paths.archiveDir()) + "/"), "", "Nothing is deleted; you can move the folder back later."],
-      yes: "archive",
+      body: [`${a.name} stops for good and its folder moves to ${tilde(paths.archiveDir())}/.`, "", muted("Nothing is deleted. You can move the folder back later.")],
+      yes: "Archive",
+      danger: true,
+      focus: 1, // the safe choice is selected first
       run: async () => {
         await this.c.call("archive", { name: a.name });
         this.say(`Archived ${a.name}.`, "ok");
@@ -544,10 +547,10 @@ export class App implements Component {
     const rows: SettingsRow[] = [
       { label: "Runs on", heading: true },
       { label: "Backend", field: "backend", value: d?.backend ?? a.backend },
-      { label: "Model", field: "model", value: (d ? d.model : a.model) ?? "default", note: "default means the backend's own choice" },
+      { label: "Model", field: "model", value: (d ? d.model : a.model) ?? "default", note: (d ? d.model : a.model) ? "" : "the backend's choice" },
       { label: "Budget", heading: true },
       { label: "Daily budget", field: "budget", value: `$${fmtMoney(d?.dailyBudgetUsd ?? a.budgetUsd)} a day`, note: cost ? `$${(d?.spentUsd ?? a.spentUsd).toFixed(2)} spent today` : "this backend doesn't report cost" },
-      { label: "Token budget", field: "tokens", value: d?.dailyTokenBudget ? `${fmtTokens(d.dailyTokenBudget)} a day` : "none", note: `${fmtTokens(d?.tokensToday ?? a.tokensToday)} used today` },
+      { label: "Token budget", field: "tokens", value: d?.dailyTokenBudget ? `${fmtTokens(d.dailyTokenBudget)} a day` : "none", note: `${fmtTokens(d?.tokensToday ?? a.tokensToday)} used today`.replace(" tokens", "") },
       { label: "Work", heading: true },
       { label: "Workspace", field: "workspace", value: tilde(d?.workspace ?? a.dir), note: d && !d.workspaceIsDefault ? "where its work lives" : "its own folder" },
       {
@@ -555,7 +558,7 @@ export class App implements Component {
         field: "protect",
         // An older background process doesn't send these: treat them as empty rather than crash.
         value: d ? (d.protect?.length ? d.protect.map(tilde).join(", ") : "nothing") : "…",
-        note: d?.protect?.length ? "read-only for it, enforced by the system" : "it can write anywhere you can",
+        note: d?.protect?.length ? "read-only for it" : "full access",
       },
       { label: "Control", heading: true },
       { label: "Wake now", stay: true, run: () => this.wake() },
@@ -660,13 +663,24 @@ export class App implements Component {
   private async showBackendPicker(fromSettings: boolean): Promise<void> {
     const a = this.needAgent();
     if (!a) return;
-    let backends: string[] = [];
+    let status: { name: string; missing: string | null }[] = [];
     try {
-      backends = cleanDeep(await this.c.call<string[]>("backends"));
-    } catch {}
-    if (!backends?.length) backends = ["claude", "codex", "gemini"];
-    if (!backends.includes(a.backend)) backends.unshift(a.backend);
-    const items: PickItem[] = backends.map((b) => ({ label: b, current: b === a.backend, note: b === a.backend ? "current" : undefined, run: () => this.showModelPicker(a, b, fromSettings) }));
+      status = cleanDeep(await this.c.call<{ name: string; missing: string | null }[]>("backendStatus"));
+    } catch {
+      // An older background process: names only.
+      try {
+        status = cleanDeep(await this.c.call<string[]>("backends")).map((name) => ({ name, missing: null }));
+      } catch {}
+    }
+    if (!status.length) status = ["claude", "codex", "gemini", "opencode"].map((name) => ({ name, missing: null }));
+    if (!status.some((b) => b.name === a.backend)) status.unshift({ name: a.backend, missing: null });
+    const backends = status.map((b) => b.name);
+    const items: PickItem[] = status.map((b) => ({
+      label: b.name,
+      current: b.name === a.backend,
+      note: b.missing ? "not installed" : undefined,
+      run: b.missing ? () => this.say(b.missing!, "err") : () => this.showModelPicker(a, b.name, fromSettings),
+    }));
     this.show({ kind: "pick", title: `${a.name} runs on`, items, idx: Math.max(0, backends.indexOf(a.backend)), back: fromSettings });
   }
 
@@ -734,7 +748,8 @@ export class App implements Component {
       return this.tui.requestRender();
     }
     if (o.kind === "confirm") {
-      if (data === "y" || data === "Y") {
+      if (matchesKey(data, Key.left) || matchesKey(data, Key.right) || matchesKey(data, Key.tab)) o.focus = o.focus === 0 ? 1 : 0;
+      else if (data === "y" || data === "Y" || (matchesKey(data, Key.enter) && o.focus === 0)) {
         this.overlay = null;
         await o.run();
       } else if (data === "n" || data === "N" || matchesKey(data, Key.enter)) this.overlay = null;
@@ -1069,112 +1084,176 @@ export class App implements Component {
     }
   }
 
+  /** Every panel (settings, pickers, help, confirmations) is a framed box on top of the conversation. */
+  private framed(title: string, body: string[], bodyHits: { line: number; x0?: number; x1?: number; act: () => void | Promise<void> }[], w: number, x: number, top: number): Line[] {
+    const indent = w < 50 ? 1 : 2;
+    const bw = Math.max(20, Math.min(w - indent * 2, 92));
+    for (const hh of bodyHits) {
+      this.hits.push({ row: top + 2 + hh.line, x0: x + indent + 2 + (hh.x0 ?? 0), x1: hh.x1 != null ? x + indent + 2 + hh.x1 : x + indent + bw - 2, act: hh.act });
+    }
+    return ["", ...box(title, body, bw).map((l) => " ".repeat(indent) + l)];
+  }
+
+  /** The inside width of a framed panel in a pane of width w. */
+  private innerW(w: number): number {
+    const indent = w < 50 ? 1 : 2;
+    return Math.max(20, Math.min(w - indent * 2, 92)) - 4;
+  }
+
   private renderSettings(o: SettingsOverlay, w: number, x: number, top: number, h: number): Line[] {
-    if (!o.data && !o.error) return ["", `   ${muted(`${spinner()} Loading settings…`)}`];
+    const title = `${this.agent?.name ?? ""} · settings`;
+    const iw = this.innerW(w);
+    if (!o.data && !o.error) return this.framed(title, ["", muted(`${spinner()} Loading settings…`), ""], [], w, x, top);
     const rows = this.settingsRows(o);
     const labelW = 16;
-    const lines: string[] = [""];
+    let valueW = Math.min(30, Math.max(12, ...rows.filter((r) => r.field).map((r) => visibleWidth(r.value ?? "") + 2)));
+    // Explanations only where they fit whole-ish; a narrow panel shows clean values instead of fragments.
+    const notes = iw - 2 - labelW - valueW >= 14;
+    if (!notes) valueW = Math.max(8, iw - 2 - labelW);
+    const body: string[] = [];
     const lineOf: number[] = [];
     rows.forEach((r, i) => {
       if (r.heading) {
-        if (lines.length > 1) lines.push("");
-        lines.push("   " + muted(r.label.toUpperCase()));
+        body.push("", muted(r.label.toUpperCase()));
         return;
       }
       const on = i === o.idx;
-      lineOf[i] = lines.length;
-      const marker = on ? accent("▌") : " ";
+      lineOf[i] = body.length;
       if (r.field && o.editing === r.field) {
         this.fieldInput.focused = true;
-        const fw = Math.max(8, Math.min(42, w - labelW - 8));
+        const fw = Math.max(8, Math.min(44, iw - labelW - 2));
         const field = this.fieldInput.render(fw - 2)[0] ?? "";
-        lines.push(`${marker}  ${bold(fit(r.label, labelW))}${hasTints() ? element(" " + field, fw) : accent("[") + fit(field, fw - 2) + accent("]")}`);
-        lines.push(`   ${" ".repeat(labelW)}${o.error ? red(o.error) : muted("Enter saves · Esc cancels")}`);
+        body.push(accent("› ") + bold(fit(r.label, labelW)) + (hasTints() ? element(" " + field, fw) : accent("[") + fit(field, fw - 2) + accent("]")));
+        if (o.error) body.push("  " + " ".repeat(labelW) + red(o.error));
         return;
       }
+      // Every row has the same two-column gutter, so the selected one doesn't shift.
+      const gutter = on ? accent("› ") : "  ";
+      const label = fit(on ? bold(r.label) : r.danger ? red(r.label) : r.label, labelW);
       let line: string;
-      if (r.field) line = `${marker}  ${fit(on ? bold(r.label) : r.label, labelW)}${on ? accent(r.value ?? "") : (r.value ?? "")}${r.note ? muted(`   ${r.note}`) : ""}`;
-      else if (r.run) line = `${marker}  ${r.danger ? red(r.label) : on ? bold(r.label) : r.label}${r.note ? muted(`   ${r.note}`) : ""}`;
-      else line = `   ${muted("·")} ${r.label}${r.note ? muted(`   ${r.note}`) : ""}`;
-      lines.push(on && hasTints() ? selected(line, w) : line);
+      if (r.field) line = label + fit(on ? accent(r.value ?? "") : (r.value ?? ""), valueW - 2) + (notes ? "  " + muted(r.note ?? "") : "");
+      else if (r.run) line = (r.danger ? (on ? bold(red(r.label)) : red(r.label)) : on ? bold(r.label) : r.label) + (r.note && notes ? muted(`  ·  ${r.note}`) : "");
+      else line = fit(muted(r.label), labelW) + muted(r.note ?? "");
+      line = fit(gutter + line, iw);
+      body.push(on && hasTints() ? selected(line, iw) : line);
     });
-    if (o.error && !o.editing) lines.push("", "   " + red(o.error));
-    lines.push("", "   " + muted("↑↓ move · Enter change · Esc close"));
+    if (o.error && !o.editing) body.push("", "  " + red(o.error));
+    body.push("");
     // Keep the selected row in view.
+    const bh = Math.max(3, h - 3);
     const selLine = lineOf[o.idx] ?? 0;
-    const start = Math.max(0, Math.min(selLine - Math.floor(h / 2), lines.length - h));
+    const start = Math.max(0, Math.min(selLine - Math.floor(bh / 2), body.length - bh));
+    const hits: { line: number; act: () => Promise<void> }[] = [];
     rows.forEach((r, i) => {
       if (!(r.field || r.run) || lineOf[i] == null) return;
-      const row = lineOf[i] - start;
-      if (row >= 0 && row < h)
-        this.hits.push({
-          row: top + row,
-          x0: x,
-          x1: x + w,
+      const line = lineOf[i] - start;
+      if (line >= 0 && line < bh)
+        hits.push({
+          line,
           act: async () => {
             o.idx = i;
             await this.activateSetting(o, r);
           },
         });
     });
-    return lines.slice(start);
+    const shown = body.slice(start, start + bh);
+    // Say when there's more than fits, rather than cutting it off silently.
+    if (start + bh < body.length) shown[shown.length - 1] = muted("  ↓ more below");
+    if (start > 0) shown[0] = muted("  ↑ more above");
+    return this.framed(title, shown, hits.filter((hh) => hh.line > (start > 0 ? 0 : -1) && hh.line < (start + bh < body.length ? bh - 1 : bh)), w, x, top);
   }
 
   private renderOverlay(w: number, h: number, x: number, top: number): Line[] {
     const o = this.overlay!;
-    const pad = (s: string) => "   " + s;
+    const iw = this.innerW(w);
     if (o.kind === "help") {
-      const row = (k: string, d: string) => pad(`${bold(fit(k, 14))}${d}`);
-      return [
+      const kw = 15;
+      const row = (k: string, d: string) => wrapTextWithAnsi(d, Math.max(10, iw - kw)).map((l, n) => (n === 0 ? bold(fit(k, kw)) : " ".repeat(kw)) + l);
+      const body = [
         "",
-        pad(bold("Keys")),
+        muted("MOVING AROUND"),
+        ...row("↑ ↓", "move between agents, and to + New agent"),
+        ...row("→ or Tab", "open the selected agent's settings"),
+        ...row("← or Esc", "close a panel"),
+        ...row("PgUp PgDn", "scroll the messages (or the mouse wheel)"),
         "",
-        row("↑ ↓", "move between agents (and + New agent)"),
-        row("type, Enter", "write a message and send it"),
-        row("1–9", "answer the open question with that option"),
-        row("drag a file", "attach it to your next message"),
-        row("PgUp PgDn", "scroll the messages (or use the mouse wheel)"),
-        row("→ or Tab", "settings: backend, model, budget, workspace, stop, wake (← or Esc to go back)"),
-        row("Ctrl+L", "step through links and files; Enter opens one"),
+        muted("MESSAGES"),
+        ...row("type, Enter", "write a message and send it"),
+        ...row("1–9", "answer the open question with that option"),
+        ...row("drag a file", "attach it to your next message"),
+        ...row("Ctrl+L", "step through links and files; Enter opens one"),
         "",
-        pad(muted("SHORTCUTS")),
-        row("Ctrl+N", "new agent         Ctrl+R  wake now"),
-        row("Ctrl+S", "stop or start     Ctrl+T  backend and model"),
-        row("Ctrl+O", "open its folder   Ctrl+C  quit (agents keep running)"),
+        muted("SHORTCUTS"),
+        ...row("Ctrl+N", "new agent"),
+        ...row("Ctrl+R", "wake the agent now"),
+        ...row("Ctrl+S", "stop or start the agent"),
+        ...row("Ctrl+T", "change its backend and model"),
+        ...row("Ctrl+O", "open its folder"),
+        ...row("Ctrl+C", "quit (your agents keep running)"),
         "",
-        pad(muted("Any key closes this.")),
       ];
+      return this.framed("Keys", body.slice(0, Math.max(3, h - 3)), [], w, x, top);
     }
-    if (o.kind === "confirm") return ["", pad(bold(o.title)), "", ...o.body.map(pad), "", pad(`${keyHint("y", o.yes)}${sep}${keyHint("n", "cancel")}`)];
+    if (o.kind === "confirm") {
+      const body: string[] = [""];
+      for (const l of o.body) body.push(...(l ? wrapTextWithAnsi(l, iw) : [""]));
+      body.push("");
+      // Buttons are the same width focused or not; the focused one is filled.
+      const button = (label: string, on: boolean, danger: boolean) => {
+        const t = hasTints() ? `  ${label}  ` : `[ ${label} ]`;
+        if (on) return bold(inverse(danger ? red(t) : t));
+        return hasTints() ? element(danger ? red(t) : t, visibleWidth(t)) : danger ? red(t) : t;
+      };
+      const yes = button(o.yes, o.focus === 0, !!o.danger);
+      const no = button("Cancel", o.focus === 1, false);
+      const line = body.length;
+      body.push(`${yes}   ${no}`, "");
+      const yw = visibleWidth(yes);
+      const hits = [
+        {
+          line,
+          x0: 0,
+          x1: yw,
+          act: async () => {
+            this.overlay = null;
+            await o.run();
+          },
+        },
+        { line, x0: yw + 3, x1: yw + 3 + visibleWidth(no), act: () => ((this.overlay = null), this.tui.requestRender()) },
+      ];
+      return this.framed(o.title, body, hits, w, x, top);
+    }
     if (o.kind !== "pick") return [];
-    const lines: Line[] = ["", pad(bold(o.title)), ""];
-    if (o.loading) lines.push(pad(muted(`${spinner()} ${o.loading}`)));
-    const maxRows = Math.max(3, h - 6);
+    const body: string[] = [""];
+    if (o.loading) body.push(muted(`${spinner()} ${o.loading}`), "");
+    const maxRows = Math.max(3, h - 5);
     const start = Math.max(0, Math.min(o.idx - Math.floor(maxRows / 2), o.items.length - maxRows));
+    const hits: { line: number; act: () => Promise<void> }[] = [];
     o.items.slice(start, start + maxRows).forEach((it, k) => {
       const i = start + k;
       if (it.info) {
-        lines.push(...wrapTextWithAnsi(muted(it.label), Math.max(10, w - 8)).map(pad));
+        body.push(...wrapTextWithAnsi(muted(it.label), iw));
         return;
       }
       const on = i === o.idx;
-      this.hits.push({
-        row: top + lines.length,
-        x0: x,
-        x1: x + w,
+      hits.push({
+        line: body.length,
         act: async () => {
           this.overlay = null;
           await it.run?.();
         },
       });
-      const line = `${on ? accent("▌") : " "}  ${it.current ? accent("●") : " "} ${on ? bold(it.label) : it.label}${it.note ? muted(`  ${it.note}`) : ""}`;
-      lines.push(on && hasTints() ? selected(line, w) : line);
+      const right = it.current ? accent("✓ current") : muted(it.note ?? "");
+      const line = (on ? accent("› ") : "  ") + spread(on ? bold(it.label) : it.label, right, iw - 2);
+      body.push(on && hasTints() ? selected(line, iw) : line);
     });
-    lines.push("", pad(muted(`↑↓ move · Enter choose · Esc ${o.back ? "back" : "close"}`)));
-    return lines;
+    body.push("");
+    return this.framed(o.title, body, hits, w, x, top);
   }
 
   private placeholder(): string {
+    const o = this.overlay;
+    if (o) return `Esc closes ${o.kind === "settings" ? "settings" : o.kind === "help" ? "the keys" : o.kind === "confirm" ? "this without changing anything" : "the list"}`;
     if (this.onNewRow) return "Name the new agent, e.g. repo-keeper";
     const a = this.agent;
     if (!a) return "";
@@ -1231,9 +1310,11 @@ export class App implements Component {
     }
     let hints: string[];
     const q = !this.onNewRow ? openQuestion(this.messages) : undefined;
-    if (this.overlay?.kind === "settings") hints = this.overlay.editing ? [keyHint("enter", "save"), keyHint("esc", "cancel")] : [keyHint("↑↓", "move"), keyHint("enter", "change"), keyHint("←", "back")];
-    else if (this.overlay?.kind === "help") hints = [keyHint("any key", "close")];
-    else if (this.overlay) hints = [keyHint("↑↓", "move"), keyHint("enter", "choose"), keyHint("esc", "close")];
+    const o = this.overlay;
+    if (o?.kind === "settings") hints = o.editing ? [keyHint("enter", "save"), keyHint("esc", "cancel")] : [keyHint("↑↓", "move"), keyHint("enter", "change"), keyHint("esc", "close")];
+    else if (o?.kind === "help") hints = [keyHint("any key", "close")];
+    else if (o?.kind === "confirm") hints = [keyHint("←→", "choose"), keyHint("enter", "confirm"), keyHint("esc", "cancel")];
+    else if (o) hints = [keyHint("↑↓", "move"), keyHint("enter", "choose"), keyHint("esc", o.kind === "pick" && o.back ? "back" : "close")];
     else if (this.onNewRow) hints = [keyHint("enter", "create"), keyHint("↑↓", "agents"), keyHint("?", "keys")];
     else if (this.typing() || this.pending.length) hints = [keyHint("enter", "send"), keyHint("esc", "clear"), keyHint("↑↓", "agents")];
     else hints = [q?.options?.length ? keyHint(`1–${q.options.length}`, "answer") : "", keyHint("↑↓", "agents"), keyHint("→", "settings"), keyHint("pgup", "scroll"), this.targets().length ? keyHint("^L", "links") : "", keyHint("?", "keys")].filter(Boolean);
