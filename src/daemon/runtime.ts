@@ -23,6 +23,7 @@ import { workingInstructions } from "../runtime/instructions.js";
 import { MonitorRunner, reapStaleMonitors } from "./monitors.js";
 import { isTransient, needsPerson } from "../runtime/errors.js";
 import { ownToolStep } from "./steps.js";
+import { probeOnline } from "../runtime/network.js";
 
 const exec = promisify(execFile);
 
@@ -92,8 +93,21 @@ export class Runtime extends EventEmitter implements ToolHost {
   private lastCleanup = 0;
   private stopping = false;
 
+  /** When this machine lost its internet connection; null while online (or not known to be offline). */
+  offlineSince: string | null = null;
+  /** How Overtime checks the connection (tests replace it). */
+  probe: () => Promise<boolean> = probeOnline;
+  /** The last time any backend sent anything: proof the connection works, whatever the probe says. */
+  private lastProgress = Date.now();
+  private lastProbe = 0;
+  /** Helpers retrying after provider trouble, by helper id. */
+  private helperTrouble = new Map<string, { agent: string; since: string; backend: string }>();
+
   constructor(private readonly log: (line: string) => void) {
     super();
+    this.on("update", () => {
+      this.lastProgress = Date.now();
+    });
     this.monitors = new MonitorRunner(
       {
         fire: (agent, m, output) => void this.monitorFired(agent, m, output).catch((e) => this.log(`[${agent}] monitor: ${e?.message ?? e}`)),
@@ -265,6 +279,7 @@ export class Runtime extends EventEmitter implements ToolHost {
         return;
       }
       const now = new Date();
+      await this.checkNetwork(agents).catch((e) => this.log(`network check: ${e?.message ?? e}`));
       for (const a of agents) {
         try {
           await this.checkAgent(a, now);
@@ -282,6 +297,49 @@ export class Runtime extends EventEmitter implements ToolHost {
     } finally {
       this.ticking = false;
     }
+  }
+
+  /**
+   * The internet connection, checked while anything depends on it: sessions running, or agents and
+   * helpers retrying after provider trouble. Offline means the check fails and no backend has sent
+   * anything for 90 seconds. When it's back, everything that was waiting carries on at once.
+   */
+  private async checkNetwork(agents: Agent[], force = false): Promise<void> {
+    const troubled = agents.some((a) => a.state.troubleSince) || this.helperTrouble.size > 0;
+    const active = this.mainRunning.size > 0 || this.helperAborts.size > 0 || troubled || !!this.offlineSince;
+    if (!active) return;
+    const every = this.offlineSince ? 10_000 : 20_000;
+    if (!force && Date.now() - this.lastProbe < every) return;
+    this.lastProbe = Date.now();
+    const online = (await this.probe()) || Date.now() - this.lastProgress < 30_000;
+    if (!online && !this.offlineSince && (force || Date.now() - this.lastProgress > 90_000)) {
+      this.offlineSince = new Date().toISOString();
+      this.log("no internet connection: agents wait and carry on once it's back");
+      this.notify("No internet connection", "Your agents are waiting, and carry on by themselves once it's back.");
+      for (const a of agents) this.changed(a.name, "state");
+    } else if (online && this.offlineSince) {
+      const since = this.offlineSince;
+      this.offlineSince = null;
+      this.log(`internet connection back (lost since ${since})`);
+      for (const a of agents) {
+        // Agents that were waiting it out try again now, not at their next back-off time.
+        if (a.state.troubleSince && a.state.status !== "stopped") await this.store(a.name).setWake(new Date(), "the internet connection is back");
+        this.changed(a.name, "state");
+      }
+    }
+  }
+
+  /** Wait until the connection is back (or the signal fires). */
+  private async untilOnline(signal: AbortSignal): Promise<void> {
+    while (this.offlineSince && !signal.aborted && !this.stopping) await sleep(2_000, signal);
+  }
+
+  /** What the person should know about an agent's connection to its backend, if anything is wrong. */
+  async trouble(agentName: string): Promise<{ since: string; backend: string } | null> {
+    const a = await loadAgent(agentName);
+    if (a.state.troubleSince) return { since: a.state.troubleSince, backend: (await effectiveSettings(a)).backend };
+    for (const t of this.helperTrouble.values()) if (t.agent === agentName) return { since: t.since, backend: t.backend };
+    return null;
   }
 
   /** Whether any session of this agent is running (its AGENT.md may be mid-rewrite), other than `self`. */
@@ -494,9 +552,11 @@ export class Runtime extends EventEmitter implements ToolHost {
         const n = (agent.state.transientFailures ?? 0) + 1;
         const since = agent.state.troubleSince ?? new Date().toISOString();
         await updateState(agentName, { status: idle, transientFailures: n, troubleSince: since, activity: `waiting: ${eff.backend} is having trouble`, activityByAgent: false, lastError: null });
+        // Find out now whether it's this machine's connection, so the app can say so.
+        void this.checkNetwork(await listAgents(), true).catch(() => {});
         await store.setWake(new Date(Date.now() + BACKOFF_MS[Math.min(BACKOFF_MS.length - 1, n - 1)]), `retry: ${eff.backend} was having trouble (${msg.slice(0, 120)})`);
         this.log(`[${agentName}] ${eff.backend} is having trouble (${n}), retrying: ${msg.slice(0, 200)}`);
-        if (n === 6) {
+        if (n === 6 && !this.offlineSince) {
           await store.addMessage({ from: "overtime", kind: "alert", title: `${eff.backend} is having trouble`, text: `${agentName} has been unable to reach ${eff.backend} since ${new Date(since).toLocaleString()} (latest: ${msg.slice(0, 200)}). Nothing is lost: it keeps retrying every hour and carries on by itself once ${eff.backend} is back.`, baseDir: agent.dir });
           this.notify(`${agentName} is waiting on ${eff.backend}`, "Its provider keeps failing; it will carry on by itself once it's back.");
           this.changed(agentName, "messages");
@@ -930,14 +990,27 @@ export class Runtime extends EventEmitter implements ToolHost {
               return run();
             }
           }
-          if (attempt >= HELPER_RETRY_MS.length || cancel.aborted || this.stopping || !isTransient(e)) throw e;
-          this.log(`[${agentName}] helper ${rec.id}: provider trouble, retrying (${msg.slice(0, 120)})`);
-          await sleep(HELPER_RETRY_MS[attempt++], cancel);
+          if (cancel.aborted || this.stopping || !isTransient(e)) throw e;
+          if (!this.helperTrouble.has(rec.id)) this.helperTrouble.set(rec.id, { agent: agentName, since: new Date().toISOString(), backend: rec.backend ?? (await effectiveSettings(await loadAgent(agentName))).backend });
+          this.changed(agentName, "helpers");
+          await this.checkNetwork(await listAgents(), true);
+          if (this.offlineSince) {
+            // This machine is offline: no attempt is used up; it carries on once the connection is back.
+            this.log(`[${agentName}] helper ${rec.id}: no internet, waiting for it to come back`);
+            await this.untilOnline(cancel);
+            attempt = Math.max(attempt, 1);
+          } else {
+            if (attempt >= HELPER_RETRY_MS.length) throw e;
+            this.log(`[${agentName}] helper ${rec.id}: provider trouble, retrying (${msg.slice(0, 120)})`);
+            await sleep(HELPER_RETRY_MS[attempt++], cancel);
+          }
           if (cancel.aborted || this.stopping) throw e;
           return run();
         }
       };
-      const r = await run();
+      const r = await run().finally(() => {
+        if (this.helperTrouble.delete(rec.id)) this.changed(agentName, "helpers");
+      });
       rec.status = "done";
       rec.result = ctx.result ?? (r.reply || "(It finished without describing its result. Check its folder.)");
     } catch (e: any) {

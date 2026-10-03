@@ -237,6 +237,8 @@ export interface StatusLike {
   status: string;
   activity: string;
   pauseReason?: "budget" | "limit" | null;
+  trouble?: { since: string; backend: string } | null;
+  offlineSince?: string | null;
   nextWake: string | null;
   pausedUntil: string | null;
   lastError: string | null;
@@ -245,6 +247,11 @@ export interface StatusLike {
 
 /** A short dot and phrase for an agent's state, e.g. "● working", "○ asleep · wakes at 14:05". */
 export function statusParts(a: StatusLike): { dot: string; word: string; detail: string; color: (s: string) => string } {
+  // Can't reach its backend: it's waiting, not working, whatever is still running, and it says why.
+  const busy = a.status === "working" || !!a.helpersRunning || !!a.trouble;
+  if (a.status !== "stopped" && a.status !== "paused" && busy && (a.offlineSince || (a.trouble && a.status !== "working"))) {
+    return { dot: "◌", word: "waiting", detail: a.offlineSince ? "no internet" : `can't reach ${a.trouble!.backend}`, color: red };
+  }
   switch (a.status) {
     case "working":
       return { dot: "●", word: "working", detail: a.helpersRunning ? `${a.helpersRunning} helper${a.helpersRunning === 1 ? "" : "s"}` : "", color: accent };

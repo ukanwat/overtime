@@ -558,6 +558,10 @@ export class App implements Component {
     }
     this.scroll = Number.MAX_SAFE_INTEGER;
     await this.refresh();
+    // Delivered to the agent's inbox either way; say when it can't be answered yet, and why.
+    const now = this.agents.find((x) => x.name === a.name);
+    if (now?.offlineSince) this.say(`Sent. There's no internet right now: ${a.name} answers once it's back.`, "info");
+    else if (now?.trouble) this.say(`Sent. ${a.name} can't reach ${now.trouble.backend} right now: it answers once it can.`, "info");
   }
 
   private async create(): Promise<void> {
@@ -1033,6 +1037,7 @@ export class App implements Component {
   private renderBrand(w: number): string {
     const title = ` ${accent("◆")} ${bold("overtime")}`;
     if (!this.connected) return spread(title, red("offline") + " ", w);
+    if (this.agents[0]?.offlineSince) return spread(title, red("no internet") + " ", w);
     const working = this.agents.filter((a) => a.status === "working" || a.helpersRunning).length;
     const needs = this.agents.reduce((n, a) => n + a.waiting, 0);
     const right = needs ? yellow(`${needs} need${needs === 1 ? "s" : ""} you`) : working ? accent(`${working} working`) : "";
@@ -1041,6 +1046,7 @@ export class App implements Component {
 
   private agentDetail(a: AgentSummary): string {
     const p = statusParts(a);
+    if (p.word === "waiting") return p.detail;
     if (a.status === "working") return this.mainLive(a.name)?.step || a.activity || p.detail;
     // Waiting on its helpers: its own status line says what they're doing, if it set one.
     if (a.helpersRunning && a.status === "asleep") return a.ownStatus || p.detail;
@@ -1582,6 +1588,8 @@ export class App implements Component {
 
   private renderFooter(w: number): string {
     if (!this.connected && !this.flash) return ` ${red("✗")} ${red("Can't reach the background process. Reconnecting…")}`;
+    const offline = this.agents[0]?.offlineSince;
+    if (offline && !this.flash) return ` ${red("✗")} ${red(`No internet connection since ${stamp(offline)}.`)} ${muted("Your agents wait, and carry on by themselves once it's back.")}`;
     if (this.flash) {
       const f = this.flash;
       const icon = f.tone === "ok" ? accent("✓") : f.tone === "err" ? red("✗") : accent("›");
