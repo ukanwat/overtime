@@ -99,8 +99,8 @@ export const yellow = wrapFg(() => pal.yellow);
 export const red = wrapFg(() => pal.red);
 /**
  * Text with a soft light sweeping across it, for "this is happening right now" (an agent working).
- * A band moves left to right every couple of seconds: its centre in the accent colour, its edges in the
- * normal text colour, the rest muted. Plain text without colour support.
+ * A small band of normal-brightness text moves across otherwise muted text, once every couple of
+ * seconds: enough to see something is happening, never loud. Plain text without colour support.
  */
 export function shimmer(text: string, now = Date.now()): string {
   // Plain characters only: an escape code split across the band would print as garbage.
@@ -109,9 +109,10 @@ export function shimmer(text: string, now = Date.now()): string {
   if (process.env.OVERTIME_STILL) return muted(text);
   if (noColor() || !text) return text;
   const chars = Array.from(text);
-  const span = chars.length + 16;
-  const pos = (Math.floor(now / 60) % span) - 8;
-  const tone = (i: number) => (Math.abs(i - pos) <= 1 ? 2 : Math.abs(i - pos) <= 4 ? 1 : 0);
+  // One gentle pass every couple of seconds: a soft brightening (normal text over muted), no colour.
+  const span = chars.length + 14;
+  const pos = (Math.floor(now / 110) % span) - 4;
+  const tone = (i: number) => (Math.abs(i - pos) <= 1 ? 1 : 0);
   let out = "";
   let run = "";
   let cur = tone(0);

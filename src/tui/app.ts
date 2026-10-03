@@ -1001,7 +1001,7 @@ export class App implements Component {
     const p = statusParts(a);
     const detail = this.agentDetail(a);
     // Working: the dot stays its colour and the words ("working · what it's doing") shimmer.
-    const state = a.status === "working" ? `${p.color(p.dot)} ${shimmer(p.word)}${detail ? muted(` · ${detail}`) : ""}` : `${p.color(`${p.dot} ${p.word}`)}${detail ? muted(` · ${detail}`) : ""}`;
+    const state = `${p.color(`${p.dot} ${p.word}`)}${detail ? muted(` · ${detail}`) : ""}`;
     const open = this.overlay?.kind === "settings";
     const btn = open ? inverse(" Settings ") : `${muted("⚙")} Settings ${muted("→")}`;
     const btnW = visibleWidth(btn) + 1;
