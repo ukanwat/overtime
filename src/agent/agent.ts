@@ -21,8 +21,8 @@ export interface AgentSettings {
   mcpServers?: McpServerConfig[];
   /** Names of shared MCP servers this agent should not get. */
   disableMcp?: string[];
-  /** false lets this agent write anywhere your user can (for work that needs the whole machine). */
-  sandbox?: boolean;
+  /** Paths this agent may not write to, on top of the ones protected for all agents. */
+  protect?: string[];
 }
 
 export type AgentStatus = "new" | "working" | "asleep" | "paused" | "stopped" | "error";
@@ -72,7 +72,8 @@ export interface EffectiveSettings {
   dailyTokenBudget: number | null;
   workspace: string;
   mcpServers: McpServerConfig[];
-  sandbox: boolean;
+  /** Every path this agent may not write to (all agents' plus its own). */
+  protect: string[];
 }
 
 export function expandHome(p: string): string {
@@ -248,7 +249,7 @@ export async function effectiveSettings(agent: Agent): Promise<EffectiveSettings
     dailyTokenBudget: agent.settings.dailyTokenBudget !== undefined ? agent.settings.dailyTokenBudget : g.dailyTokenBudget,
     workspace: agent.settings.workspace ? expandHome(agent.settings.workspace) : agent.dir,
     mcpServers: [...shared, ...(agent.settings.mcpServers ?? [])],
-    sandbox: agent.settings.sandbox ?? g.sandbox,
+    protect: [...new Set([...(g.protect ?? []), ...(agent.settings.protect ?? [])])],
   };
 }
 

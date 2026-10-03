@@ -80,8 +80,8 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
       }
       if (/Message from the person|The person answered|Passed on by your chat session/.test(text)) await t.call("send", { text: "main reply" });
       if (/ESCAPE/.test(text)) {
-        // Try to write outside the agent's folders, as a script or program it wrote would.
-        const target = join(homedir(), `.ot-escape-${process.pid}`);
+        // Try to write into a protected path, as a script or program it wrote would.
+        const target = join(process.env.OVERTIME_HOME ?? homedir(), "protected", `escape-${process.pid}`);
         let result = "denied";
         try {
           writeFileSync(target, "x");

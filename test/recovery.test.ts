@@ -97,8 +97,8 @@ describe("helpers", () => {
   });
 });
 
-describe.runIf(process.platform === "darwin")("the sandbox", () => {
-  it("stops an agent's session writing outside its folders", async () => {
+describe.runIf(process.platform === "darwin")("protected paths", () => {
+  it("stop an agent's session writing to them, whatever it runs", async () => {
     await employ("boxed");
     await rt.send("boxed", "PASS ESCAPE");
     const f = join(home, "agents", "boxed", "escape-result.txt");

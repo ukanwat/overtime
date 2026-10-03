@@ -104,14 +104,12 @@ home folder, force-pushing a main branch, erasing a disk), instantly and without
 session can ever hang on a permission prompt. It sees every action the backend asks permission
 for, and looks inside `bash -c`, `eval`, `xargs` and inline scripts.
 
-**It runs in a sandbox.** Every agent's backend, and everything it starts (shells, scripts,
-programs it wrote, its watches), runs inside an operating-system sandbox that Overtime sets up the
-same way for every backend: Seatbelt on macOS, bubblewrap on Linux. It can read anywhere, but write
-only to its own folder, its workspace, temp folders, caches and the usual install locations, so
-`brew`, `npm -g`, `pip --user` and `cargo` installs work. Your documents, other projects, `~/.ssh`,
-shell dotfiles and your own Claude, Codex and Gemini settings stay out of reach, even from a script
-the guard couldn't read. Anything that needs more (a `sudo` install, a file elsewhere) the agent asks
-you for. For an agent whose work needs the whole machine, switch it off in its settings.
+**It has full access, except what you protect.** An agent can do anything your user account can:
+install packages globally, use any tool, write wherever its work needs. If there's something no agent
+should ever change, list it under `protect` in `~/overtime/settings.json` (for every agent) or in an
+agent's settings, for example `~/Documents` or `~/.ssh`. Those paths become read-only for the agent's
+backend and everything it starts, scripts and programs it wrote included, enforced by the operating
+system (Seatbelt on macOS, bubblewrap on Linux). Nothing is protected unless you list it.
 
 **Trust grows.** Overtime notices when you keep giving the same answer to the same kind of
 question and tells the agent, which can then propose deciding those itself. If you agree, the rule
@@ -193,8 +191,8 @@ agents that persist, keep their own time, and delegate.
 ## Status
 
 Early. Claude is the backend tested most; Codex and Gemini are wired up through their ACP adapters
-and need wider testing. The sandbox limits what agents can write, not what they can read or send
-over the network, so treat a long-running agent like a colleague who can see your laptop. Later: answering from your phone, quiet-time tidying, agents
+and need wider testing. Agents run with your user's access, so treat a long-running agent like a
+colleague with access to your laptop, and protect anything that must never change. Later: answering from your phone, quiet-time tidying, agents
 talking to each other, a morning standup, sharing agents, and running Overtime on a server for
 around-the-clock watches.
 

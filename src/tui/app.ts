@@ -89,7 +89,7 @@ interface PickItem {
   run?: () => void | Promise<void>;
 }
 
-type Field = "backend" | "model" | "budget" | "tokens" | "workspace";
+type Field = "backend" | "model" | "budget" | "tokens" | "workspace" | "protect";
 
 interface SettingsRow {
   label: string;
@@ -111,7 +111,7 @@ type Overlay =
   | { kind: "pick"; title: string; items: PickItem[]; idx: number; loading?: string; back?: boolean }
   | { kind: "confirm"; title: string; body: string[]; yes: string; run: () => Promise<void> };
 
-const FIELD_LABEL: Record<Field, string> = { backend: "Backend", model: "Model", budget: "Daily budget", tokens: "Token budget", workspace: "Workspace" };
+const FIELD_LABEL: Record<Field, string> = { backend: "Backend", model: "Model", budget: "Daily budget", tokens: "Token budget", workspace: "Workspace", protect: "Protected paths" };
 
 /** The whole screen: agents on the left like DMs, the selected agent's messages on the right, a composer below. */
 export class App implements Component {
@@ -529,11 +529,10 @@ export class App implements Component {
       { label: "Work", heading: true },
       { label: "Workspace", field: "workspace", value: tilde(d?.workspace ?? a.dir), note: d && !d.workspaceIsDefault ? "where its work lives" : "its own folder" },
       {
-        label: "Sandbox",
-        value: d ? (d.sandbox ? "on" : "off") : "…",
-        note: d?.sandbox === false ? "it can write anywhere you can" : "writes only to its folders, caches and install locations",
-        stay: true,
-        run: () => this.toggleSandbox(),
+        label: "Protected",
+        field: "protect",
+        value: d ? (d.protect.length ? d.protect.map(tilde).join(", ") : "nothing") : "…",
+        note: d?.protect.length ? "read-only for it, enforced by the system" : "it can write anywhere you can",
       },
       { label: "Control", heading: true },
       { label: "Wake now", stay: true, run: () => this.wake() },
@@ -554,14 +553,6 @@ export class App implements Component {
       if (running.length) rows.push({ label: `${running.length} helper${running.length === 1 ? "" : "s"} running`, note: running.map((h: any) => h.task.split("\n")[0]).join("; ") });
     }
     return rows;
-  }
-
-  private async toggleSandbox(): Promise<void> {
-    const o = this.overlay;
-    if (o?.kind !== "settings" || !o.data) return;
-    const on = !o.data.sandbox;
-    await this.c.call("set", { name: this.agent!.name, sandbox: on });
-    this.say(on ? "Sandbox on: it writes only where its work lives, from its next session." : "Sandbox off: it can write anywhere you can, from its next session.", "ok");
   }
 
   private moveSettings(d: number): void {
@@ -590,7 +581,7 @@ export class App implements Component {
       o.editing = row.field;
       o.error = undefined;
       const d = o.data;
-      const v = row.field === "budget" ? fmtMoney(d?.dailyBudgetUsd ?? this.agent!.budgetUsd) : row.field === "tokens" ? (d?.dailyTokenBudget ? String(d.dailyTokenBudget) : "") : d && !d.workspaceIsDefault ? tilde(d.workspace) : "";
+      const v = row.field === "protect" ? (d?.protectOwn ?? []).map(tilde).join(", ") : row.field === "budget" ? fmtMoney(d?.dailyBudgetUsd ?? this.agent!.budgetUsd) : row.field === "tokens" ? (d?.dailyTokenBudget ? String(d.dailyTokenBudget) : "") : d && !d.workspaceIsDefault ? tilde(d.workspace) : "";
       setText(this.fieldInput, v);
       this.tui.requestRender();
     }
@@ -615,6 +606,14 @@ export class App implements Component {
         const n = m ? Number(m[1]) * (m[2]?.toLowerCase() === "m" ? 1e6 : m[2]?.toLowerCase() === "k" ? 1e3 : 1) : NaN;
         if (!Number.isFinite(n) || n <= 0) return bad("Type a number of tokens, like 500k or 2m, or leave it empty for none.");
         patch.dailyTokenBudget = Math.round(n);
+      }
+    } else if (o.editing === "protect") {
+      if (!raw || /^(none|nothing)$/i.test(raw)) patch.protect = null;
+      else {
+        const list = raw.split(/[,\n]/).map((x) => x.trim()).filter(Boolean).map((x) => (x === "~" || x.startsWith("~/") ? homedir() + x.slice(1) : x));
+        const rel = list.find((x) => !x.startsWith("/"));
+        if (rel) return bad(`Give full paths, like ~/Documents (not "${rel}").`);
+        patch.protect = list;
       }
     } else if (o.editing === "workspace") {
       if (!raw || /^default$/i.test(raw)) patch.workspace = null;

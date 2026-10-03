@@ -1,52 +1,54 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, existsSync, rmSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { mkdtempSync, mkdirSync, existsSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { sandboxLaunch } from "../src/runtime/sandbox.js";
 
 const mac = process.platform === "darwin";
 
-/** Run a shell line in the sandbox and return what it printed. */
-function inside(line: string, writable: string[], prot: string[] = []): string {
-  const l = sandboxLaunch("/bin/sh", ["-c", line], { writable, protected: prot });
+/** Run a shell line with the given paths protected, and return what it printed. */
+function run(line: string, protect: string[]): string {
+  const l = sandboxLaunch("/bin/sh", ["-c", line], protect);
   return execFileSync(l.command, l.args, { encoding: "utf8" });
 }
 
-describe.runIf(mac)("Overtime's sandbox", () => {
-  const base = mkdtempSync(join(homedir(), ".ot-sandbox-test-"));
-  const ws = join(base, "ws");
-  const other = join(base, "other");
-  const prot = join(ws, "protected");
-  mkdirSync(ws);
-  mkdirSync(other);
-  mkdirSync(prot);
+describe("protected paths", () => {
+  it("change nothing when none are set: the command runs as is", () => {
+    const l = sandboxLaunch("/bin/sh", ["-c", "true"], []);
+    expect(l).toEqual({ command: "/bin/sh", args: ["-c", "true"], sandboxed: false });
+  });
+});
 
-  it("writes where the work lives and in temp folders, and nowhere else", () => {
-    const out = inside(
-      `echo a > ${ws}/ok && echo ws; echo b > ${tmpdir()}/ot-sb-$$ && echo tmp; echo c > ${other}/no 2>/dev/null && echo LEAK-other; echo d > ${homedir()}/ot-sb-$$ 2>/dev/null && echo LEAK-home; rm -rf ${other} 2>/dev/null; echo done`,
-      [ws],
-    );
-    expect(out).toContain("ws");
-    expect(out).toContain("tmp");
+describe.runIf(mac)("protected paths on this machine", () => {
+  const base = mkdtempSync(join(homedir(), ".ot-protect-test-"));
+  const free = join(base, "free");
+  const kept = join(base, "kept");
+  mkdirSync(free);
+  mkdirSync(kept);
+  writeFileSync(join(kept, "file"), "mine");
+
+  it("stay read-only, while everything else stays writable", () => {
+    const out = run(`echo a > ${free}/ok && echo free; echo b > ${kept}/new 2>/dev/null && echo LEAK-write; rm -rf ${kept} 2>/dev/null; echo c > ${homedir()}/.ot-protect-probe-$$ && rm ${homedir()}/.ot-protect-probe-$$ && echo home`, [kept]);
+    expect(out).toContain("free");
+    expect(out).toContain("home");
     expect(out).not.toContain("LEAK");
-    expect(existsSync(other)).toBe(true);
+    expect(existsSync(join(kept, "file"))).toBe(true);
   });
 
-  it("covers everything the agent starts, scripts included", () => {
-    const out = inside(`printf '#!/bin/sh\\nrm -rf ${other} && echo LEAK-script' > ${ws}/evil.sh; chmod +x ${ws}/evil.sh; ${ws}/evil.sh 2>/dev/null; node -e "require('fs').writeFileSync('${other}/x','y')" 2>/dev/null && echo LEAK-node; echo done`, [ws]);
+  it("hold for everything the command starts, scripts and programs included", () => {
+    const out = run(`printf '#!/bin/sh\\nrm -rf ${kept} && echo LEAK-script' > ${free}/evil.sh; chmod +x ${free}/evil.sh; ${free}/evil.sh 2>/dev/null; node -e "require('fs').writeFileSync('${kept}/x','y')" 2>/dev/null && echo LEAK-node; echo done`, [kept]);
     expect(out).not.toContain("LEAK");
-    expect(existsSync(other)).toBe(true);
+    expect(existsSync(join(kept, "file"))).toBe(true);
   });
 
-  it("keeps protected paths read-only inside a writable folder", () => {
-    const out = inside(`echo x > ${prot}/hook 2>/dev/null && echo LEAK-protected; echo y > ${ws}/fine && echo fine`, [ws], [prot]);
-    expect(out).toContain("fine");
-    expect(out).not.toContain("LEAK");
+  it("can still be read", () => {
+    expect(run(`cat ${kept}/file`, [kept])).toBe("mine");
   });
 
-  it("still reads anywhere", () => {
-    expect(inside(`cat /etc/hosts >/dev/null && echo read`, [ws])).toContain("read");
+  it("accept ~ paths", () => {
+    const rel = "~/" + base.slice(homedir().length + 1) + "/kept";
+    expect(run(`echo x > ${kept}/y 2>/dev/null && echo LEAK; echo done`, [rel])).not.toContain("LEAK");
   });
 
   it("cleans up", () => rmSync(base, { recursive: true, force: true }));
