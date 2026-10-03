@@ -128,6 +128,8 @@ export class FakeClient {
         return d.settings[params.name];
       case "agent":
         return { schedule: { wakeAt: new Date(now + 95 * 60000).toISOString(), wakeReason: "hourly CI check", loops: [] }, monitors: [], helpers: [] };
+      case "backendStatus":
+        return [{ name: "claude", missing: null }, { name: "codex", missing: null }, { name: "gemini", missing: "gemini isn't installed. Install Gemini CLI: npm install -g @google/gemini-cli" }, { name: "opencode", missing: null }];
       case "backends":
         return ["claude", "codex", "gemini"];
       case "models":
