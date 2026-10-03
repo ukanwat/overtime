@@ -49,7 +49,7 @@ describe("Overtime as an ACP agent for editors", () => {
       expect(modes.availableModes.map((m: any) => m.id)).toContain("editorbot");
       const r = await sess.prompt("hello from the editor");
       expect(r.stopReason).toBe("end_turn");
-      expect(text).toContain("chat reply to: hello from the editor");
+      expect(text).toContain("main reply to: hello from the editor");
       expect((await rt.store("editorbot").messages()).some((m) => m.from === "you" && m.text === "hello from the editor")).toBe(true);
     } finally {
       await sess.close();

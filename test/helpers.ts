@@ -9,6 +9,7 @@ export const here = dirname(fileURLToPath(import.meta.url));
 export function fakeHome(extra: Record<string, unknown> = {}): string {
   const dir = mkdtempSync(join(tmpdir(), "overtime-test-"));
   process.env.OVERTIME_HOME = dir;
+  process.env.OVERTIME_NO_NOTIFY = "1"; // no real desktop notifications from test agents
   mkdirSync(join(dir, "protected"), { recursive: true });
   writeFileSync(
     join(dir, "settings.json"),

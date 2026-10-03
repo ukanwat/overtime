@@ -55,21 +55,20 @@ describe("an agent's life", () => {
     expect(u.usd).toBeCloseTo(0.01, 5);
   });
 
-  it("answers in a separate chat session once it has a job", async () => {
+  it("answers your message itself, from its one main session", async () => {
     const m = await rt.send("tester", "how is it going?");
-    const e = await until(() => replyAfter("tester", m.id, (t) => t.includes("chat reply")), 30_000, "chat reply");
-    expect(e.text).toContain("chat reply to: how is it going?");
-    await until(async () => (await rt.store("tester").conversation()).chatSessionId, 10_000, "chat session saved");
-    expect((await loadAgent("tester")).state.status).toBe("asleep");
+    const e = await until(() => replyAfter("tester", m.id, (t) => t.includes("main reply")), 30_000, "reply");
+    expect(e.text).toContain("main reply to: how is it going?");
+    await until(async () => (await loadAgent("tester")).state.status === "asleep", 10_000, "asleep again");
   });
 
-  it("uses the chat's final words when it doesn't call send", async () => {
+  it("uses its final words as the reply when it doesn't call send", async () => {
     const m = await rt.send("tester", "NOREPLYTOOL ping");
     const e = await until(() => replyAfter("tester", m.id, (t) => t.includes("final words")), 30_000, "fallback reply");
     expect(e.text).toContain("final words as reply to: NOREPLYTOOL ping");
   });
 
-  it("passes work from a chat to the main session, which wakes and replies", async () => {
+  it("wakes for a message and replies", async () => {
     const m = await rt.send("tester", "PASS please do the thing");
     await until(() => replyAfter("tester", m.id, (t) => t.startsWith("main reply")), 40_000, "main reply after pass");
   });
@@ -86,7 +85,7 @@ describe("an agent's life", () => {
     const answered = await rt.store("tester").message(q.id);
     expect(answered!.answer?.choice).toBe(1);
     expect(await rt.store("tester").openQuestions()).toHaveLength(0);
-    await until(async () => (await rt.store("tester").messages()).some((m) => m.from === "agent" && m.text === "main reply" && m.t > answered!.answer!.t), 40_000, "reply to answer");
+    await until(async () => (await rt.store("tester").messages()).some((m) => m.from === "agent" && m.text.startsWith("main reply") && m.t > answered!.answer!.t), 40_000, "reply to answer");
     await expect(rt.answer("tester", q.id, 1)).rejects.toThrow(/already answered/);
   });
 

@@ -132,7 +132,8 @@ Messages, answers and finished helpers always wake you early.`,
       safe(async ({ question, why, recommendation, options, category, urgent }) => {
         ctx.sent = true;
         const m = await store.addMessage({ from: "agent", kind: "question", text: question, why, recommendation, options, urgent, category, baseDir: dir });
-        if (urgent) host.notify(`${ctx.agent} has a question`, question);
+        // A question always needs you, so it always notifies.
+        host.notify(`${ctx.agent} has a question`, question);
         host.changed(ctx.agent, "messages");
         return ok(`Asked (${m.id}). Carry on with anything that doesn't depend on the answer. If it stops applying (you decided, or asked something else instead), withdraw it with cancel ${m.id} so it doesn't keep waiting on the person.`);
       }),
@@ -168,7 +169,8 @@ Messages, answers and finished helpers always wake you early.`,
         const attachments = files?.length ? await Promise.all(files.map((f) => describeAttachment(f, dir))) : undefined;
         const kind = report || title ? "report" : "message";
         await store.addMessage({ from: "agent", kind, title: kind === "report" ? title ?? (text ?? "").split("\n")[0] : undefined, text: text ?? "", urgent, attachments, baseDir: dir });
-        if (urgent) host.notify(ctx.agent, title ?? (text ?? "").split("\n")[0]);
+        // Finished work (a report) and anything urgent notify; ordinary replies don't, you're usually right there.
+        if (urgent || kind === "report") host.notify(ctx.agent, title ?? (text ?? "").split("\n")[0]);
         if (text) await store.addReport(text);
         ctx.sent = true;
         host.changed(ctx.agent, "messages");
