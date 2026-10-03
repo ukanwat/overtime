@@ -97,6 +97,16 @@ describe("helpers", () => {
   });
 });
 
+describe.runIf(process.platform === "darwin")("the sandbox", () => {
+  it("stops an agent's session writing outside its folders", async () => {
+    await employ("boxed");
+    await rt.send("boxed", "PASS ESCAPE");
+    const f = join(home, "agents", "boxed", "escape-result.txt");
+    await until(async () => existsSync(f), 40_000, "escape attempt");
+    expect(readFileSync(f, "utf8")).toBe("denied");
+  });
+});
+
 describe("budgets and settings", () => {
   it("doesn't spend in chats once the daily budget is used, and keeps the message", async () => {
     await employ("thrifty", "dailyBudgetUsd: 0.005");

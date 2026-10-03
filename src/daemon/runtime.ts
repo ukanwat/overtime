@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { sandboxSpec } from "../runtime/sandbox.js";
 import { existsSync } from "node:fs";
 import { cp, lstat, mkdir, readdir, rm } from "node:fs/promises";
 import { execFile } from "node:child_process";
@@ -89,6 +90,10 @@ export class Runtime extends EventEmitter implements ToolHost {
       },
       (a) => this.store(a),
       (a) => paths.agent(a),
+      async (a) => {
+        const eff = await effectiveSettings(await loadAgent(a));
+        return eff.sandbox ? sandboxSpec(paths.agent(a), [eff.workspace], eff.backend) : null;
+      },
     );
   }
 
@@ -885,7 +890,7 @@ export class Runtime extends EventEmitter implements ToolHost {
   }
 
   /** The person changed an agent's settings. Takes effect from its next turn. */
-  async setAgentSettings(name: string, patch: { backend?: string; model?: string | null; dailyBudgetUsd?: number; dailyTokenBudget?: number | null; workspace?: string | null }): Promise<void> {
+  async setAgentSettings(name: string, patch: { backend?: string; model?: string | null; dailyBudgetUsd?: number; dailyTokenBudget?: number | null; workspace?: string | null; sandbox?: boolean | null }): Promise<void> {
     if (patch.dailyTokenBudget !== undefined && patch.dailyTokenBudget !== null && !(Number.isFinite(patch.dailyTokenBudget) && patch.dailyTokenBudget > 0)) throw new Error("The token budget must be a positive number of tokens, or empty for none.");
     if (typeof patch.workspace === "string" && patch.workspace.trim()) {
       const { expandHome } = await import("../agent/agent.js");
@@ -903,6 +908,11 @@ export class Runtime extends EventEmitter implements ToolHost {
     // A new backend means the old model name may not exist there: clear it unless one was given.
     await setSettings(name, { ...patch, model: patch.backend && patch.model === undefined ? null : patch.model });
     this.log(`[${name}] settings changed: ${JSON.stringify(patch)}`);
+    // Watches run under the sandbox they started with: restart them so a change applies to them too.
+    if (patch.sandbox !== undefined || patch.workspace !== undefined) {
+      this.monitors.stopAgent(name);
+      if ((await loadAgent(name)).state.status !== "stopped") await this.monitors.startAll(name);
+    }
     this.changed(name, "state");
   }
 

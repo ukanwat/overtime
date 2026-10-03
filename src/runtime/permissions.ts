@@ -264,7 +264,7 @@ function inspect(cmd: string, cwd: string, roots: string[], depth = 0): Finding 
     if (SHELLS.test(prog)) {
       const ci = args.findIndex((a) => /^-[a-z]*c[a-z]*$/.test(a.text));
       if (ci >= 0 && args[ci + 1]) merge(inspect(args[ci + 1].text, here, roots, depth + 1));
-      else if (args[0] && !args[0].text.startsWith("-")) f.unknown ||= false; // runs a script file: its own permission requests are checked
+      else if (args[0] && !args[0].text.startsWith("-")) f.unknown ||= false; // runs a script file: what it writes is confined by the sandbox (see sandbox.ts)
       continue;
     }
     if (INTERPRETERS.test(prog)) {

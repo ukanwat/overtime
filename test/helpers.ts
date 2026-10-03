@@ -14,6 +14,8 @@ export function fakeHome(extra: Record<string, unknown> = {}): string {
     join(dir, "settings.json"),
     JSON.stringify({
       backend: "fake",
+      // The end-to-end tests run inside Overtime's sandbox where the machine has one (macOS always does).
+      sandbox: process.platform === "darwin",
       customBackends: { fake: { command: join(here, "..", "node_modules", ".bin", "tsx"), args: [join(here, "fake-agent.ts")] } },
       ...extra,
     }),

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { home } from "../paths.js";
 import type { Store } from "../store/store.js";
 import type { Monitor } from "../store/types.js";
+import { sandboxLaunch, type SandboxSpec } from "../runtime/sandbox.js";
 
 export interface MonitorEvents {
   /** The monitor fired: wake the agent with this output. */
@@ -25,6 +26,8 @@ interface Running {
   /** Lines held back during a cooldown, delivered together when it ends. */
   held: string[];
   stopped: boolean;
+  /** The agent's sandbox (null: not sandboxed); watches run under the same rules as its sessions. */
+  sandbox?: SandboxSpec | null;
 }
 
 const RUN_TIMEOUT_MS = 2 * 60_000;
@@ -68,7 +71,7 @@ export function reapStaleMonitors(): number {
   for (const { pid, cmd } of saved) {
     // Only if that pid is still our shell running that exact watch.
     const now = commandOf(pid);
-    if (!now || !now.startsWith("/bin/sh -c") || !now.includes(cmd.slice(0, 200))) continue;
+    if (!now || !now.includes("/bin/sh -c") || !now.includes(cmd.slice(0, 200))) continue;
     try {
       process.kill(-pid, "SIGKILL");
       n++;
@@ -82,7 +85,12 @@ export function reapStaleMonitors(): number {
 export class MonitorRunner {
   private running = new Map<string, Running>();
 
-  constructor(private readonly ev: MonitorEvents, private readonly storeFor: (agent: string) => Store, private readonly cwdFor: (agent: string) => string) {}
+  constructor(
+    private readonly ev: MonitorEvents,
+    private readonly storeFor: (agent: string) => Store,
+    private readonly cwdFor: (agent: string) => string,
+    private readonly sandboxFor: (agent: string) => Promise<SandboxSpec | null> = async () => null,
+  ) {}
 
   private key(agent: string, id: string) {
     return `${agent}/${id}`;
@@ -97,7 +105,8 @@ export class MonitorRunner {
     if (this.running.has(k)) return;
     const r: Running = { agent, id, held: [], stopped: false };
     this.running.set(k, r);
-    void this.storeFor(agent).monitors().then((ms) => {
+    void Promise.all([this.storeFor(agent).monitors(), this.sandboxFor(agent).catch(() => null)]).then(([ms, sandbox]) => {
+      r.sandbox = sandbox;
       const m = ms.find((x) => x.id === id);
       if (!m || r.stopped) return this.running.delete(k);
       if (m.everyMs) this.startRepeating(r, m);
@@ -167,7 +176,9 @@ export class MonitorRunner {
     const run = () => {
       if (r.stopped) return;
       const started = Date.now();
-      const proc = spawn("/bin/sh", ["-c", m.run], { cwd: this.cwdFor(r.agent), stdio: ["ignore", "pipe", "pipe"], detached: true });
+      const l = launch(m.run, r.sandbox);
+      if ("error" in l) return void this.failed(r, l.error);
+      const proc = spawn(l.command, l.args, { cwd: this.cwdFor(r.agent), stdio: ["ignore", "pipe", "pipe"], detached: true });
       r.proc = proc;
       if (proc.pid) {
         livePids.set(proc.pid, m.run);
@@ -206,7 +217,7 @@ export class MonitorRunner {
       if (busy || r.stopped) return;
       busy = true;
       try {
-        const { code, stdout, stderr } = await runOnce(m.run, this.cwdFor(r.agent), RUN_TIMEOUT_MS);
+        const { code, stdout, stderr } = await runOnce(m.run, this.cwdFor(r.agent), RUN_TIMEOUT_MS, r.sandbox);
         if (r.stopped) return;
         if (code !== 0) {
           await this.failed(r, `exit ${code}. ${stderr.trim() || stdout.trim()}`.slice(0, 1000));
@@ -248,9 +259,18 @@ function killTree(p: ChildProcess): void {
   setTimeout(() => sig("SIGKILL"), 2000).unref();
 }
 
-function runOnce(cmd: string, cwd: string, timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string }> {
+/** A watch's shell, inside the agent's sandbox when it has one. A sandbox that can't start is an error, never a silent bypass. */
+function launch(cmd: string, sandbox: SandboxSpec | null | undefined): { command: string; args: string[] } | { error: string } {
+  if (!sandbox) return { command: "/bin/sh", args: ["-c", cmd] };
+  const l = sandboxLaunch("/bin/sh", ["-c", cmd], sandbox);
+  return l.sandboxed ? l : { error: `Overtime's sandbox isn't available: ${l.why}` };
+}
+
+function runOnce(cmd: string, cwd: string, timeoutMs: number, sandbox?: SandboxSpec | null): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const p = spawn("/bin/sh", ["-c", cmd], { cwd, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    const l = launch(cmd, sandbox);
+    if ("error" in l) return resolve({ code: 126, stdout: "", stderr: l.error });
+    const p = spawn(l.command, l.args, { cwd, stdio: ["ignore", "pipe", "pipe"], detached: true });
     let stdout = "";
     let stderr = "";
     p.stdout?.on("data", (c) => (stdout = (stdout + c.toString()).slice(-200_000)));
