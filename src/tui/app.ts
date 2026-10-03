@@ -4,6 +4,8 @@ import { extname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   Editor,
+  Markdown,
+  type MarkdownTheme,
   getKeybindings,
   Input,
   Key,
@@ -134,6 +136,38 @@ export function linkify(text: string, links: { label: string; target: string; ki
     out = out.split(l.label).join(`\u0000${slots.length - 1}\u0000`);
   }
   return out.replace(/\u0000(\d+)\u0000/g, (_, n) => slots[Number(n)]);
+}
+
+/** How Markdown from agents looks: quiet, readable in any theme, one accent colour. */
+const MD_THEME: MarkdownTheme = {
+  heading: (t) => bold(t),
+  link: (t) => underline(accent(t)),
+  linkUrl: (t) => muted(t),
+  code: (t) => accent(t),
+  codeBlock: (t) => t,
+  codeBlockBorder: (t) => faint(t),
+  quote: (t) => muted(italic(t)),
+  quoteBorder: (t) => faint(t),
+  hr: (t) => faint(t),
+  listBullet: (t) => accent(t),
+  bold: (t) => bold(t),
+  italic: (t) => italic(t),
+  strikethrough: (t) => `\x1b[9m${t}\x1b[29m`,
+  underline: (t) => underline(t),
+};
+
+/** Markdown rendered to lines of a given width, cached per text and width (the screen redraws often). */
+const mdCache = new Map<string, string[]>();
+export function markdownLines(text: string, width: number): string[] {
+  const key = `${width}\u0000${text}`;
+  let lines = mdCache.get(key);
+  if (!lines) {
+    lines = new Markdown(text, 0, 0, MD_THEME, undefined, { preserveOrderedListMarkers: true }).render(Math.max(8, width)).map((l) => l.replace(/\s+$/, ""));
+    while (lines.length && !lines.at(-1)!.trim()) lines.pop();
+    if (mdCache.size > 2000) mdCache.clear();
+    mdCache.set(key, lines);
+  }
+  return lines;
 }
 
 /** The bits of Markdown agents write most, shown as styling instead of raw symbols: headings, **bold**, `code`. */
@@ -1098,7 +1132,7 @@ export class App implements Component {
           continue;
         }
         for (const l of paras(`${open ? yellow(bold("?")) : muted("?")} ${open ? bold(hq.title) : muted(hq.title)}  ${muted(stamp(m.t))}`, inner - 4)) body.push(line(l));
-        if (hq.body) for (const l of paras(linkify(md(hq.body), m.links), inner - 4)) body.push(line(l));
+        if (hq.body) for (const l of markdownLines(hq.body, inner - 4)) body.push(line(linkify(l, m.links)));
         if (m.why) for (const l of paras(muted(m.why), inner - 4)) body.push(line(l));
         // A recommendation that names an option is marked on it; anything else gets its own line.
         if (m.recommendation && rec < 0) for (const l of paras(`${bold("I'd suggest:")} ${m.recommendation}`, inner - 4)) body.push(line(l));
@@ -1132,7 +1166,7 @@ export class App implements Component {
         if (body.length && body.at(-1) !== "") body.push("");
         const ha = headed(m, "Something went wrong");
         body.push(line(`${red(bold(ha.title))}  ${muted(stamp(m.t))}${m.from === "overtime" ? muted("  · from Overtime") : ""}`));
-        if (ha.body) for (const l of paras(linkify(md(ha.body), m.links), inner - 4)) body.push(line(l));
+        if (ha.body) for (const l of markdownLines(ha.body, inner - 4)) body.push(line(linkify(l, m.links)));
         t = this.pushExtras(m, body, bodyHits, w, t, line);
         body.push("");
       } else {
@@ -1146,7 +1180,11 @@ export class App implements Component {
         const ind = (s: string) => "  " + faint("│") + " " + s;
         if (m.kind === "report" && m.title) body.push(ind(`${accent("▣")} ${bold(m.title)}`));
         const text = m.kind === "report" && m.title && m.text.startsWith(m.title) ? m.text.slice(m.title.length).trim() : m.text;
-        if (text) for (const l of paras(m.from === "overtime" ? linkify(muted(text), m.links) : linkify(md(text), m.links))) body.push(ind(l));
+        // The agent's words as Markdown (bold, italics, lists, quotes, code, tables); Overtime's notes plain.
+        if (text) {
+          const lines = m.from === "overtime" ? paras(linkify(muted(text), m.links)) : markdownLines(text, inner).map((l) => linkify(l, m.links));
+          for (const l of lines) body.push(ind(l));
+        }
         t = this.pushExtras(m, body, bodyHits, w, t, ind);
       }
       prev = m;
