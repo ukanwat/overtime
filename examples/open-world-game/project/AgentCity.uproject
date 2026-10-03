@@ -2,7 +2,7 @@
  "FileVersion": 3,
  "EngineAssociation": "5.8",
  "Category": "",
- "Description": "AAABench counterpart \u2014 can an agent drive Unreal?",
+ "Description": "Can an agent drive Unreal?",
  "Plugins": [
   {
    "Name": "PythonScriptPlugin",

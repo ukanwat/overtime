@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-shot health check for the AAABench run. Prints OK lines and PROBLEM lines; exits non-zero
+# One-shot health check for the open-world game run. Prints OK lines and PROBLEM lines; exits non-zero
 # if anything is wrong, so a supervisor loop or an operator can branch on it.
 #
 #   ./bin/health.sh
