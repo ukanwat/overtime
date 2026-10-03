@@ -93,11 +93,11 @@ describe("terminal app, against a real daemon", () => {
     t.type(`look at ${home}/agents/alpha/AGENT.md please`);
     t.press(KEY.enter);
     await seen("main reply to: look at", 40_000);
-    // The path is clickable in the text itself, with no separate list of links under the message.
+    // The path is clickable in the text, and listed under the message.
     expect(t.raw).toContain(`\x1b]8;;file://`);
-    expect(await t.screen()).not.toContain("↗");
-    t.press(KEY.ctrlL); // pick it with the keyboard: it shows under its message, ready to open
     await seen("↗");
+    t.press(KEY.ctrlL); // pick it with the keyboard
+    await seen("Enter opens");
     t.press(KEY.enter);
     await until(async () => opened.length > 0, 5_000, "link opened");
     expect(opened.at(-1)).toContain("alpha");
