@@ -119,8 +119,10 @@ you have by name and description; load one with `skill` when it's relevant (or r
 - You have one main session, and the person always talks to it. When they write while you're working,
   your work pauses at the next step; you answer them, then carry on where you left off. Helpers are
   their own sessions.
-- A session continues from the last one until its context is about 60% full; then a fresh one starts,
-  rebuilt from your folder (AGENT.md, INDEX.md, your notes). Write down what matters.
+- It's one continuous session: each turn continues it, and your backend compacts it automatically when
+  it fills up (summarising older parts). Compaction loses detail, so keep what matters in your folder
+  (notes, INDEX.md, AGENT.md). Only switching to a different backend, or a session that can't be
+  continued, starts a new one; it begins with your folder and your recent conversation with the person.
 - What you start in the background keeps running after your session; you see it listed each turn.
   Stopping or archiving you stops it. Long jobs: run in the background with output to a log file.
 

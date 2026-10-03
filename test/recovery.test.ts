@@ -122,37 +122,39 @@ describe("talking to a busy agent", () => {
   });
 });
 
-describe("instruction updates", () => {
-  it("reach a running agent: a session started under older instructions starts fresh, others continue", async () => {
+describe("one continuous session", () => {
+  it("is never cut for an update: new instructions arrive in the same session; a session that can't continue starts fresh with the conversation", async () => {
     const { readdirSync } = await import("node:fs");
     await employ("updated");
     const runs = join(meta("updated"), "runs");
-    // The most recent main run by its start time (run ids from the same second don't sort by time).
-    const lastStart = () =>
+    // The most recent main run (start event and prompt) by its start time.
+    const last = () =>
       readdirSync(runs)
         .filter((x) => x.startsWith("main"))
-        .map((f) => readFileSync(join(runs, f), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((e) => e.event === "start"))
-        .filter(Boolean)
-        .sort((a, b) => a.t.localeCompare(b.t))
-        .at(-1).data;
-    // Send, and wait for the reply and for the turn to be over.
+        .map((f) => readFileSync(join(runs, f), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)))
+        .map((evs) => ({ start: evs.find((e) => e.event === "start"), prompt: evs.find((e) => e.event === "prompt")?.data.text ?? "" }))
+        .filter((r) => r.start)
+        .sort((a, b) => a.start.t.localeCompare(b.start.t))
+        .at(-1)!;
     const ask = async (text: string) => {
       const m = await rt.send("updated", text);
       await until(async () => (await rt.store("updated").messages()).some((e) => e.from === "agent" && e.text.includes(text) && e.t >= m.t), 30_000, `reply to "${text}"`);
       await until(async () => (await loadAgent("updated")).state.status === "asleep", 30_000, "turn over");
     };
-    await ask("second question");
-    expect(lastStart().fresh).toBe(false); // same instructions: the session continues (and its cache)
     const { updateState } = await import("../src/agent/agent.js");
+    await ask("second question");
+    expect(last().start.data.fresh).toBe(false); // the same session continues (and its cache)
     await updateState("updated", { mainSessionPrompt: "older-version" });
     await ask("third question");
-    expect(lastStart().fresh).toBe(true); // instructions changed: a fresh session with the new ones
-    // …which still knows the conversation so far.
-    const latest = readdirSync(runs).filter((x) => x.startsWith("main")).map((f) => readFileSync(join(runs, f), "utf8")).find((t) => t.includes('"fresh":true') && t.includes("third question"))!;
-    expect(latest).toContain("Your recent conversation with the person");
-    expect(latest).toContain("second question");
+    expect(last().start.data.fresh).toBe(false); // an update doesn't cut it…
+    expect(last().prompt).toContain("working instructions for you have been updated"); // …the new instructions arrive in it
     await ask("fourth question");
-    expect(lastStart().fresh).toBe(false); // and that one continues from then on
+    expect(last().prompt).not.toContain("have been updated"); // once
+    await updateState("updated", { failures: 2 }); // continuing keeps failing: the safety net
+    await ask("fifth question");
+    expect(last().start.data.fresh).toBe(true);
+    expect(last().prompt).toContain("Your recent conversation with the person"); // and it still knows what was said
+    expect(last().prompt).toContain("fourth question");
   });
 });
 

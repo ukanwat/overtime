@@ -27,8 +27,6 @@ const exec = promisify(execFile);
 
 const TICK_MS = 5_000;
 const DEFAULT_WAKE_MS = 60 * 60_000;
-/** Start a fresh main session (rebuilt from the agent's files) once the context is this full. */
-const FRESH_SESSION_AT = 0.6;
 const BACKOFF_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000];
 /** Status lines Overtime itself writes (as opposed to the agent's own): replaced when they stop being true. */
 const OVERTIME_ACTIVITY = /^(learning its job|working|resuming|resting|stopped|paused\b.*)$/;
@@ -390,14 +388,18 @@ export class Runtime extends EventEmitter implements ToolHost {
 
       // Continue the main session unless the backend or model changed, its context is getting full, or
       // resuming it keeps failing (a broken session would otherwise fail forever).
-      const lastCtx = await lastContext(agentName, agent.state.mainSessionId);
+      // One continuous session: it's never cut on purpose, and the backend compacts it when it fills up.
+      // Only a different backend (one CLI can't continue another's session) or a session that keeps
+      // failing to continue starts a new one, rebuilt from the agent's folder and recent conversation.
       const sameModel = (agent.state.mainSessionModel ?? null) === (eff.model ?? null) || agent.state.mainSessionModel === undefined;
-      const resume =
-        agent.state.mainSessionId && agent.state.mainSessionBackend === eff.backend && sameModel && (agent.state.failures ?? 0) < 2 && !full(lastCtx) && agent.state.mainSessionPrompt === promptVersion("main")
-          ? agent.state.mainSessionId
-          : null;
+      const resume = agent.state.mainSessionId && agent.state.mainSessionBackend === eff.backend && (agent.state.failures ?? 0) < 2 ? agent.state.mainSessionId : null;
+      // Overtime's instructions changed (an update): they go into the same session, not a new one.
+      const newInstructions =
+        resume && agent.state.mainSessionPrompt && agent.state.mainSessionPrompt !== promptVersion("main")
+          ? `Overtime's working instructions for you have been updated. From now on, these replace the earlier ones:\n\n${workingInstructions(agentName, "main")}\n\n---\n\n`
+          : "";
       const edits = resume ? await editedSince(agent, agent.state.mainSessionFiles) : "";
-      const convo = resume ? [] : await store.messages();
+      const convo = await store.messages(); // for a session that turns out fresh
       const settings = await loadSettings();
       result = await runTurn({
         runId,
@@ -406,7 +408,8 @@ export class Runtime extends EventEmitter implements ToolHost {
         reason,
         // If resuming fails, the backend starts fresh, and the agent is told so.
         // A fresh session also gets the recent conversation with the person: it's the one voice they talk to.
-        text: (fresh) => (fresh ? recentConversation(convo) : edits) + mainTurnText(items, firstJob, fresh && !!agent.state.mainSessionId),
+        text: (fresh) => (fresh ? recentConversation(convo) : newInstructions + edits) + mainTurnText(items, firstJob, fresh && !!agent.state.mainSessionId),
+        switchModel: !sameModel,
         header: await this.turnHeader(agentName),
         resumeSessionId: resume,
         extraMcp: [mcp],
@@ -1110,9 +1113,6 @@ ${instructions ? `\n# Your role\n\n${instructions}\n` : ""}${skillsBlock(paths.a
 }
 
 /** Whether a session's context is full enough that a fresh one (rebuilt from the agent's files) is better. */
-function full(ctx: { used: number; size: number } | null): boolean {
-  return !!ctx && ctx.size > 0 && ctx.used / ctx.size >= FRESH_SESSION_AT;
-}
 
 /** Fingerprints of AGENT.md and INDEX.md as a session last saw them. */
 function fileHashes(agent: Agent): { agent: string; index: string } {
@@ -1133,13 +1133,6 @@ async function editedSince(agent: Agent, seen: { agent: string; index: string } 
   return parts.length ? parts.join("\n\n---\n\n") + "\n\n---\n\n" : "";
 }
 
-async function lastContext(agent: string, sessionId: string | null): Promise<{ used: number; size: number } | null> {
-  if (!sessionId) return null;
-  const { readJsonl } = await import("../fsutil.js");
-  const rows = await readJsonl<TurnUsage>(join(paths.meta(agent), "usage.jsonl"));
-  for (let i = rows.length - 1; i >= 0; i--) if (rows[i].sessionId === sessionId && rows[i].context) return rows[i].context;
-  return null;
-}
 
 async function isGitRepo(dir: string): Promise<boolean> {
   if (!existsSync(dir)) return false;

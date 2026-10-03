@@ -29,6 +29,8 @@ export interface TurnOptions {
   cwd?: string;
   backend?: string;
   model?: string | null;
+  /** Switch a continued session to the chosen model (the person changed it); a fresh one always gets it. */
+  switchModel?: boolean;
   /** Hard limit for the whole turn. On expiry the turn is cancelled, then the backend is killed. */
   timeoutMs?: number;
   /** Lets the caller cancel a running turn (daemon shutdown, agent stopped, helper cancelled). */
@@ -204,8 +206,9 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
 
     let fresh = true;
     if (o.resumeSessionId) fresh = !(await session.loadSession(o.resumeSessionId));
-    if (fresh) {
-      await session.newSession();
+    if (fresh) await session.newSession();
+    // A fresh session gets the chosen model; a continued one too when the person changed it.
+    if (fresh || o.switchModel) {
       if (eff.model && !(await session.setModel(eff.model))) {
         const offered = session.availableModels().map((m) => m.id);
         modelIssue = `${eff.backend} wouldn't switch to the model "${eff.model}", so this ran on its default.${offered.length ? ` It offers: ${offered.join(", ")}.` : ""}`;
