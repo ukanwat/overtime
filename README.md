@@ -124,6 +124,23 @@ boxes: each one has its own transcript you can open.
 your real limit is the plan's usage window, so Overtime reads that too: when you hit it, agents on
 that backend pause until the exact reset time instead of failing.
 
+## Skills
+
+A skill is written-down know-how: a folder with a `SKILL.md` (a name and a one-line description at the
+top, then the instructions) and any scripts or references it needs. Agents see the list of their skills
+every session, by name and description only, and load one with the `skill` tool when it's relevant, so
+skills cost almost nothing until they're used. They come from three places:
+
+- **Built in.** The `overtime` skill is Overtime's own manual: where settings, MCP servers, budgets,
+  files and logs live, what each tool does, and the exact commands you run. Ask an agent "how do I give
+  you a GitHub MCP server?" and it answers from this, not from guesswork.
+- **Yours**, for every agent: `~/overtime/skills/<name>/SKILL.md`.
+- **Its own**: `skills/<name>/SKILL.md` in the agent's folder. When an agent works out how to do something
+  it will do again, it writes it down as a skill, so later sessions and its helpers reuse it.
+
+An agent's own skill replaces one of the same name from you or Overtime. You can see an agent's skills in
+its settings (→), and open each one.
+
 ## The tools Overtime gives agents
 
 Deliberately few, because every tool costs context on every turn:
@@ -136,6 +153,7 @@ Deliberately few, because every tool costs context on every turn:
 | `send` | message you (a reply, a report, files to share), or set the one-line status next to its name |
 | `spawn` | start a helper |
 | `done` | (helpers only) hand the result back |
+| `skill` | load a skill (or list them) |
 
 Everything else is plain files the agent reads and writes with the tools its backend already has.
 

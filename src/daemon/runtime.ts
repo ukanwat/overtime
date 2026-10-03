@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { skillsBlock } from "../skills.js";
 import { existsSync } from "node:fs";
 import { cp, lstat, mkdir, readdir, rm } from "node:fs/promises";
 import { execFile } from "node:child_process";
@@ -1104,7 +1105,7 @@ Work in: ${rec.workdir}${rec.branch ? ` (a git worktree of ${workspace}, on bran
 The main workspace is ${workspace}; don't change it directly.
 
 When you're finished, call done with what you did, where the output is, what you checked, and anything left open. Then end your turn.
-${instructions ? `\n# Your role\n\n${instructions}\n` : ""}`;
+${instructions ? `\n# Your role\n\n${instructions}\n` : ""}${skillsBlock(paths.agent(agentName)) ? `\n${skillsBlock(paths.agent(agentName))}\n` : ""}`;
 }
 
 /** Whether a session's context is full enough that a fresh one (rebuilt from the agent's files) is better. */

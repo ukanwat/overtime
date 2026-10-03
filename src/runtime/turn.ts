@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { skillsBlock } from "../skills.js";
 import { recordLeftovers } from "./leftovers.js";
 import { paths } from "../paths.js";
 import { appendJsonl, newId } from "../fsutil.js";
@@ -74,7 +75,8 @@ export function sessionPreamble(agent: Agent, kind: "main" | "chat" = "main"): s
     `# Your folder\n\n${agent.dir}\n\nAGENT.md and INDEX.md live there. Everything else in it is yours to organise.`,
     `# AGENT.md (who you are)\n\n${agent.identity.trim() || "(empty)"}`,
     `# INDEX.md (your map of your folder)\n\n${agent.index.trim() || "(You haven't written INDEX.md yet. Create it once you have files worth finding again.)"}`,
-  ];
+    skillsBlock(agent.dir),
+  ].filter(Boolean);
   return parts.join("\n\n---\n\n");
 }
 
