@@ -4,6 +4,7 @@ import { cp, lstat, mkdir, readdir, rm } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { join, sep } from "node:path";
 import { promisify } from "node:util";
+import { createHash } from "node:crypto";
 import { adoptSettingsEdit, createAgent, effectiveSettings, hasIdentity, listAgents, loadAgent, updateState, type Agent, type AgentState } from "../agent/agent.js";
 import { newId } from "../fsutil.js";
 import { paths } from "../paths.js";
@@ -30,6 +31,8 @@ const MAX_HELPERS = 6;
 /** Finished helpers' worktrees and copies are removed after this long (git branches are kept). */
 const HELPER_KEEP_MS = 7 * 24 * 3600_000;
 /** A non-git workspace is copied for a helper only below these sizes; above, the helper gets an empty folder. */
+/** Run transcripts older than this are removed. */
+const RUN_KEEP_MS = 30 * 24 * 3600_000;
 const COPY_MAX_FILES = 5_000;
 const COPY_MAX_BYTES = 200 * 1024 * 1024;
 
@@ -251,7 +254,10 @@ export class Runtime extends EventEmitter implements ToolHost {
       }
       if (now.getTime() - this.lastCleanup > 3600_000) {
         this.lastCleanup = now.getTime();
-        for (const a of agents) await this.cleanupHelpers(a.name).catch((e) => this.log(`[${a.name}] cleanup: ${e?.message ?? e}`));
+        for (const a of agents) {
+          await this.cleanupHelpers(a.name).catch((e) => this.log(`[${a.name}] cleanup: ${e?.message ?? e}`));
+          await this.cleanupRuns(a.name).catch((e) => this.log(`[${a.name}] cleanup: ${e?.message ?? e}`));
+        }
       }
     } finally {
       this.ticking = false;
@@ -280,7 +286,9 @@ export class Runtime extends EventEmitter implements ToolHost {
     if (a.state.status === "stopped" || this.mainRunning.has(a.name)) return;
     const store = this.store(a.name);
     if (a.state.status === "paused") {
-      if (a.state.pausedUntil && new Date(a.state.pausedUntil) > now) return;
+      // A budget pause lifts as soon as the budget is raised; a limit pause when the limit resets.
+      const lifted = a.state.activity === "paused: daily budget used" && !(await this.blocked(a.name));
+      if (!lifted && a.state.pausedUntil && new Date(a.state.pausedUntil) > now) return;
       await updateState(a.name, { status: hasIdentity(a) ? "asleep" : "new", pausedUntil: null });
       this.changed(a.name, "state");
       a = await loadAgent(a.name);
@@ -362,19 +370,22 @@ export class Runtime extends EventEmitter implements ToolHost {
       await updateState(agentName, { status: "working", activity: firstJob ? "learning its job" : agent.state.activity && agent.state.activity !== "resting" ? agent.state.activity : "working" });
       this.changed(agentName, "state");
 
-      // Continue the main session unless the backend changed or its context is getting full.
+      // Continue the main session unless the backend or model changed, its context is getting full, or
+      // resuming it keeps failing (a broken session would otherwise fail forever).
       const lastCtx = await lastContext(agentName, agent.state.mainSessionId);
+      const sameModel = (agent.state.mainSessionModel ?? null) === (eff.model ?? null) || agent.state.mainSessionModel === undefined;
       const resume =
-        agent.state.mainSessionId && agent.state.mainSessionBackend === eff.backend && !(lastCtx && lastCtx.size > 0 && lastCtx.used / lastCtx.size >= FRESH_SESSION_AT)
+        agent.state.mainSessionId && agent.state.mainSessionBackend === eff.backend && sameModel && (agent.state.failures ?? 0) < 2 && !full(lastCtx)
           ? agent.state.mainSessionId
           : null;
+      const edits = resume ? await editedSince(agent, agent.state.mainSessionFiles) : "";
       const settings = await loadSettings();
       result = await runTurn({
         agent: agentName,
         kind: "main",
         reason,
         // If resuming fails, the backend starts fresh, and the agent is told so.
-        text: (fresh) => mainTurnText(items, firstJob, fresh && !!agent.state.mainSessionId),
+        text: (fresh) => (fresh ? "" : edits) + mainTurnText(items, firstJob, fresh && !!agent.state.mainSessionId),
         header: await this.turnHeader(agentName),
         resumeSessionId: resume,
         extraMcp: [mcp],
@@ -385,11 +396,15 @@ export class Runtime extends EventEmitter implements ToolHost {
       });
       await store.ackInbox(runId);
       agent = await loadAgent(agentName);
-      const patch: Partial<AgentState> = { status: hasIdentity(agent) ? "asleep" : "new", failures: 0, lastError: null };
+      if (result.modelIssue) await this.modelIssue(agentName, result.modelIssue);
+      const patch: Partial<AgentState> = { status: hasIdentity(agent) ? "asleep" : "new", failures: 0, lastError: null, mainSessionFiles: fileHashes(agent) };
       // Keep whatever status line the agent set itself; only replace Overtime's own placeholder.
       if (agent.state.activity === "learning its job" || agent.state.activity === "working") patch.activity = hasIdentity(agent) ? "resting" : "waiting for its job";
       await updateState(agentName, patch);
-      if (!ctx.wakeChosen && hasIdentity(agent)) {
+      // A watch or repeating wake already brings it back; otherwise make sure it never goes quiet.
+      const sched = await store.schedule();
+      const watching = (await store.monitors()).some((m) => m.status !== "removed") || sched.loops.length > 0;
+      if (!ctx.wakeChosen && hasIdentity(agent) && !watching) {
         await store.setWake(clampWake(new Date(Date.now() + DEFAULT_WAKE_MS)), "default wake-up: you didn't choose one last turn (use wake)");
       }
       return true;
@@ -425,9 +440,20 @@ export class Runtime extends EventEmitter implements ToolHost {
       return false;
     } finally {
       this.tools.close(ctx.token);
+      this.emit("turnEnd", { agent: agentName, kind: "main" });
       await this.refreshNextWake(agentName).catch(() => {});
       this.changed(agentName, "state");
     }
+  }
+
+  /** The backend wouldn't use the chosen model. Say so once per model, in the agent's list of threads. */
+  private async modelIssue(agentName: string, text: string): Promise<void> {
+    const a = await loadAgent(agentName);
+    const key = `${a.settings.backend ?? ""}/${a.settings.model ?? ""}`;
+    if (a.state.modelIssueFor === key) return;
+    await updateState(agentName, { modelIssueFor: key });
+    await this.store(agentName).startThread({ kind: "alert", title: "The chosen model isn't available", from: "overtime", text: `${text}\n\nChange the model for ${agentName} in the app (Ctrl+T) or in its AGENT.md settings.`, baseDir: a.dir });
+    this.changed(agentName, "threads");
   }
 
   /** What every main turn is told besides the time: spend so far today and helpers still running. */
@@ -454,7 +480,11 @@ export class Runtime extends EventEmitter implements ToolHost {
     const agent = await loadAgent(agentName);
     const store = this.store(agentName);
     let tid = threadId;
-    if (tid) await store.addToThread(tid, { from: "you", text, baseDir: agent.dir });
+    if (tid) {
+      await store.addToThread(tid, { from: "you", text, baseDir: agent.dir });
+      const meta = (await store.thread(tid))?.meta;
+      if (meta?.status === "closed") await store.patchThread(tid, { status: "open" });
+    }
     else tid = await store.startThread({ kind: "conversation", title: text.split("\n")[0], from: "you", text, baseDir: agent.dir });
     await store.markRead(tid);
     this.changed(agentName, "threads");
@@ -541,22 +571,25 @@ export class Runtime extends EventEmitter implements ToolHost {
         .slice(0, -1)
         .map((e) => `${e.from === "you" ? "Person" : e.from === "agent" ? "You" : "Overtime"} (${e.t}): ${e.text}`)
         .join("\n\n");
+      const chatEdits = th.meta.chatSessionId ? editedSince(agent, th.meta.chatFiles) : Promise.resolve("");
+      const editsText = await chatEdits;
       const r = await runTurn({
         agent: agentName,
         kind: "chat",
         reason: "the person sent you a message in a conversation thread",
         preamble: chatPreamble(agent),
-        resumeSessionId: th.meta.chatSessionId ?? null,
+        resumeSessionId: th.meta.chatSessionId && !full(await lastContext(agentName, th.meta.chatSessionId)) ? th.meta.chatSessionId : null,
         // A fresh session (first message, or the old one couldn't be resumed) gets the thread so far.
         text: (fresh) =>
-          `${fresh ? `What you are doing right now (from your main session):\n${state}\n\n${history ? `Earlier in this thread:\n${history}\n\n` : ""}` : ""}The person just wrote:\n\n${text}\n\nAnswer them with send. If it changes your work or needs real work done, send it to: "main" and tell them you have.`,
+          `${fresh ? "" : editsText}${fresh ? `What you are doing right now (from your main session):\n${state}\n\n${history ? `Earlier in this thread:\n${history}\n\n` : ""}` : ""}The person just wrote:\n\n${text}\n\nAnswer them with send. If it changes your work or needs real work done, send it to: "main" and tell them you have.`,
         extraMcp: [mcp],
         timeoutMs: 20 * 60_000,
         signal: this.signalFor(agentName),
         onUpdate: (u) => this.emit("update", { agent: agentName, kind: "chat", threadId, update: u }),
         log: this.log,
       });
-      await store.patchThread(threadId, { chatSessionId: r.sessionId });
+      await store.patchThread(threadId, { chatSessionId: r.sessionId, chatFiles: fileHashes(await loadAgent(agentName)) });
+      if (r.modelIssue) await this.modelIssue(agentName, r.modelIssue);
       // If it didn't use send, its final words are the reply, so the person always gets an answer.
       const after = (await store.thread(threadId))?.entries ?? [];
       const replied = after.slice(before).some((e) => e.from === "agent");
@@ -572,9 +605,12 @@ export class Runtime extends EventEmitter implements ToolHost {
             : `I couldn't answer just now (${String(e?.message ?? e).slice(0, 200)}). I've passed your message to my main session.`;
       await store.addToThread(threadId, { from: "overtime", text: msg, baseDir: agent.dir });
       await store.pushInbox({ type: "message", text, threadId });
+      // A session that failed may be broken: the next message in this thread starts a fresh one.
+      if (!(e instanceof UsageLimitError)) await store.patchThread(threadId, { chatSessionId: null });
       if (!(e instanceof UsageLimitError) && !stoppedNow) this.wakeMain(agentName, "a chat session failed, so the person's message came to you");
     } finally {
       this.tools.close(ctx.token);
+      this.emit("turnEnd", { agent: agentName, kind: "chat", threadId });
       this.changed(agentName, "threads");
     }
   }
@@ -716,6 +752,9 @@ export class Runtime extends EventEmitter implements ToolHost {
       if (cancel.aborted) {
         rec.status = "cancelled";
         rec.result = "Cancelled, as you asked.";
+      } else if ((await loadAgent(agentName)).state.status === "stopped") {
+        rec.status = "stopped";
+        rec.result = "Cut off because the person stopped you.";
       } else if (this.stopping) {
         rec.status = "failed";
         rec.result = "Overtime was shut down while this helper was running, so it was cut off.";
@@ -726,12 +765,29 @@ export class Runtime extends EventEmitter implements ToolHost {
       if (ctx.result) rec.result += `\n\nBefore that, it reported:\n${ctx.result}`;
     } finally {
       this.tools.close(ctx.token);
+      this.emit("turnEnd", { agent: agentName, kind: "helper", helperId: rec.id });
     }
     rec.finishedAt = new Date().toISOString();
     await store.saveHelper(rec);
     await store.pushInbox({ type: "helper", text: helperInboxText(rec), data: { helperId: rec.id } });
     this.changed(agentName, "helpers");
-    if (!this.stopping) this.wakeMain(agentName, `helper ${rec.id} ${rec.status === "done" ? "finished" : rec.status}`);
+    if (!this.stopping && rec.status !== "stopped") this.wakeMain(agentName, `helper ${rec.id} ${rec.status === "done" ? "finished" : rec.status}`);
+  }
+
+  /** Transcripts are kept for 30 days, then removed, so an agent's folder doesn't grow forever. */
+  private async cleanupRuns(agentName: string): Promise<void> {
+    const dir = join(paths.meta(agentName), "runs");
+    let files: string[] = [];
+    try {
+      files = await readdir(dir);
+    } catch {
+      return;
+    }
+    const cutoff = Date.now() - RUN_KEEP_MS;
+    for (const f of files) {
+      const st = await lstat(join(dir, f)).catch(() => null);
+      if (st && st.mtimeMs < cutoff) await rm(join(dir, f), { force: true });
+    }
   }
 
   /** Remove finished helpers' folders after a week. Git branches stay, so committed work is never lost. */
@@ -799,6 +855,71 @@ export class Runtime extends EventEmitter implements ToolHost {
     this.changed(name, "state");
   }
 
+  /** Backends Overtime can run: built in, plus any under customBackends. */
+  async backends(): Promise<string[]> {
+    const { BUILTIN_BACKENDS } = await import("../acp/backends.js");
+    return [...new Set([...BUILTIN_BACKENDS, ...Object.keys((await loadSettings()).customBackends ?? {})])];
+  }
+
+  private modelCache = new Map<string, { at: number; models: { id: string; name: string }[] }>();
+
+  /** The models a backend offers, as it reports them over ACP. Starts the backend briefly; nothing is spent. */
+  async models(backend: string): Promise<{ id: string; name: string }[]> {
+    const hit = this.modelCache.get(backend);
+    if (hit && Date.now() - hit.at < 10 * 60_000) return hit.models;
+    const { mkdtemp } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const cwd = await mkdtemp(join(tmpdir(), "overtime-models-"));
+    let session: AcpSession | null = null;
+    try {
+      session = await AcpSession.open({ backend, cwd, mcpServers: [], onUpdate: () => {}, onPermission: () => ({ outcome: { outcome: "cancelled" } }) as any, onStderr: () => {} });
+      await session.newSession();
+      const models = session.availableModels();
+      this.modelCache.set(backend, { at: Date.now(), models });
+      return models;
+    } finally {
+      await session?.close();
+      await rm(cwd, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+
+  /** The person changed an agent's settings. Takes effect from its next turn. */
+  async setAgentSettings(name: string, patch: { backend?: string; model?: string | null; dailyBudgetUsd?: number }): Promise<void> {
+    if (patch.backend) {
+      const known = await this.backends();
+      if (!known.includes(patch.backend)) throw new Error(`Unknown backend "${patch.backend}". Choose one of: ${known.join(", ")}.`);
+    }
+    if (patch.dailyBudgetUsd !== undefined && !(typeof patch.dailyBudgetUsd === "number" && patch.dailyBudgetUsd >= 0)) throw new Error("The daily budget must be a number of dollars, 0 or more.");
+    const { setSettings } = await import("../agent/agent.js");
+    // A new backend means the old model name may not exist there: clear it unless one was given.
+    await setSettings(name, { ...patch, model: patch.backend && patch.model === undefined ? null : patch.model });
+    this.log(`[${name}] settings changed: ${JSON.stringify(patch)}`);
+    this.changed(name, "state");
+  }
+
+  /** The person is done with a thread. Closed threads stay readable; a new message reopens one. */
+  async closeThread(name: string, id: string): Promise<void> {
+    const store = this.store(name);
+    if (!(await store.thread(id))) throw new Error(`No thread ${id}.`);
+    await store.patchThread(id, { status: "closed", unread: 0 });
+    this.changed(name, "threads");
+  }
+
+  /** Stop an agent and move its folder to the archive. Nothing is deleted. */
+  async archive(name: string): Promise<string> {
+    await loadAgent(name);
+    await this.stopAgent(name);
+    await Promise.race([this.mainRunning.get(name), new Promise((r) => setTimeout(r, 25_000))]);
+    const { rename } = await import("node:fs/promises");
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const dest = join(paths.archiveDir(), `${name}-${stamp}`);
+    await mkdir(paths.archiveDir(), { recursive: true });
+    await rename(paths.agent(name), dest);
+    this.stores.delete(name);
+    this.changed(name, "agents");
+    return dest;
+  }
+
   /** The person pressed wake. A new agent has nothing to do until it's been told its job. */
   async wakeNow(name: string): Promise<void> {
     const a = await loadAgent(name);
@@ -856,11 +977,11 @@ function mainTurnText(items: InboxItem[], firstJob: boolean, contextReset: boole
 }
 
 function chatPreamble(agent: Agent): string {
-  return `${sessionPreamble(agent)}\n\n---\n\n# This session\n\nThis is a conversation thread with the person, separate from your main work session. Answer from what you know and what's in your folder. Keep replies short and plain. Anything that changes your work or needs real work goes to your main session: send with to: "main".`;
+  return `${sessionPreamble(agent, "chat")}\n\n---\n\n# This session\n\nThis is a conversation thread with the person, separate from your main work session. Answer from what you know and what's in your folder. Keep replies short and plain. Anything that changes your work or needs real work goes to your main session: send with to: "main".`;
 }
 
 function helperInboxText(h: HelperRecord): string {
-  const head = h.status === "done" ? "Finished" : h.status === "cancelled" ? "Cancelled" : "Failed";
+  const head = h.status === "done" ? "Finished" : h.status === "cancelled" ? "Cancelled" : h.status === "stopped" ? "Stopped" : "Failed";
   const where = h.branch
     ? `Its work is in ${h.workdir} (git branch ${h.branch}). Review it and merge it into the workspace; the folder is removed a week after it finished, the branch is kept.`
     : `Its work is in ${h.workdir}. Copy what should be kept; the folder is removed a week after it finished.`;
@@ -892,7 +1013,7 @@ async function measure(root: string, exclude: string[], maxFiles: number, maxByt
 }
 
 function helperPreamble(agentName: string, rec: HelperRecord, instructions: string, workspace: string, note: string): string {
-  return `${workingInstructions(`a helper working for ${agentName}`)}
+  return `${workingInstructions(agentName, "helper")}
 
 ---
 
@@ -905,6 +1026,30 @@ The main workspace is ${workspace}; don't change it directly.
 
 When you're finished, call done with what you did, where the output is, what you checked, and anything left open. Then end your turn.
 ${instructions ? `\n# Your role\n\n${instructions}\n` : ""}`;
+}
+
+/** Whether a session's context is full enough that a fresh one (rebuilt from the agent's files) is better. */
+function full(ctx: { used: number; size: number } | null): boolean {
+  return !!ctx && ctx.size > 0 && ctx.used / ctx.size >= FRESH_SESSION_AT;
+}
+
+/** Fingerprints of AGENT.md and INDEX.md as a session last saw them. */
+function fileHashes(agent: Agent): { agent: string; index: string } {
+  const h = (t: string) => createHash("sha1").update(t).digest("hex");
+  return { agent: h(agent.identity), index: h(agent.index) };
+}
+
+/**
+ * A resumed session saw AGENT.md and INDEX.md only when it started. If they changed since (the person
+ * edited them, or another of the agent's sessions did), the next turn starts with the current text.
+ */
+async function editedSince(agent: Agent, seen: { agent: string; index: string } | undefined): Promise<string> {
+  if (!seen) return "";
+  const now = fileHashes(agent);
+  const parts: string[] = [];
+  if (now.agent !== seen.agent) parts.push(`AGENT.md changed since your last turn. It now reads:\n\n${agent.identity.trim()}`);
+  if (now.index !== seen.index) parts.push(`INDEX.md changed since your last turn. It now reads:\n\n${agent.index.trim()}`);
+  return parts.length ? parts.join("\n\n---\n\n") + "\n\n---\n\n" : "";
 }
 
 async function lastContext(agent: string, sessionId: string | null): Promise<{ used: number; size: number } | null> {

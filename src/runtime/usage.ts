@@ -18,6 +18,8 @@ export interface TurnUsage {
   turnCostUsd: number | null;
   /** Context window after the turn. */
   context: { used: number; size: number } | null;
+  /** Set when the turn didn't finish (failed, cancelled, timed out): what it spent still counts. */
+  incomplete?: boolean;
 }
 
 /** The latest subscription limit status a backend reported (e.g. Claude's 5-hour and 7-day limits). */

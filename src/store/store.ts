@@ -215,11 +215,16 @@ export class Store {
     });
   }
 
-  async addLoop(everyMs: number, task: string): Promise<Loop> {
+  /** A repeating wake-up. `firstAt` sets when it first fires ("every day at 9"); otherwise one interval from now. */
+  async addLoop(everyMs: number, task: string, firstAt?: Date): Promise<Loop> {
     return this.lock(async () => {
       const s = await this.schedule();
       const now = Date.now();
-      const loop: Loop = { id: newId("loop"), everyMs: Math.max(MIN_SLEEP_MS, everyMs), task, nextAt: new Date(now + Math.max(MIN_SLEEP_MS, everyMs)).toISOString(), createdAt: new Date(now).toISOString() };
+      const every = Math.max(MIN_SLEEP_MS, everyMs);
+      let first = firstAt && !Number.isNaN(firstAt.getTime()) ? firstAt.getTime() : now + every;
+      // A first time already past moves forward by whole intervals, so "every 1d at 09:00" set at 10:00 starts tomorrow.
+      while (first < now + MIN_SLEEP_MS) first += every;
+      const loop: Loop = { id: newId("loop"), everyMs: every, task, nextAt: new Date(first).toISOString(), createdAt: new Date(now).toISOString() };
       s.loops.push(loop);
       await writeJson(this.p("schedule.json"), s);
       return loop;

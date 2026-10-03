@@ -50,6 +50,8 @@ export interface TurnResult {
   backend: string;
   usage2: TurnUsage | null;
   context: { used: number; size: number } | null;
+  /** Set when the backend wouldn't switch to the chosen model; the turn ran on its default. */
+  modelIssue?: string;
 }
 
 /** The backend reported a subscription usage limit; nothing failed, the agent should pause until the reset. */
@@ -63,9 +65,9 @@ export class UsageLimitError extends Error {
 export class TurnIncompleteError extends Error {}
 
 /** The context every fresh session starts with: how to work, who it is, and where things are. */
-export function sessionPreamble(agent: Agent): string {
+export function sessionPreamble(agent: Agent, kind: "main" | "chat" = "main"): string {
   const parts = [
-    workingInstructions(agent.name),
+    workingInstructions(agent.name, kind),
     `# Your folder\n\n${agent.dir}\n\nAGENT.md and INDEX.md live there. Everything else in it is yours to organise.`,
     `# AGENT.md (who you are)\n\n${agent.identity.trim() || "(empty)"}`,
     `# INDEX.md (your map of your folder)\n\n${agent.index.trim() || "(You haven't written INDEX.md yet. Create it once you have files worth finding again.)"}`,
@@ -109,6 +111,8 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
   let limitRejected: { resetsAt: Date | null } | null = null;
   let stopped: string | null = null;
   let session: AcpSession | null = null;
+  let recorded = false;
+  let modelIssue: string | undefined;
 
   // One deadline and one cancel path for the whole turn, including starting the backend.
   // Cancel politely first; if the backend ignores it, kill it, so a turn can never hang.
@@ -163,7 +167,12 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
     if (o.resumeSessionId) fresh = !(await session.loadSession(o.resumeSessionId));
     if (fresh) {
       await session.newSession();
-      if (eff.model) await session.setModel(eff.model);
+      if (eff.model && !(await session.setModel(eff.model))) {
+        const offered = session.availableModels().map((m) => m.id);
+        modelIssue = `${eff.backend} wouldn't switch to the model "${eff.model}", so this ran on its default.${offered.length ? ` It offers: ${offered.join(", ")}.` : ""}`;
+        o.log?.(`[${agent.name}/${o.kind}] ${modelIssue}`);
+        void record("model", { wanted: eff.model, ok: false, offered });
+      }
     }
     if (stopped) throw new TurnIncompleteError(stopped);
     o.onSession?.(session.sessionId, fresh);
@@ -195,12 +204,17 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
       sessionCostUsd: sessionCost,
       context,
     });
+    recorded = true;
     if (limitRejected) throw new UsageLimitError(eff.backend, (limitRejected as { resetsAt: Date | null }).resetsAt);
-    if (o.kind === "main") await updateState(agent.name, { mainSessionId: session.sessionId, mainSessionBackend: eff.backend, lastRunAt: new Date().toISOString() });
+    if (o.kind === "main") await updateState(agent.name, { mainSessionId: session.sessionId, mainSessionBackend: eff.backend, mainSessionModel: eff.model ?? null, lastRunAt: new Date().toISOString() });
     if (stopped || res.stopReason === "cancelled") throw new TurnIncompleteError(stopped ?? "the backend cancelled the turn");
-    return { runId, sessionId: session.sessionId, fresh, reply: reply.trim(), stopReason: res.stopReason, usage: res.usage ?? null, backend: eff.backend, usage2, context };
+    return { runId, sessionId: session.sessionId, fresh, reply: reply.trim(), stopReason: res.stopReason, usage: res.usage ?? null, backend: eff.backend, usage2, context, modelIssue };
   } catch (e: any) {
     await record("error", { message: String(e?.message ?? e) });
+    // A turn that failed or was killed still spent money: count what the backend reported so far.
+    if (!recorded && session?.sessionId && sessionCost != null) {
+      await recordTurnUsage(agent.name, { runId, kind: o.kind, backend: eff.backend, sessionId: session.sessionId, tokens: null, sessionCostUsd: sessionCost, context, incomplete: true }).catch(() => {});
+    }
     throw e;
   } finally {
     if (deadline) clearTimeout(deadline);

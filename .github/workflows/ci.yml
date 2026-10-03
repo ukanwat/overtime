@@ -17,7 +17,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        node: [20, 22, 24]
+        node: [22, 24]
     steps:
       - uses: actions/checkout@v4
 
@@ -43,7 +43,10 @@ jobs:
       - run: npm ci
       - run: npm pack
       - name: Install the tarball globally, without dev dependencies
-        run: npm install -g ./ukanwat-overtime-*.tgz
+        run: |
+          npm install -g ./ukanwat-overtime-*.tgz
+          echo "$(npm prefix -g)/bin" >> "$GITHUB_PATH"
+          ls -la "$(npm prefix -g)/bin"
       - name: Run it
         env:
           OVERTIME_HOME: ${{ runner.temp }}/overtime-home

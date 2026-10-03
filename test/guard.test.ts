@@ -90,3 +90,44 @@ describe("the terminal app shows agent text safely", () => {
     expect("refuse" in openPlan(join(d, "missing"))).toBe(true);
   });
 });
+
+describe("the guard sees through wrappers", () => {
+  it("declines deletes hidden in sh -c, eval, inline scripts, xargs and redirects", () => {
+    for (const c of [
+      "bash -c 'rm -rf ~'",
+      `sh -c "rm -rf $HOME"`,
+      'eval "rm -rf ~"',
+      "xargs -0 rm < list",
+      "find . -print0 | xargs -0 rm -f",
+      `python3 -c "import shutil; shutil.rmtree('${homedir()}/Documents')"`,
+      `node -e "require('fs').rmSync(require('os').homedir(), {recursive: true})"`,
+      ": > ~/.zshrc",
+      "echo x > ~/.ssh/config",
+      "env FOO=1 rm -rf ~/Pictures",
+      "nohup rm -rf ~/Music &",
+      "timeout 10 rm -rf /etc/hosts",
+      "cat $(rm -rf ~/x)",
+      "git -C ~/elsewhere reset --hard",
+      "zsh -c \"cd ~ && rm -rf Documents\"",
+    ]) {
+      expect(sh(c).allowed, c).toBe(false);
+    }
+  });
+
+  it("still allows ordinary work", () => {
+    for (const c of [
+      "npm test 2>&1 | tail -20",
+      "ls -la > listing.txt",
+      "echo done >> log.md",
+      "python3 -c 'print(1+1)'",
+      "node -e \"console.log(require('fs').readdirSync('.'))\"",
+      "bash -c 'rm -rf build && npm run build'",
+      "cmd > /dev/null 2>&1",
+      "git status && git diff",
+      "rm -f ./notes/old.md",
+      `python3 -c "import os; os.remove('${ws}/tmp.txt')"`,
+    ]) {
+      expect(sh(c).allowed, c).toBe(true);
+    }
+  });
+});
