@@ -28,7 +28,7 @@ describe("the permission guard", () => {
   });
 
   it("declines deletes it can't check in advance", () => {
-    for (const c of ['rm -rf "$DIR"', "rm -rf $(cat list)", "ls | xargs rm", "cd $X && rm -rf y"]) expect(sh(c).allowed, c).toBe(false);
+    for (const c of ["rm -rf ~{,}", "rm -rf {~,x}", "rm -rf a{1..3}", 'rm -rf "$DIR"', "rm -rf $(cat list)", "ls | xargs rm", "cd $X && rm -rf y"]) expect(sh(c).allowed, c).toBe(false);
     expect(sh('rm -rf "$HOME/overtime/agents/a/tmp"').allowed).toBe(true);
   });
 
