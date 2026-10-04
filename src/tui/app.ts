@@ -21,6 +21,9 @@ import {
   type Terminal,
   type TuiMouseEvent,
   type TuiMouseEventResult,
+  type AutocompleteItem,
+  type AutocompleteProvider,
+  fuzzyFilter,
 } from "@earendil-works/pi-tui";
 import { ensureDaemon, isDaemonGone, type DaemonClient } from "../daemon/client.js";
 import type { AgentSummary } from "../daemon/control.js";
@@ -110,8 +113,8 @@ interface SettingsRow {
   danger?: boolean;
 }
 
-type McpEntry = { name: string; source: "shared" | "person" | "agent"; enabled: boolean; describe: string };
-type McpStatus = Record<string, { ok: boolean; tools: string[]; error?: string }>;
+type McpEntry = { name: string; source: "shared" | "person" | "agent"; enabled: boolean; describe: string; signedIn?: boolean };
+type McpStatus = Record<string, { ok: boolean; tools: string[]; error?: string; needsSignIn?: boolean }>;
 type SettingsOverlay = { kind: "settings"; data: AgentSettingsView | null; extra: any; mcp?: McpEntry[]; mcpStatus?: McpStatus; idx: number; editing?: Field; error?: string };
 type Overlay =
   | null
@@ -192,10 +195,44 @@ class Composer extends Editor {
   setValue(v: string): void {
     this.setText(v);
   }
-  /** Its text lines at this width, cursor included, without the (empty) borders. */
-  body(width: number): string[] {
+  /** Its text lines at this width, cursor included, without the (empty) borders, and the open menu's lines. */
+  body(width: number): { text: string[]; menu: string[] } {
     const lines = this.render(width);
-    return lines.slice(1, Math.max(2, lines.length - 1));
+    const menu = (this as any).renderedAutocompleteHeight ?? 0;
+    return { text: lines.slice(1, Math.max(2, lines.length - 1 - menu)), menu: menu ? lines.slice(lines.length - menu) : [] };
+  }
+}
+
+export interface SkillInfo {
+  name: string;
+  description: string;
+}
+
+/**
+ * Typing / at the start of a message lists the agent's skills, narrowing as you type (like Claude
+ * Code's / menu). Choosing one puts "/name " in the message, for you to add to; the agent is told to
+ * use that skill.
+ */
+export class SkillCompletion implements AutocompleteProvider {
+  triggerCharacters = ["/"];
+  constructor(private readonly skills: () => SkillInfo[]) {}
+
+  async getSuggestions(lines: string[], cursorLine: number, cursorCol: number) {
+    if (cursorLine !== 0) return null;
+    const before = (lines[0] ?? "").slice(0, cursorCol).trimStart();
+    if (!before.startsWith("/") || before.includes(" ")) return null;
+    const query = before.slice(1);
+    const items: AutocompleteItem[] = fuzzyFilter(this.skills(), query, (s) => s.name).map((s) => ({ value: s.name, label: `/${s.name}`, description: s.description }));
+    return items.length ? { items, prefix: before } : null;
+  }
+
+  applyCompletion(lines: string[], cursorLine: number, cursorCol: number, item: AutocompleteItem, prefix: string) {
+    const line = lines[cursorLine] ?? "";
+    const start = cursorCol - prefix.length;
+    const insert = `/${item.value} `;
+    const next = [...lines];
+    next[cursorLine] = line.slice(0, start) + insert + line.slice(cursorCol);
+    return { lines: next, cursorLine, cursorCol: start + insert.length };
   }
 }
 
@@ -204,6 +241,10 @@ const FIELD_LABEL: Record<Field, string> = { backend: "Backend", model: "Model",
 /** The whole screen: agents on the left like DMs, the selected agent's messages on the right, a composer below. */
 export class App implements Component {
   agents: AgentSummary[] = [];
+  /** The selected agent's skills, for the / menu. */
+  skills: SkillInfo[] = [];
+  private skillsFor = "";
+  private skillsAt = 0;
   /** Index into the agent list; agents.length is the "+ New agent" row. */
   sel = 0;
   messages: Message[] = [];
@@ -242,7 +283,13 @@ export class App implements Component {
   private images = new Map<string, { b64: string; w: number; h: number } | null>();
 
   constructor(public c: DaemonClient, private readonly tui: TuiAltScreen, private readonly term: Terminal, private readonly onQuit: () => void, private readonly opener: (t: string) => string | void = openTarget) {
-    this.input = new Composer(tui as any, { borderColor: (x: string) => x, selectList: {} as any });
+    this.input = new Composer(tui as any, {
+      borderColor: (x: string) => x,
+      selectList: { selectedPrefix: accent, selectedText: (t: string) => bold(t), description: muted, scrollInfo: muted, noMatch: muted },
+    });
+    // Enter is the app's to handle (send), never the editor's own submit.
+    this.input.disableSubmit = true;
+    this.input.setAutocompleteProvider(new SkillCompletion(() => this.skills));
   }
 
   get agent(): AgentSummary | undefined {
@@ -306,6 +353,12 @@ export class App implements Component {
         }
         this.messages = fresh;
         this.hasMore = !!r?.hasMore;
+        // Its skills, for the / menu: when the agent changes, and every half minute (it may add some).
+        if (this.skillsFor !== a.name || Date.now() - this.skillsAt > 30_000) {
+          this.skills = (await this.get<SkillInfo[]>("skills", { name: a.name }).catch(() => null)) ?? [];
+          this.skillsFor = a.name;
+          this.skillsAt = Date.now();
+        }
         this.loadedFor = a.name;
         if (this.overlay?.kind === "settings" && !this.overlay.editing) await this.loadSettings(this.overlay);
       } else {
@@ -407,6 +460,11 @@ export class App implements Component {
     if (matchesKey(data, Key.ctrl("t"))) return this.showBackendPicker(false);
     if (matchesKey(data, Key.ctrl("l"))) return this.nextLink();
     if (matchesKey(data, Key.ctrl("o"))) return this.agent && !this.onNewRow ? this.openLink(this.agent.dir) : undefined;
+    // The / menu is open: its keys (move, choose, close) go to it.
+    if (this.input.isShowingAutocomplete() && [Key.up, Key.down, Key.enter, Key.tab, Key.escape].some((k) => matchesKey(data, k))) {
+      this.input.handleInput(data);
+      return this.tui.requestRender();
+    }
     if (matchesKey(data, Key.tab) || matchesKey(data, Key.ctrl("p"))) return this.showSettings();
     const typing = this.typing();
     // → moves right, into the selected agent's settings (← or Esc comes back), as long as you aren't typing.
@@ -654,20 +712,58 @@ export class App implements Component {
   // ---------- settings ----------
 
   /** What you can do with one MCP server, like Claude Code's /mcp: connect or disconnect it, check it again, see its tools, remove it. */
-  private showMcpMenu(m: McpEntry, st?: { ok: boolean; tools: string[]; error?: string }): void {
+  private showMcpMenu(m: McpEntry, st?: { ok: boolean; tools: string[]; error?: string; needsSignIn?: boolean }): void {
     const a = this.needAgent();
     if (!a) return;
     const items: PickItem[] = [
+      ...(st?.needsSignIn ? [{ label: "Sign in…", note: "in your browser", run: () => this.mcpSignIn(m.name) }] : []),
       m.enabled
         ? { label: `Disconnect from ${a.name}`, note: "from its next turn", run: () => this.setMcpEnabled(m.name, false) }
         : { label: `Connect to ${a.name}`, note: "from its next turn", run: () => this.setMcpEnabled(m.name, true) },
       ...(m.enabled ? [{ label: "Check again", note: "start it and list its tools", run: () => this.recheckMcp() }] : []),
       ...(st?.ok && st.tools.length ? [{ label: `See its ${st.tools.length} tools`, run: () => this.showMcpTools(m.name, st.tools) }] : []),
+      ...(m.signedIn ? [{ label: "Sign out", note: "for every agent with this server", run: () => this.mcpSignOut(m.name) }] : []),
       { label: m.source === "shared" ? "Remove for all agents…" : `Remove from ${a.name}…`, run: () => this.confirmMcpRemove(m) },
     ];
-    const title = `${m.name} · ${!m.enabled ? "off" : st?.ok ? "connected" : st ? "failed" : "checking"}`;
-    if (st && !st.ok && st.error) items.unshift({ label: st.error, info: true });
-    this.show({ kind: "pick", title, items, idx: st && !st.ok && st.error ? 1 : 0, back: true });
+    const title = `${m.name} · ${!m.enabled ? "off" : st?.ok ? "connected" : st?.needsSignIn ? "needs you to sign in" : st ? "failed" : "checking"}`;
+    if (st && !st.ok && st.error && !st.needsSignIn) items.unshift({ label: st.error, info: true });
+    this.show({ kind: "pick", title, items, idx: st && !st.ok && st.error && !st.needsSignIn ? 1 : 0, back: true });
+  }
+
+  /** Sign in to a server in the browser; the panel updates by itself once it's done. */
+  private async mcpSignIn(server: string): Promise<void> {
+    const a = this.needAgent();
+    if (!a) return;
+    const { authorizationUrl } = await this.c.call<{ authorizationUrl: string | null }>("mcpSignIn", { name: a.name, serverName: server }, 60_000);
+    if (!authorizationUrl) {
+      this.say(`Signed in to ${server}.`, "ok");
+      return void (await this.showSettings());
+    }
+    this.show({
+      kind: "pick",
+      title: `Signing in to ${server}`,
+      items: [
+        { label: "Your browser opened the server's sign-in page. Finish there, and this updates by itself.", info: true },
+        { label: "Open the page again", run: () => void this.opener(authorizationUrl) },
+      ],
+      idx: 1,
+      back: true,
+    });
+    try {
+      await this.c.call("mcpSignInWait", { name: a.name, serverName: server }, 11 * 60_000);
+      this.say(`Signed in to ${server}. ${a.name} uses it from its next turn.`, "ok");
+    } catch (e) {
+      this.say(friendly(e), "err");
+    }
+    if (this.overlay?.kind === "pick" && this.overlay.title === `Signing in to ${server}`) await this.showSettings();
+  }
+
+  private async mcpSignOut(server: string): Promise<void> {
+    const a = this.needAgent();
+    if (!a) return;
+    await this.c.call("mcpSignOut", { name: a.name, serverName: server });
+    this.say(`Signed out of ${server}.`, "ok");
+    await this.showSettings();
   }
 
   private showMcpTools(name: string, tools: string[]): void {
@@ -711,10 +807,11 @@ export class App implements Component {
   private async showSettings(): Promise<void> {
     if (!this.needAgent()) return;
     const o: SettingsOverlay = { kind: "settings", data: null, extra: null, idx: 0 };
+    // On the first row you can act on, straight away: keys pressed while it loads are never undone.
+    o.idx = this.settingsRows(o).findIndex((r) => !!(r.field || r.run));
     this.overlay = o;
     this.tui.requestRender();
     await this.loadSettings(o);
-    o.idx = this.settingsRows(o).findIndex((r) => !!(r.field || r.run));
     this.tui.requestRender();
   }
 
@@ -769,7 +866,7 @@ export class App implements Component {
             { label: "MCP servers", heading: true } as SettingsRow,
             ...o.mcp.map((m): SettingsRow => {
               const st = o.mcpStatus?.[m.name];
-              const value = !m.enabled ? "○ off" : !o.mcpStatus ? "… checking" : st?.ok ? "✓ connected" : "✗ failed";
+              const value = !m.enabled ? "○ off" : !o.mcpStatus ? "… checking" : st?.ok ? "✓ connected" : st?.needsSignIn ? "! sign in" : "✗ failed";
               const from = m.source === "shared" ? "all agents" : m.source === "person" ? "set by you" : `added by ${a.name}`;
               const detail = !m.enabled ? from : st?.ok ? `${st.tools.length} tool${st.tools.length === 1 ? "" : "s"} · ${from}` : st?.error ? `${st.error} · ${from}` : from;
               return { label: m.name, value, note: detail, stay: true, run: () => this.showMcpMenu(m, st) };
@@ -1576,9 +1673,11 @@ export class App implements Component {
     const inner = Math.max(4, w - 8);
     // Empty (or a panel is open): the placeholder, with the cursor at its start when typing is possible.
     const empty = !this.input.getText();
-    const body = empty || !active ? [active ? `\x1b[7m \x1b[0m${muted(fit(this.placeholder(), inner - 1))}` : muted(fit(this.placeholder(), inner))] : this.input.body(inner);
+    const typed = empty || !active ? null : this.input.body(inner);
+    const body = typed ? typed.text : [active ? `\x1b[7m \x1b[0m${muted(fit(this.placeholder(), inner - 1))}` : muted(fit(this.placeholder(), inner))];
     const prompt = active ? accent("›") : muted("›");
-    const lines = body.map((l, n) => `${n === 0 ? prompt : " "} ${l}`);
+    // The / menu sits under what you're typing, inside the box.
+    const lines = [...body.map((l, n) => `${n === 0 ? prompt : " "} ${l}`), ...(typed?.menu.length ? ["", ...typed.menu.map((l) => `  ${l}`)] : [])];
     if (!roomy) return lines.map((l) => fit(" " + l, w));
     // Like Grok CLI: a filled block on a tint, no border. Without tints, a quiet rounded border.
     if (hasTints()) return [element("", w), ...lines.map((l) => element(`  ${l}`, w)), element("", w)];

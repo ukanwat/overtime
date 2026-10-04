@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { skillsBlock } from "../skills.js";
+import { listSkills, skillsBlock } from "../skills.js";
 import { existsSync } from "node:fs";
 import { cp, lstat, mkdir, readdir, rm } from "node:fs/promises";
 import { execFile } from "node:child_process";
@@ -646,7 +646,11 @@ export class Runtime extends EventEmitter implements ToolHost {
     const m = await store.addMessage({ from: "you", kind: "message", text, attachments, baseDir: agent.dir });
     this.changed(agentName, "messages");
     // You always talk to the agent itself: its one main session, never a stand-in.
-    await store.pushInbox({ type: "message", text: withFiles(text, attachments), messageId: m.id, attachments });
+    // Starting with /name of one of its skills: the person wants that skill used (as in Claude Code).
+    const first = text.trimStart().split(/\s/, 1)[0] ?? "";
+    const skill = first.startsWith("/") ? listSkills(agent.dir).find((s) => s.name === first.slice(1)) : undefined;
+    const note = skill ? `\n\n(The person started this with /${skill.name}: load your "${skill.name}" skill with the skill tool and follow it for this.)` : "";
+    await store.pushInbox({ type: "message", text: withFiles(text, attachments) + note, messageId: m.id, attachments });
     await this.deliver(agentName, agent.state.status === "new" ? "the person sent you your first message" : "the person sent you a message");
     return m;
   }
@@ -701,23 +705,82 @@ export class Runtime extends EventEmitter implements ToolHost {
   // ---------- MCP servers: the person sees their status and controls them ----------
 
   /** Every MCP server an agent has, where it came from, and whether the person has it on. Secrets hidden. */
-  async mcpList(name: string): Promise<{ name: string; source: "shared" | "person" | "agent"; enabled: boolean; describe: string }[]> {
+  async mcpList(name: string): Promise<{ name: string; source: "shared" | "person" | "agent"; enabled: boolean; describe: string; signedIn?: boolean }[]> {
     const { describeServer } = await import("./mcp-admin.js");
     const { allMcpServers } = await import("../agent/agent.js");
+    const { signedIn } = await import("../runtime/mcp-auth.js");
     const a = await loadAgent(name);
     const off = new Set(a.settings.disableMcp ?? []);
-    return (await allMcpServers(a)).map(({ server, source }) => ({ name: server.name, source, enabled: !off.has(server.name), describe: describeServer(server) }));
+    return Promise.all(
+      (await allMcpServers(a)).map(async ({ server, source }) => ({
+        name: server.name,
+        source,
+        enabled: !off.has(server.name),
+        describe: describeServer(server),
+        ...(server.url ? { signedIn: await signedIn(server.url) } : {}),
+      })),
+    );
   }
 
-  private mcpStatusCache = new Map<string, { at: number; r: { ok: boolean; tools: string[]; error?: string } }>();
+  private async mcpUrl(name: string, serverName: string): Promise<string> {
+    const { allMcpServers } = await import("../agent/agent.js");
+    const entry = (await allMcpServers(await loadAgent(name))).find((x) => x.server.name === serverName);
+    if (!entry) throw new Error(`There's no MCP server called ${serverName}.`);
+    if (!entry.server.url) throw new Error(`${serverName} runs on this machine; there's nothing to sign in to.`);
+    return entry.server.url;
+  }
+
+  private signIns = new Map<string, Promise<void>>();
+
+  /**
+   * Sign in to a server that needs it (the MCP standard OAuth flow): opens the person's browser at its
+   * sign-in page. Returns that page's address (null if no sign-in was needed after all).
+   */
+  async mcpSignIn(name: string, serverName: string): Promise<{ authorizationUrl: string | null }> {
+    const { beginSignIn } = await import("../runtime/mcp-auth.js");
+    const url = await this.mcpUrl(name, serverName);
+    const { authorizationUrl, done } = await beginSignIn(url);
+    const settled = done.then(
+      () => {
+        this.log(`[${name}] signed in to MCP server ${serverName}`);
+        for (const k of this.mcpStatusCache.keys()) if (k.includes(JSON.stringify(url))) this.mcpStatusCache.delete(k);
+        this.changed(name, "state");
+      },
+      (e) => {
+        this.log(`[${name}] sign-in to MCP server ${serverName} failed: ${e?.message ?? e}`);
+        throw e;
+      },
+    );
+    settled.catch(() => {});
+    this.signIns.set(url, settled);
+    return { authorizationUrl };
+  }
+
+  /** Wait for a sign-in started with mcpSignIn to finish (throws if it failed). */
+  async mcpSignInWait(name: string, serverName: string): Promise<void> {
+    await this.signIns.get(await this.mcpUrl(name, serverName));
+  }
+
+  /** Forget the sign-in to a server (for every agent that has it). */
+  async mcpSignOut(name: string, serverName: string): Promise<void> {
+    const { signOut } = await import("../runtime/mcp-auth.js");
+    const url = await this.mcpUrl(name, serverName);
+    await signOut(url);
+    for (const k of this.mcpStatusCache.keys()) if (k.includes(JSON.stringify(url))) this.mcpStatusCache.delete(k);
+    this.log(`[${name}] signed out of MCP server ${serverName}`);
+    this.changed(name, "state");
+  }
+
+  private mcpStatusCache = new Map<string, { at: number; r: { ok: boolean; tools: string[]; error?: string; needsSignIn?: boolean } }>();
 
   /** Whether each of an agent's servers that's on connects, and its tools (checked live, cached a minute). */
-  async mcpStatus(name: string, fresh = false): Promise<Record<string, { ok: boolean; tools: string[]; error?: string }>> {
+  async mcpStatus(name: string, fresh = false): Promise<Record<string, { ok: boolean; tools: string[]; error?: string; needsSignIn?: boolean }>> {
     const { checkServer } = await import("./mcp-admin.js");
     const { allMcpServers } = await import("../agent/agent.js");
     const a = await loadAgent(name);
     const off = new Set(a.settings.disableMcp ?? []);
-    const out: Record<string, { ok: boolean; tools: string[]; error?: string }> = {};
+    const { connectionAuth } = await import("../runtime/mcp-auth.js");
+    const out: Record<string, { ok: boolean; tools: string[]; error?: string; needsSignIn?: boolean }> = {};
     await Promise.all(
       (await allMcpServers(a))
         .filter(({ server }) => !off.has(server.name))
@@ -725,7 +788,9 @@ export class Runtime extends EventEmitter implements ToolHost {
           const key = JSON.stringify(server);
           const hit = this.mcpStatusCache.get(key);
           if (!fresh && hit && Date.now() - hit.at < 60_000) return void (out[server.name] = hit.r);
-          const r = await checkServer(server, 20_000);
+          // Checked the way the agent's connection makes it: with Overtime's sign-in, if there is one.
+          const own = Object.keys(server.headers ?? {}).some((k) => k.toLowerCase() === "authorization");
+          const r = await checkServer(server, 20_000, server.url && !own ? await connectionAuth(server.url) : undefined);
           this.mcpStatusCache.set(key, { at: Date.now(), r });
           out[server.name] = r;
         }),

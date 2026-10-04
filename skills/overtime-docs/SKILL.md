@@ -84,8 +84,15 @@ it under another name. Any change takes effect from your next turn, in the same 
 Codex, agents don't get the person's own CLI settings, instructions or MCP servers: only these (Codex
 agents get their own Codex home, sharing only the sign-in). Gemini and OpenCode have no way to switch
 that off, so agents on those also see whatever the person set up in those CLIs themselves. Overtime's own
-tools come from a server named `overtime`; backends that can't reach URL servers get them through a
-local bridge automatically.
+tools come from a server named `overtime`.
+
+Servers added by URL are reached through Overtime's own connection, whichever CLI you run on (it handles
+both the current and the older HTTP transport). A server that needs a sign-in (most hosted ones, e.g.
+Linear or Notion) is signed in to by the person, once, in the app: the server's menu in your settings has
+"Sign in…", which opens their browser (the standard MCP sign-in). Its tools then work for every agent
+that has the server, and the sign-in renews by itself. If a tool call answers that the server "needs the
+person to sign in", ask them to do that (name the server); don't look for tokens yourself. A token the
+person put in a server's `headers` is used as is instead.
 
 ## Backends
 
@@ -122,6 +129,9 @@ you have by name and description; load one with `skill` when it's relevant (or r
 - Yours: `skills/<name>/SKILL.md` in your folder. When you work out how to do something you'll do again
   (a release, a report, a tricky setup), write it down as a skill so later sessions and helpers reuse it.
   A skill with the same name as a built-in or the person's one replaces it for you.
+
+The person can point you at a skill by starting a message with `/<name>` (the app lists your skills as
+they type `/`). Load that skill and follow it for that message.
 
 ## How sessions work
 

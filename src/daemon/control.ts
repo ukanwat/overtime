@@ -1,5 +1,6 @@
 import { connect, createServer, type Server, type Socket } from "node:net";
 import { describeStep } from "./steps.js";
+import { listSkills } from "../skills.js";
 import { buildId } from "./build.js";
 import { existsSync, unlinkSync } from "node:fs";
 import { paths } from "../paths.js";
@@ -170,7 +171,20 @@ export class ControlServer {
       return { id: m.id };
     },
     mcpList: async ({ name }) => this.rt.mcpList(String(name)),
+    skills: async ({ name }) => {
+      const a = await loadAgent(String(name));
+      return listSkills(a.dir).map((s) => ({ name: s.name, description: s.description }));
+    },
     mcpStatus: async ({ name, fresh }) => this.rt.mcpStatus(String(name), !!fresh),
+    mcpSignIn: async ({ name, serverName }) => this.rt.mcpSignIn(String(name), String(serverName)),
+    mcpSignInWait: async ({ name, serverName }) => {
+      await this.rt.mcpSignInWait(String(name), String(serverName));
+      return { ok: true };
+    },
+    mcpSignOut: async ({ name, serverName }) => {
+      await this.rt.mcpSignOut(String(name), String(serverName));
+      return { ok: true };
+    },
     mcpRemove: async ({ name, serverName }) => {
       await this.rt.mcpRemove(String(name), String(serverName));
       return { ok: true };
