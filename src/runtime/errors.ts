@@ -63,6 +63,24 @@ const CODEX_KINDS: Record<string, Trouble> = {
   responseTooManyFailedAttempts: "transient",
 };
 
+/** Error codes the model providers themselves use, which some backends pass on as they are. */
+const PROVIDER_CODES: Record<string, Trouble> = {
+  // OpenAI
+  insufficient_quota: "credit",
+  rate_limit_exceeded: "transient",
+  invalid_api_key: "signin",
+  server_error: "transient",
+  // Anthropic
+  authentication_error: "signin",
+  rate_limit_error: "transient",
+  overloaded_error: "transient",
+  api_error: "transient",
+  // Google: a used-up quota (it comes back by itself) and a busy service
+  RESOURCE_EXHAUSTED: "limit",
+  UNAVAILABLE: "transient",
+  UNAUTHENTICATED: "signin",
+};
+
 /** Network failures, by the system's error code. */
 const NETWORK_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EAI_AGAIN", "ENOTFOUND", "EPIPE", "ENETUNREACH", "EHOSTUNREACH", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT"]);
 
@@ -93,6 +111,15 @@ function fromStructure(e: any): Trouble | undefined {
       if (s) return s;
       if (name) return CODEX_KINDS[name] ?? null;
     }
+    // Providers' own error codes, as they pass through a backend (OpenAI's error.code and type,
+    // Anthropic's error.type, Google's status), at the top level or under "error".
+    for (const src of [data, (data as any).error]) {
+      if (!src || typeof src !== "object") continue;
+      for (const key of ["code", "type", "status"]) {
+        const v = (src as any)[key];
+        if (typeof v === "string" && PROVIDER_CODES[v] !== undefined) return PROVIDER_CODES[v];
+      }
+    }
     const status = (data as any).status ?? (data as any).statusCode ?? (data as any).httpStatusCode;
     if (typeof status === "number") return byStatus(status);
   }
@@ -109,6 +136,7 @@ function fromWording(message: string): Trouble {
   const has = (...words: string[]) => words.some((w) => m.includes(w));
   if (has("authentication required", "not logged in", "not signed in", "please log in", "please login", "invalid api key", "invalid x-api-key", "unauthorized", "unauthorised", "oauth token has expired", "login required")) return "signin";
   if (has("credit balance is too low", "insufficient credit", "insufficient_quota", "insufficient quota", "insufficient funds", "payment required", "exceeded your current quota")) return "credit";
+  if (has("usage limit", "quota exceeded", "resource_exhausted", "resource exhausted", "hit your limit")) return "limit";
   if (has("overloaded", "rate limit", "rate_limit", "too many requests", "temporarily unavailable", "service unavailable", "bad gateway", "gateway timeout", "gateway time-out", "internal server error", "socket hang up", "fetch failed", "connection reset", "network error")) return "transient";
   return null;
 }

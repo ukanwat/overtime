@@ -347,6 +347,10 @@ describe("common problems", () => {
     expect(classify(new BackendError("x", "codex", -32603, { codexErrorInfo: "serverOverloaded" }))).toBe("transient");
     expect(classify(new BackendError("x", "codex", -32603, { codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 401 } } }))).toBe("signin");
     expect(classify(new BackendError("x", "codex", -32603, { codexErrorInfo: "contextWindowExceeded" }))).toBe(null);
+    // Providers' own codes, passed on by a backend.
+    expect(classify(new BackendError("x", "gemini", -32603, { error: { code: 429, status: "RESOURCE_EXHAUSTED", message: "..." } }))).toBe("limit");
+    expect(classify(new BackendError("x", "custom", -32603, { error: { type: "insufficient_quota" } }))).toBe("credit");
+    expect(classify(new BackendError("x", "custom", -32603, { type: "overloaded_error" }))).toBe("transient");
     // Network drops, by the system's code.
     expect(classify(Object.assign(new Error("read"), { code: "ECONNRESET" }))).toBe("transient");
     // A backend that sends only text: its words, as a last resort.
