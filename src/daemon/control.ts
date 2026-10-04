@@ -16,6 +16,10 @@ export interface AgentSummary {
   ownStatus: string;
   /** Why it's paused, when it is. */
   pauseReason: "budget" | "limit" | null;
+  /** It (or one of its helpers) can't reach its backend: since when, and which. */
+  trouble: { since: string; backend: string } | null;
+  /** When this machine lost its internet connection, or null. */
+  offlineSince: string | null;
   nextWake: string | null;
   pausedUntil: string | null;
   waiting: number;
@@ -261,6 +265,8 @@ export class ControlServer {
       status: a.state.status,
       activity: a.state.activity,
       ownStatus: a.state.activityByAgent ? a.state.activity : "",
+      trouble: await this.rt.trouble(name),
+      offlineSince: this.rt.offlineSince,
       pauseReason: a.state.status === "paused" ? (a.state.pauseReason ?? null) : null,
       nextWake: a.state.nextWake,
       pausedUntil: a.state.pausedUntil ?? null,
