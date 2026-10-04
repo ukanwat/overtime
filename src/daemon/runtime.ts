@@ -779,7 +779,6 @@ export class Runtime extends EventEmitter implements ToolHost {
     const { allMcpServers } = await import("../agent/agent.js");
     const a = await loadAgent(name);
     const off = new Set(a.settings.disableMcp ?? []);
-    const { connectionAuth } = await import("../runtime/mcp-auth.js");
     const out: Record<string, { ok: boolean; tools: string[]; error?: string; needsSignIn?: boolean }> = {};
     await Promise.all(
       (await allMcpServers(a))
@@ -788,9 +787,8 @@ export class Runtime extends EventEmitter implements ToolHost {
           const key = JSON.stringify(server);
           const hit = this.mcpStatusCache.get(key);
           if (!fresh && hit && Date.now() - hit.at < 60_000) return void (out[server.name] = hit.r);
-          // Checked the way the agent's connection makes it: with Overtime's sign-in, if there is one.
-          const own = Object.keys(server.headers ?? {}).some((k) => k.toLowerCase() === "authorization");
-          const r = await checkServer(server, 20_000, server.url && !own ? await connectionAuth(server.url) : undefined);
+          // Checked the way the agent's connection makes it (protocol, transport, Overtime's sign-in).
+          const r = await checkServer(server, 20_000);
           this.mcpStatusCache.set(key, { at: Date.now(), r });
           out[server.name] = r;
         }),
