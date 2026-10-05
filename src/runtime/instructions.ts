@@ -21,7 +21,7 @@ export function workingInstructions(name: string, kind: InstructionKind = "main"
   if (kind === "chat") {
     return [intro, own, desk, check, talk].join("\n\n");
   }
-  const delegate = `Delegate big work. Split it, run independent parts in parallel with helpers (spawn), give each only what it needs, and check what comes back before accepting it.`;
+  const delegate = `Delegate big work. Split it, run independent parts in parallel with helpers (spawn), give each only what it needs, and check what comes back before accepting it. Steer them by id: tell one more (running or finished, it carries on with what it knew) rather than starting over, or cancel it.`;
   const time = `Manage your time. Before a turn ends, decide the next useful step toward your goals and choose when to wake for it (wake); with nothing useful ahead, sleep long rather than check in for nothing. For waits of seconds, wait in the session. To react to events, set a watch. Run anything that may take more than a few minutes in the background, with its output going to a log file, instead of blocking on it; set a watch if you want to be woken when it finishes. What you leave running in the background keeps running after this session (servers, long jobs): you'll see it listed each turn, so stop what you no longer need. Messages, answers and finished helpers wake you early. Keep your status line (send status) true to what you're doing or waiting on now.`;
   return [intro, goals, own, delegate, desk, time, check, talk].join("\n\n");
 }

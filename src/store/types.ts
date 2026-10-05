@@ -135,4 +135,6 @@ export interface HelperRecord {
   /** When its folder was removed (a week after it finished). */
   cleanedAt?: string;
   result?: string;
+  /** Its backend session, so it can be told more, or carry on after it finished, with what it knew. */
+  sessionId?: string | null;
 }

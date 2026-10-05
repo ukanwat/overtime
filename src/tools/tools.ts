@@ -31,7 +31,7 @@ function safe<A>(fn: (a: A) => Promise<Result>): (a: A) => Promise<Result> {
 const when = (d: Date) => `${d.toISOString()} (${d.toString()})`;
 
 /**
- * Overtime's tools: deliberately few. Main sessions get wake, cancel, ask, send, spawn.
+ * Overtime's tools: deliberately few. Main sessions get wake, cancel, ask, send, spawn, tell.
  * Chat sessions get ask and send. Helpers get done; they hand results back and don't start their own.
  */
 export function registerTools(mcp: McpServer, ctx: ToolContext, host: ToolHost): void {
@@ -214,6 +214,24 @@ Messages, answers and finished helpers always wake you early.`,
         return ok(`Helper ${h.id} started in ${h.workdir}. Its result will come to you.${h.note ? `\n\nNote: ${h.note}` : ""}`);
       }),
     );
+
+    reg(
+      "tell",
+      {
+        description:
+          "Tell one of your helpers something, by its id. A running helper stops what it's doing, reads it, and carries on in the same session: a correction, more detail, a change of plan. A helper that finished, failed, was cancelled or was cut off carries on from where it was, in the same session with what it knew and its folder: a follow-up, a fix to its work, finishing what was left. Its result comes to you again. Prefer this to starting a new helper for the same work.",
+        inputSchema: {
+          helper: z.string().describe("The helper's id."),
+          text: z.string().describe("What to tell it."),
+        },
+      },
+      safe(async ({ helper, text }) => {
+        const r = await host.tellHelper(ctx.agent, helper, text);
+        host.changed(ctx.agent, "helpers");
+        return ok(r);
+      }),
+    );
+
   }
 
   // Every kind of session can load skills: know-how written down by Overtime, the person, or the agent.

@@ -5,7 +5,7 @@
 import * as acp from "@agentclientprotocol/sdk";
 import { Readable, Writable } from "node:stream";
 import { randomUUID } from "node:crypto";
-import { writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
+import { writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -69,7 +69,15 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
   const names = await t.list();
   const folder = /# Your folder\n\n(.+)/.exec(text)?.[1];
   try {
-    if (/You are a helper/.test(text) || /a helper working for/.test(text)) {
+    // A helper's session: its first prompt says so; later prompts in the same session (notes) don't.
+    const helperMark = join(s.cwd, ".fake-helper");
+    if (/You are a helper/.test(text) || /a helper working for/.test(text)) writeFileSync(helperMark, "1");
+    if (/A note from /.test(text) && existsSync(helperMark)) {
+      const note = /who started you:\n\n([\s\S]*?)\n\n/.exec(text)?.[1] ?? "";
+      writeFileSync(join(s.cwd, "notes.txt"), `${existsSync(join(s.cwd, "notes.txt")) ? readFileSync(join(s.cwd, "notes.txt"), "utf8") : ""}${note}\n`);
+      await t.call("done", { result: `handled note: ${note}${/This is a new session/.test(text) ? " (new session)" : ""}` });
+      await say("note handled");
+    } else if (existsSync(helperMark)) {
       // FLAKY: the provider fails once with a 502, then works (the retry continues from the folder).
       if (/FLAKY/.test(text)) {
         const mark = join(s.cwd, ".flaky-once");

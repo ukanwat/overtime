@@ -71,6 +71,34 @@ describe("stopping an agent", () => {
 });
 
 describe("helpers", () => {
+  it("can be given more while running: it takes it in at once and carries on in the same session", async () => {
+    await employ("teller");
+    await rt.send("teller", "PASS SPAWN_SLOW");
+    const h = await until(async () => (await rt.store("teller").helpers()).find((x) => x.status === "running" && x.sessionId), 30_000, "helper running");
+    const started = Date.now();
+    expect(await rt.tellHelper("teller", h.id, "use blue")).toMatch(/reads this now/);
+    const done = await until(async () => (await rt.store("teller").helpers()).find((x) => x.id === h.id && x.status === "done"), 30_000, "helper done");
+    expect(Date.now() - started).toBeLessThan(30_000); // it didn't sit out its slow work first
+    expect(done.result).toBe("handled note: use blue"); // same session: no "(new session)"
+    expect(done.sessionId).toBe(h.sessionId);
+    expect(readFileSync(join(done.workdir, "notes.txt"), "utf8")).toBe("use blue\n");
+
+    // Finished: given more, it carries on from where it was, same session and folder, and reports again.
+    expect(await rt.tellHelper("teller", h.id, "one more thing")).toMatch(/carries on from where it was/);
+    const again = await until(async () => (await rt.store("teller").helpers()).find((x) => x.id === h.id && x.status === "done" && x.result?.includes("one more thing")), 30_000, "carried on");
+    expect(again.sessionId).toBe(h.sessionId);
+    expect(readFileSync(join(again.workdir, "notes.txt"), "utf8")).toBe("use blue\none more thing\n");
+    await until(async () => (await rt.store("teller").inbox()).some((i) => i.type === "helper" && i.text.includes("one more thing")) || readFileSync(join(meta("teller"), "inbox-delivered.jsonl"), "utf8").includes("one more thing"), 30_000, "result reached the agent");
+  });
+
+  it("won't carry on a helper whose folder is gone, or one that doesn't exist", async () => {
+    await expect(rt.tellHelper("teller", "helper_nope", "x")).rejects.toThrow(/no helper/);
+    const h = (await rt.store("teller").helpers())[0];
+    const { rmSync } = await import("node:fs");
+    rmSync(h.workdir, { recursive: true, force: true });
+    await expect(rt.tellHelper("teller", h.id, "x")).rejects.toThrow(/folder was removed/);
+  });
+
   it("can be cancelled, and the agent hears what they got done", async () => {
     await employ("boss");
     await rt.send("boss", "PASS SPAWN_SLOW");

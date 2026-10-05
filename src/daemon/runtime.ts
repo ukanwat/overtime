@@ -1,9 +1,10 @@
 import { EventEmitter } from "node:events";
 import { listSkills, skillsBlock } from "../skills.js";
 import { existsSync } from "node:fs";
-import { cp, lstat, mkdir, readdir, rm } from "node:fs/promises";
+import { cp, lstat, mkdir, readdir, readFile, rm } from "node:fs/promises";
+import { parseFrontMatter } from "../agent/frontmatter.js";
 import { execFile } from "node:child_process";
-import { join, sep } from "node:path";
+import { isAbsolute, join, sep } from "node:path";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import { adoptSettingsEdit, createAgent, effectiveSettings, hasIdentity, listAgents, loadAgent, updateState, type Agent, type AgentState } from "../agent/agent.js";
@@ -80,6 +81,12 @@ export class Runtime extends EventEmitter implements ToolHost {
   /** Agents the person asked to run (a message, wake) while a usage limit was recorded: tried anyway. */
   private tryDespiteLimit = new Set<string>();
   private helperRuns = new Map<string, Promise<void>>();
+  /** Notes for running helpers, read at their next turn (by "agent/id"). */
+  private helperNotes = new Map<string, string[]>();
+  /** Each running helper's current turn, stopped when a note arrives. */
+  private helperTurns = new Map<string, AbortController>();
+  /** Helpers past the point where a note reaches the running session; a note then carries them on afterwards. */
+  private helperClosing = new Set<string>();
   /** Cancels the running main turn of an agent, to answer the person (see deliver). */
   private mainAborts = new Map<string, AbortController>();
   /** Agents whose running main turn was interrupted by the person: not a failure, it carries on next turn. */
@@ -1028,35 +1035,106 @@ export class Runtime extends EventEmitter implements ToolHost {
     return true;
   }
 
-  private async runHelper(agentName: string, rec: HelperRecord, instructions: string, workspace: string, note: string, cancel: AbortSignal): Promise<void> {
+  /**
+   * Send one of the agent's helpers a note. A running helper pauses, reads it, and carries on in the
+   * same session. One that finished, failed, was cancelled or was cut off carries on from where it was:
+   * same session (everything it knew), same folder, the note as its next instruction.
+   */
+  async tellHelper(agentName: string, id: string, text: string): Promise<string> {
+    const key = `${agentName}/${id}`;
     const store = this.store(agentName);
+    const rec = (await store.helpers()).find((h) => h.id === id);
+    if (!rec) throw new Error(`There's no helper ${id}.`);
+    if (!text.trim()) throw new Error("Write what to tell it.");
+    if (this.helperRuns.has(key) && !this.helperClosing.has(key)) {
+      const notes = this.helperNotes.get(key) ?? [];
+      notes.push(text);
+      this.helperNotes.set(key, notes);
+      // Its current turn stops at once; the next one starts with the note, in the same session.
+      this.helperTurns.get(key)?.abort();
+      return `Told ${id}. It reads this now and carries on.`;
+    }
+    // Finishing just now: wait for it, then carry on from there.
+    await this.helperRuns.get(key)?.catch(() => {});
+    const now = (await store.helpers()).find((h) => h.id === id)!;
+    if (now.cleanedAt || !existsSync(now.workdir)) throw new Error(`${id}'s folder was removed (a week after it finished), so it can't carry on. Start a new helper.`);
+    if (this.stopping) throw new Error("Overtime is shutting down; tell it next turn.");
+    const agent = await loadAgent(agentName);
+    const eff = await effectiveSettings(agent);
+    const b = await this.blocked(agentName, now.backend);
+    if (b) throw new Error(`Can't continue ${id}: ${this.blockedLine(b)}.`);
+    await withLock(`spawn:${agentName}`, async () => {
+      const running = (await store.helpers()).filter((h) => h.status === "running").length;
+      if (running >= MAX_HELPERS) throw new Error(`${MAX_HELPERS} helpers are already running. Wait for some to finish.`);
+      now.status = "running";
+      delete now.finishedAt;
+      delete now.result;
+      await store.saveHelper(now);
+    });
+    const ctl = new AbortController();
+    this.helperAborts.set(key, ctl);
+    // Its role, as it was given (the file may have changed since: it's read again).
+    const instructions = now.role ? await readFile(isAbsolute(now.role) ? now.role : join(agent.dir, now.role), "utf8").then((t: string) => parseFrontMatter(t).body).catch(() => "") : "";
+    const run = this.runHelper(agentName, now, instructions, eff.workspace, "", ctl.signal, text)
+      .catch((e) => this.log(`[${agentName}] helper ${now.id}: ${e?.stack ?? e}`))
+      .finally(() => {
+        this.helperRuns.delete(key);
+        this.helperAborts.delete(key);
+      });
+    this.helperRuns.set(key, run);
+    this.changed(agentName, "helpers");
+    return `${id} carries on from where it was, with this as its next instruction. Its result comes to you as before.`;
+  }
+
+  private async runHelper(agentName: string, rec: HelperRecord, instructions: string, workspace: string, note: string, cancel: AbortSignal, continueWith?: string): Promise<void> {
+    const store = this.store(agentName);
+    const key = `${agentName}/${rec.id}`;
     const { ctx, mcp } = this.tools.open({ agent: agentName, kind: "helper", helperId: rec.id, depth: rec.depth });
     const preamble = helperPreamble(agentName, rec, instructions, workspace, note);
+    const task = `Your task:\n\n${rec.task}`;
+    /** A turn's text: what it's told now, and, in a session started afresh, its task too. */
+    const noteText = (notes: string[], resumed: boolean) => (fresh: boolean) =>
+      `${resumed ? `${agentName} wants you to carry on (you had stopped). ` : ""}A note from ${agentName}, who started you:\n\n${notes.join("\n\n")}\n\n` +
+      (fresh ? `(This is a new session. ${task}\n\nWhat you already did is in your folder: check it, and carry on from there.)` : "Take it into account and carry on from where you were.") +
+      (resumed ? " When you're finished, call done again with the whole result." : "");
+    let next: (fresh: boolean) => string = continueWith ? noteText([continueWith], true) : () => task;
+    let lastReply = "";
+    this.helperClosing.delete(key);
     try {
       // A passing provider problem (a 502, overloaded) doesn't fail the helper: it waits and tries again,
-      // up to 3 attempts, carrying on from what's already in its folder. A usage limit doesn't fail it
-      // either: it waits for the limit to lift (up to a day), then carries on the same way.
+      // up to 3 attempts, carrying on from where it was. A usage limit doesn't fail it either: it waits
+      // for the limit to lift (up to a day), then carries on the same way.
       let attempt = 0;
       const limitedSince = { t: 0 };
-      const run = async (): Promise<TurnResult> => {
+      const cutOff = "(An earlier attempt was cut off by a problem at the provider. Check what's already in your folder, and carry on from there.)";
+      const run = async (text: (fresh: boolean) => string, signal: AbortSignal): Promise<TurnResult> => {
         try {
           return await runTurn({
-        agent: agentName,
-        kind: "helper",
-        reason: `${agentName} gave you a task`,
-        text: `Your task:\n\n${rec.task}${attempt ? "\n\n(An earlier attempt was cut off by a problem at the provider. What it already did is in your folder: check it, and carry on from there.)" : ""}`,
-        preamble,
-        cwd: rec.workdir,
-        backend: rec.backend,
-        model: rec.model ?? undefined,
-        extraMcp: [mcp],
-        timeoutMs: (await loadSettings()).turnTimeoutMinutes * 60_000,
-        signal: this.signalFor(agentName, cancel),
-        onUpdate: (u) => this.emit("update", { agent: agentName, kind: "helper", helperId: rec.id, update: u }),
-        log: this.log,
+            agent: agentName,
+            kind: "helper",
+            reason: `${agentName} gave you a task`,
+            text: (fresh) => (attempt ? `${text(fresh)}\n\n${cutOff}` : text(fresh)),
+            preamble,
+            cwd: rec.workdir,
+            backend: rec.backend,
+            model: rec.model ?? undefined,
+            extraMcp: [mcp],
+            // The same session throughout: notes and carrying on keep what it knew.
+            resumeSessionId: rec.sessionId ?? null,
+            onSession: (id) => {
+              if (rec.sessionId !== id) {
+                rec.sessionId = id;
+                void store.saveHelper(rec).catch(() => {});
+              }
+            },
+            timeoutMs: (await loadSettings()).turnTimeoutMinutes * 60_000,
+            signal: this.signalFor(agentName, signal),
+            onUpdate: (u) => this.emit("update", { agent: agentName, kind: "helper", helperId: rec.id, update: u }),
+            log: this.log,
           });
         } catch (e: any) {
           const msg = String(e?.message ?? e);
+          if (signal.aborted && !cancel.aborted) throw e; // a note arrived: handled by the caller
           if (e instanceof UsageLimitError && !cancel.aborted && !this.stopping) {
             limitedSince.t ||= Date.now();
             if (Date.now() - limitedSince.t < 24 * 3600_000) {
@@ -1064,8 +1142,8 @@ export class Runtime extends EventEmitter implements ToolHost {
               this.log(`[${agentName}] helper ${rec.id}: ${e.backend} usage limit, waiting until ${until.toISOString()}`);
               await sleep(Math.max(60_000, until.getTime() - Date.now()), cancel);
               if (cancel.aborted || this.stopping) throw e;
-              attempt = Math.max(attempt, 1); // so it's told to carry on from its folder
-              return run();
+              attempt = Math.max(attempt, 1);
+              return run(text, signal);
             }
           }
           if (cancel.aborted || this.stopping || !isTransient(e)) throw e;
@@ -1083,15 +1161,39 @@ export class Runtime extends EventEmitter implements ToolHost {
             await sleep(HELPER_RETRY_MS[attempt++], cancel);
           }
           if (cancel.aborted || this.stopping) throw e;
-          return run();
+          return run(text, signal);
         }
       };
-      const r = await run().finally(() => {
+      try {
+        for (;;) {
+          const turn = new AbortController();
+          this.helperTurns.set(key, turn);
+          try {
+            const r = await run(next, anySignal([cancel, turn.signal]));
+            lastReply = r.reply || lastReply;
+          } catch (e) {
+            // Stopped to read a note: carry on below. Anything else ends the helper.
+            if (!(turn.signal.aborted && !cancel.aborted && !this.stopping && this.helperNotes.get(key)?.length)) throw e;
+          } finally {
+            if (this.helperTurns.get(key) === turn) this.helperTurns.delete(key);
+          }
+          attempt = 0;
+          const notes = this.helperNotes.get(key);
+          this.helperNotes.delete(key);
+          if (!notes?.length) {
+            // From here a note can't reach this run: it carries the helper on afterwards instead.
+            this.helperClosing.add(key);
+            break;
+          }
+          next = noteText(notes, false);
+        }
+      } finally {
         if (this.helperTrouble.delete(rec.id)) this.changed(agentName, "helpers");
-      });
+      }
       rec.status = "done";
-      rec.result = ctx.result ?? (r.reply || "(It finished without describing its result. Check its folder.)");
+      rec.result = ctx.result ?? (lastReply || "(It finished without describing its result. Check its folder.)");
     } catch (e: any) {
+      this.helperClosing.add(key);
       if (cancel.aborted) {
         rec.status = "cancelled";
         rec.result = "Cancelled, as you asked.";
@@ -1107,11 +1209,13 @@ export class Runtime extends EventEmitter implements ToolHost {
       }
       if (ctx.result) rec.result += `\n\nBefore that, it reported:\n${ctx.result}`;
     } finally {
+      this.helperNotes.delete(key);
       this.tools.close(ctx.token);
       this.emit("turnEnd", { agent: agentName, kind: "helper", helperId: rec.id });
     }
     rec.finishedAt = new Date().toISOString();
     await store.saveHelper(rec);
+    this.helperClosing.delete(key);
     await store.pushInbox({ type: "helper", text: helperInboxText(rec), data: { helperId: rec.id } });
     this.changed(agentName, "helpers");
     if (!this.stopping && rec.status !== "stopped") this.wakeMain(agentName, `helper ${rec.id} ${rec.status === "done" ? "finished" : rec.status}`);
@@ -1435,6 +1539,8 @@ Work in: ${rec.workdir}${rec.branch ? ` (a git worktree of ${workspace}, on bran
 The main workspace is ${workspace}; don't change it directly.
 
 When you're finished, call done with what you did, where the output is, what you checked, and anything left open. Then end your turn.
+
+${agentName} may send you a note while you work, or after you're done (to correct something or ask for more): it arrives as your next message. Take it into account, carry on from where you were, and call done again with the whole result.
 ${instructions ? `\n# Your role\n\n${instructions}\n` : ""}${skillsBlock(paths.agent(agentName)) ? `\n${skillsBlock(paths.agent(agentName))}\n` : ""}`;
 }
 

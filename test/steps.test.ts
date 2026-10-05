@@ -25,5 +25,6 @@ describe("what an agent is doing, in a few calm words", () => {
     expect(describeStep({ title: "mcp.overtime.send", kind: "execute", rawInput: { server: "overtime", tool: "send" }, _meta: { is_mcp_tool_call: true } })).toBeNull();
     expect(ownToolStep("send")).toBe("Writing to you");
     expect(ownToolStep("spawn")).toBe("Starting a helper");
+    expect(ownToolStep("tell")).toBe("Writing to a helper");
   });
 });
