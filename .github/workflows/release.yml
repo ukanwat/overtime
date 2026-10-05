@@ -37,6 +37,13 @@ jobs:
       - run: npm run typecheck
       - run: npm test
 
+      # The installed `overtime` command must be executable whatever tool installs it: check the
+      # package as it will be published, not the working copy.
+      - name: Check the packed command is executable
+        run: |
+          npm pack --pack-destination "$RUNNER_TEMP" >/dev/null
+          tar -tvzf "$RUNNER_TEMP"/*.tgz package/dist/bin.js | grep -q '^-rwx' || { echo "dist/bin.js isn't executable in the package"; exit 1; }
+
       - run: npm publish --provenance --access public
 
       - name: GitHub release

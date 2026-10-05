@@ -43,7 +43,7 @@
     "dev": "tsx src/cli.ts",
     "test": "vitest run",
     "typecheck": "tsc -p . --noEmit",
-    "prepack": "rm -rf dist && tsc -p ."
+    "prepack": "rm -rf dist && npm run build"
   },
   "publishConfig": {
     "access": "public"
