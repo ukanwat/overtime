@@ -86,6 +86,10 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
           throw new acp.RequestError(-32603, "Internal error", { message: "stream error", codexErrorInfo: { responseStreamConnectionFailed: { httpStatusCode: 502 } } }); // Codex's shape
         }
       }
+      if (/UPDATE/.test(text)) await t.call("update", { text: "halfway there", urgent: /UPDATE_URGENT/.test(text) });
+      // Started with the agent's context: keep what it was given, so tests can check it.
+      const given = /has been doing lately \(for context: you know what it knows\)\n\n([\s\S]*)$/.exec(text)?.[1];
+      if (given) writeFileSync(join(s.cwd, ".context-given"), given);
       if (/SLOW/.test(text)) {
         await t.call("done", { result: "partial: got halfway" });
         if (await slow()) return { stopReason: "cancelled" };

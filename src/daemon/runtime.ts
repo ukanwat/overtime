@@ -23,7 +23,7 @@ import { blockedUntil, limitInfo, LIMIT_RECHECK_MS, usageToday, type TurnUsage }
 import { workingInstructions } from "../runtime/instructions.js";
 import { MonitorRunner, reapStaleMonitors } from "./monitors.js";
 import { isTransient, needsPerson } from "../runtime/errors.js";
-import { ownToolStep } from "./steps.js";
+import { describeStep, ownToolStep } from "./steps.js";
 import { probeOnline } from "../runtime/network.js";
 
 const exec = promisify(execFile);
@@ -87,6 +87,9 @@ export class Runtime extends EventEmitter implements ToolHost {
   private helperTurns = new Map<string, AbortController>();
   /** Helpers past the point where a note reaches the running session; a note then carries them on afterwards. */
   private helperClosing = new Set<string>();
+  /** Running helpers' records (the one their run saves), and the step each is on. */
+  private liveHelpers = new Map<string, HelperRecord>();
+  private helperSteps = new Map<string, string>();
   /** Cancels the running main turn of an agent, to answer the person (see deliver). */
   private mainAborts = new Map<string, AbortController>();
   /** Agents whose running main turn was interrupted by the person: not a failure, it carries on next turn. */
@@ -211,6 +214,7 @@ export class Runtime extends EventEmitter implements ToolHost {
   }
 
   toolStarted(ctx: ToolContext, tool: string): void {
+    if (ctx.kind === "helper" && ctx.helperId) this.helperSteps.set(`${ctx.agent}/${ctx.helperId}`, ownToolStep(tool));
     this.emit("step", { agent: ctx.agent, kind: ctx.kind, helperId: ctx.helperId, step: ownToolStep(tool) });
   }
 
@@ -913,7 +917,7 @@ export class Runtime extends EventEmitter implements ToolHost {
 
   // ---------- helpers ----------
 
-  async spawnHelper(ctx: ToolContext, req: { role?: string; instructions?: string; task: string; backend?: string; model?: string }): Promise<{ id: string; workdir: string; note?: string }> {
+  async spawnHelper(ctx: ToolContext, req: { role?: string; instructions?: string; task: string; backend?: string; model?: string; withContext?: boolean }): Promise<{ id: string; workdir: string; note?: string }> {
     if (ctx.kind !== "main") throw new Error("Only your main session can start helpers.");
     if (this.stopping) throw new Error("Overtime is shutting down; start the helper next turn.");
     const store = this.store(ctx.agent);
@@ -949,6 +953,9 @@ export class Runtime extends EventEmitter implements ToolHost {
     }
     const b = await this.blocked(ctx.agent, req.backend);
     if (b) throw new Error(`Can't start a helper: ${this.blockedLine(b)}.`);
+    // With the agent's context: what it has been told, done and said lately, from Overtime's own records
+    // of its sessions, so it works the same on every backend (and the helper keeps its own folder).
+    const contextText = req.withContext ? (await agentContext(ctx.agent)) || recentConversation(await store.messages()) || undefined : undefined;
     // Checked and recorded under one lock, so two spawns at once can't both slip under the cap.
     const rec = await withLock(`spawn:${ctx.agent}`, async () => {
       const running = (await store.helpers()).filter((h) => h.status === "running").length;
@@ -965,6 +972,7 @@ export class Runtime extends EventEmitter implements ToolHost {
         depth: 1,
         status: "running",
         startedAt: new Date().toISOString(),
+        ...(contextText ? { contextText } : {}),
       };
       await store.saveHelper(r);
       return r;
@@ -1035,6 +1043,52 @@ export class Runtime extends EventEmitter implements ToolHost {
     return true;
   }
 
+  /** A helper reports how it's going: kept on its record, and in the agent's inbox (urgent: it wakes the agent). */
+  async helperUpdate(ctx: ToolContext, text: string, urgent: boolean): Promise<void> {
+    if (ctx.kind !== "helper" || !ctx.helperId) throw new Error("Only helpers send updates; use send to write to the person.");
+    const key = `${ctx.agent}/${ctx.helperId}`;
+    const store = this.store(ctx.agent);
+    const rec = this.liveHelpers.get(key) ?? (await store.helpers()).find((h) => h.id === ctx.helperId);
+    if (!rec) throw new Error("This helper isn't known any more.");
+    rec.updates = [...(rec.updates ?? []), { t: new Date().toISOString(), text }].slice(-20);
+    await store.saveHelper(rec);
+    await store.pushInbox({ type: "helper-update", text: `${rec.id} (${rec.task.split("\n")[0].slice(0, 80)}): ${text}`, data: { helperId: rec.id } });
+    this.changed(ctx.agent, "helpers");
+    if (urgent) this.wakeMain(ctx.agent, `helper ${rec.id} sent an urgent update`);
+  }
+
+  /** The agent's helpers right now: running ones (what each is doing and said last), then recent ones. */
+  async helpersReport(agentName: string): Promise<string> {
+    const all = await this.store(agentName).helpers();
+    const ago = (iso?: string) => {
+      if (!iso) return "";
+      const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+      return m < 1 ? "just now" : m < 60 ? `${m}m` : `${Math.round(m / 60)}h`;
+    };
+    const running = all.filter((h) => h.status === "running");
+    const recent = all
+      .filter((h) => h.status !== "running" && h.finishedAt && Date.now() - new Date(h.finishedAt).getTime() < 3 * 86400_000)
+      .sort((a, b) => b.finishedAt!.localeCompare(a.finishedAt!))
+      .slice(0, 10);
+    if (!running.length && !recent.length) return "No helpers running, and none finished in the last 3 days.";
+    const line = (h: HelperRecord) => {
+      const live = this.liveHelpers.get(`${agentName}/${h.id}`) ?? h;
+      const out = [`${h.id} · ${h.status}${h.status === "running" ? ` for ${ago(h.startedAt)}` : ` ${ago(h.finishedAt)} ago`} · ${h.task.split("\n")[0].slice(0, 100)}`];
+      const step = this.helperSteps.get(`${agentName}/${h.id}`);
+      if (h.status === "running" && step) out.push(`  now: ${step}`);
+      const last = live.updates?.at(-1);
+      if (last) out.push(`  last update (${ago(last.t)} ago): ${last.text.slice(0, 300)}`);
+      if (h.status !== "running" && h.result) out.push(`  result: ${h.result.split("\n")[0].slice(0, 200)}`);
+      out.push(`  folder: ${h.workdir}${h.cleanedAt ? " (removed)" : ""}`);
+      return out.join("\n");
+    };
+    return [
+      ...(running.length ? [`Running (${running.length}):`, ...running.map(line)] : []),
+      ...(recent.length ? [`${running.length ? "\n" : ""}Finished recently:`, ...recent.map(line)] : []),
+      `\nEach helper session's full log is in ${join(paths.meta(agentName), "runs")} (helper_*.jsonl).`,
+    ].join("\n");
+  }
+
   /**
    * Send one of the agent's helpers a note. A running helper pauses, reads it, and carries on in the
    * same session. One that finished, failed, was cancelled or was cut off carries on from where it was:
@@ -1092,12 +1146,15 @@ export class Runtime extends EventEmitter implements ToolHost {
     const { ctx, mcp } = this.tools.open({ agent: agentName, kind: "helper", helperId: rec.id, depth: rec.depth });
     const preamble = helperPreamble(agentName, rec, instructions, workspace, note);
     const task = `Your task:\n\n${rec.task}`;
+    /** The first turn: its task, and, when started with the agent's context, what the agent has been doing. */
+    const firstText = () => `${task}${rec.contextText ? `\n\n# What ${agentName} has been doing lately (for context: you know what it knows)\n\n${rec.contextText}` : ""}`;
     /** A turn's text: what it's told now, and, in a session started afresh, its task too. */
     const noteText = (notes: string[], resumed: boolean) => (fresh: boolean) =>
       `${resumed ? `${agentName} wants you to carry on (you had stopped). ` : ""}A note from ${agentName}, who started you:\n\n${notes.join("\n\n")}\n\n` +
       (fresh ? `(This is a new session. ${task}\n\nWhat you already did is in your folder: check it, and carry on from there.)` : "Take it into account and carry on from where you were.") +
       (resumed ? " When you're finished, call done again with the whole result." : "");
-    let next: (fresh: boolean) => string = continueWith ? noteText([continueWith], true) : () => task;
+    let next: (fresh: boolean) => string = continueWith ? noteText([continueWith], true) : firstText;
+    this.liveHelpers.set(key, rec);
     let lastReply = "";
     this.helperClosing.delete(key);
     try {
@@ -1129,7 +1186,11 @@ export class Runtime extends EventEmitter implements ToolHost {
             },
             timeoutMs: (await loadSettings()).turnTimeoutMinutes * 60_000,
             signal: this.signalFor(agentName, signal),
-            onUpdate: (u) => this.emit("update", { agent: agentName, kind: "helper", helperId: rec.id, update: u }),
+            onUpdate: (u) => {
+              const step = describeStep(u);
+              if (step) this.helperSteps.set(key, step);
+              this.emit("update", { agent: agentName, kind: "helper", helperId: rec.id, update: u });
+            },
             log: this.log,
           });
         } catch (e: any) {
@@ -1210,6 +1271,8 @@ export class Runtime extends EventEmitter implements ToolHost {
       if (ctx.result) rec.result += `\n\nBefore that, it reported:\n${ctx.result}`;
     } finally {
       this.helperNotes.delete(key);
+      this.helperSteps.delete(key);
+      this.liveHelpers.delete(key);
       this.tools.close(ctx.token);
       this.emit("turnEnd", { agent: agentName, kind: "helper", helperId: rec.id });
     }
@@ -1446,6 +1509,8 @@ function inboxBlock(items: InboxItem[]): string {
                 ? "Monitor fired"
                 : i.type === "helper"
                   ? "Helper result"
+                  : i.type === "helper-update"
+                    ? "Update from a helper (it's still working)"
                   : i.type === "loop"
                     ? "Recurring task"
                     : "From Overtime";
@@ -1459,6 +1524,60 @@ function inboxBlock(items: InboxItem[]): string {
  * The recent conversation with the person, for a session that starts fresh (context full, an update, a
  * new model): the last 40 messages, newest last, at most about 16,000 characters.
  */
+/**
+ * What an agent has been doing lately, from Overtime's records of its main sessions (runs/*.jsonl):
+ * for each recent turn, what it was told, the steps it took and what it said. Newest turns are kept
+ * when it's long. Empty if there's nothing recorded yet.
+ */
+async function agentContext(agentName: string, maxChars = 40_000): Promise<string> {
+  const dir = join(paths.meta(agentName), "runs");
+  let files: string[] = [];
+  try {
+    files = (await readdir(dir)).filter((f) => f.startsWith("main_") && f.endsWith(".jsonl")).sort().reverse();
+  } catch {
+    return "";
+  }
+  const turns: string[] = [];
+  let size = 0;
+  for (const f of files.slice(0, 30)) {
+    let told = "";
+    let said = "";
+    const steps: string[] = [];
+    for (const line of (await readFile(join(dir, f), "utf8").catch(() => "")).split("\n")) {
+      let e: any;
+      try {
+        e = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (e?.event === "prompt" && typeof e.data?.text === "string") {
+        // A fresh session's prompt starts with Overtime's standing instructions; only what follows is this turn's.
+        const t: string = e.data.text;
+        const cut = t.lastIndexOf("\n---\n");
+        told = (cut >= 0 ? t.slice(cut + 5) : t).trim();
+      } else if (e?.event === "update") {
+        const u = e.data;
+        if (u?.sessionUpdate === "agent_message_chunk" && typeof u.content?.text === "string") said += u.content.text;
+        else if (u?.sessionUpdate === "tool_call" && typeof u.title === "string") steps.push(u.title.split("\n")[0].slice(0, 160));
+      }
+    }
+    if (!told && !said && !steps.length) continue;
+    const when = /main_(\d{8})(\d{6})/.exec(f);
+    const turn = [
+      `## Turn${when ? ` at ${when[1].slice(0, 4)}-${when[1].slice(4, 6)}-${when[1].slice(6)} ${when[2].slice(0, 2)}:${when[2].slice(2, 4)}` : ""}`,
+      told ? `It was told:\n${told.slice(0, 4000)}` : "",
+      steps.length ? `It did:\n${steps.slice(0, 40).map((s) => `- ${s}`).join("\n")}` : "",
+      said.trim() ? `It said:\n${said.trim().slice(0, 4000)}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    if (size + turn.length > maxChars && turns.length) break;
+    turns.push(turn);
+    size += turn.length;
+  }
+  return turns.reverse().join("\n\n");
+}
+
 function recentConversation(all: Message[]): string {
   const shown = all.filter((m) => !m.closes).slice(-40);
   if (!shown.length) return "";
@@ -1538,7 +1657,7 @@ You are a helper started by ${agentName} for one task. You start clean: everythi
 Work in: ${rec.workdir}${rec.branch ? ` (a git worktree of ${workspace}, on branch ${rec.branch}; commit your work there)` : ` (${note})`}
 The main workspace is ${workspace}; don't change it directly.
 
-When you're finished, call done with what you did, where the output is, what you checked, and anything left open. Then end your turn.
+When you're finished, call done with what you did, where the output is, what you checked, and anything left open. Then end your turn. On long work, tell ${agentName} how it's going with update (urgent only when you're blocked).
 
 ${agentName} may send you a note while you work, or after you're done (to correct something or ask for more): it arrives as your next message. Take it into account, carry on from where you were, and call done again with the whole result.
 ${instructions ? `\n# Your role\n\n${instructions}\n` : ""}${skillsBlock(paths.agent(agentName)) ? `\n${skillsBlock(paths.agent(agentName))}\n` : ""}`;

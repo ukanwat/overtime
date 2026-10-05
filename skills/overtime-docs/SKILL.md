@@ -119,7 +119,11 @@ then `overtime set <name> backend=goose`. Cost is read when the backend reports 
   on in its session; one that finished, failed, was cancelled or was cut off carries on from where it
   was (same session and folder). Use it to correct a helper, add what it needs, or ask a finished one
   for a follow-up instead of starting a new one. `cancel` stops one.
+- `helpers` - your helpers right now: what each running one is doing and last reported, and the ones
+  that finished recently (ids, results, folders). `spawn` with `with_context` starts a helper that
+  knows what you know: what you were told, did and said in your recent sessions is given to it.
 - `done` - helpers only: hand back the result.
+- `update` - helpers only: tell the agent how it's going while you keep working (`urgent` wakes it now).
 - `skill` - load a skill by name (or list them).
 
 ## Skills
