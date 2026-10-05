@@ -37,6 +37,8 @@ export interface AgentState {
   activityByAgent?: boolean;
   /** Why it is paused: the daily budget is used, or the backend's usage limit was hit. */
   pauseReason?: "budget" | "limit" | null;
+  /** When paused by a usage limit: when the backend said it resets (it's tried again before that too). */
+  limitResetsAt?: string | null;
   /** ISO time of the next wake-up, or null when stopped. */
   nextWake: string | null;
   /** ACP session id of the current main session, if any. */

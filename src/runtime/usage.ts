@@ -97,13 +97,33 @@ export async function writeLimit(l: LimitStatus): Promise<void> {
   });
 }
 
-/** If this backend is currently over a subscription limit, when it resets. */
-export async function blockedUntil(backend: string, now = Date.now()): Promise<Date | null> {
+/** How long a recorded limit is trusted before the backend is simply tried again. */
+export const LIMIT_RECHECK_MS = 15 * 60_000;
+
+/**
+ * If this backend was last seen over a usage limit: when it said the limit resets (if it said), and
+ * when to try it again. A recorded limit is only what the backend said last time; it can lift early
+ * (the person upgrades, buys more, or the reset time was wrong), so it's tried again every 15 minutes
+ * even before the reset, and the next turn that gets through clears it.
+ */
+export async function limitInfo(backend: string, now = Date.now()): Promise<{ resetsAt: Date | null; retryAt: Date } | null> {
   const l = (await readLimits())[backend];
   if (!l || l.status !== "rejected") return null;
-  if (l.resetsAt && l.resetsAt * 1000 > now) return new Date(l.resetsAt * 1000);
-  if (!l.resetsAt && now - new Date(l.updatedAt).getTime() < 15 * 60_000) return new Date(new Date(l.updatedAt).getTime() + 15 * 60_000);
-  return null;
+  const resetsAt = l.resetsAt ? new Date(l.resetsAt * 1000) : null;
+  const recheck = new Date(l.updatedAt).getTime() + LIMIT_RECHECK_MS;
+  const retryAt = new Date(Math.min(recheck, resetsAt?.getTime() ?? Infinity));
+  return retryAt.getTime() > now ? { resetsAt, retryAt } : null;
+}
+
+/** If this backend should be left alone for now (see limitInfo): until when. */
+export async function blockedUntil(backend: string, now = Date.now()): Promise<Date | null> {
+  return (await limitInfo(backend, now))?.retryAt ?? null;
+}
+
+/** A turn on this backend got through: whatever limit was recorded for it is over. */
+export async function clearLimit(backend: string): Promise<void> {
+  const l = (await readLimits())[backend];
+  if (l?.status === "rejected") await writeLimit({ backend, status: "allowed", updatedAt: new Date().toISOString() });
 }
 
 /** Usage rows older than `cutoff` go (budgets only count today; resumed sessions are recent). */
