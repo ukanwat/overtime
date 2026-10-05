@@ -64,4 +64,20 @@ describe("processes an agent keeps running in the background", () => {
     expect(await liveBackground("gonetest")).toEqual([]);
     rmSync(dir, { recursive: true, force: true });
   });
+
+  it.runIf(process.platform === "linux")("on Linux, are found by the agent's marker wherever they run, and never another agent's", async () => {
+    const since = Date.now();
+    const elsewhere = mkdtempSync(join(tmpdir(), "ot-bg-marked-"));
+    const mine = mkdtempSync(join(tmpdir(), "ot-bg-mine2-"));
+    const run = (cwd: string, agent: string) => Number(execFileSync("/bin/sh", ["-c", "sleep 60 >/dev/null 2>&1 & echo $!"], { cwd, encoding: "utf8", env: { ...process.env, OVERTIME_AGENT: agent } }).trim());
+    const marked = run(elsewhere, "marktest"); // outside its folders, but started for it
+    const other = run(mine, "someone-else"); // inside its folder, but another agent's
+    await new Promise((r) => setTimeout(r, 300));
+    const fresh = await recordLeftovers("marktest", since, [mine]);
+    expect(fresh.map((x) => x.pid)).toEqual([marked]);
+    expect(await stopBackground("marktest")).toBe(1);
+    process.kill(other);
+    rmSync(elsewhere, { recursive: true, force: true });
+    rmSync(mine, { recursive: true, force: true });
+  });
 });

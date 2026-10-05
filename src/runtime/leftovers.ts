@@ -72,7 +72,7 @@ async function cwdOf(pid: number): Promise<string | null> {
   }
 }
 
-/** The agent a process was started for, from its environment; undefined where that can't be read. */
+/** The agent a process was started for, from its environment: null if unmarked, undefined where that can't be read. */
 async function markerOf(pid: number): Promise<string | null | undefined> {
   if (process.platform !== "linux") return undefined;
   try {
@@ -101,11 +101,14 @@ export async function findLeftovers(since: number, roots: string[], agent?: stri
     if (r.pid === process.pid) continue;
     const t = new Date(r.started).getTime();
     if (!Number.isFinite(t) || t < since - 1000) continue; // lstart has one-second resolution
+    // Marked as this agent's: it is, wherever it runs. Marked as another agent's: it isn't. Unmarked
+    // (or where environments can't be read): the parent, start time and folder tell.
     const marker = agent ? await markerOf(r.pid) : undefined;
-    if (marker !== undefined) {
-      if (marker === agent) found.push({ pid: r.pid, started: r.started, command: r.command, cwd: (await cwdOf(r.pid)) ?? "" });
+    if (marker === agent && agent) {
+      found.push({ pid: r.pid, started: r.started, command: r.command, cwd: (await cwdOf(r.pid)) ?? "" });
       continue;
     }
+    if (marker) continue;
     if (r.ppid !== 1) continue;
     const cwd = await cwdOf(r.pid);
     if (cwd && inside(cwd)) found.push({ pid: r.pid, started: r.started, command: r.command, cwd });

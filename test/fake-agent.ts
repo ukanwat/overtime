@@ -25,7 +25,8 @@ const sessions = new Map<string, S>();
 let cancelled = false;
 /** SLOW: wait up to a minute, ending early (as a real backend does) when the turn is cancelled. */
 async function slow(): Promise<boolean> {
-  for (let i = 0; i < 600 && !cancelled; i++) await new Promise((r) => setTimeout(r, 100));
+  // By the clock, not by counting ticks: a busy machine stretches each tick.
+  for (const start = Date.now(); Date.now() - start < 60_000 && !cancelled; ) await new Promise((r) => setTimeout(r, 100));
   return cancelled;
 }
 

@@ -210,6 +210,11 @@ async function frontMatterOf(name: string): Promise<{ data: AgentSettings; body:
 
 /** After a turn: make AGENT.md's settings block exactly the person's settings again. */
 export async function restoreSettings(name: string): Promise<boolean> {
+  return withLock(`settings:${name}`, () => restoreSettingsNow(name));
+}
+
+/** restoreSettings, for callers already holding the settings lock. */
+async function restoreSettingsNow(name: string): Promise<boolean> {
   const fm = await frontMatterOf(name);
   if (!fm) return false;
   const saved = await readSettingsSnapshot(name);
@@ -230,16 +235,20 @@ export async function restoreSettings(name: string): Promise<boolean> {
  * A block that disappeared entirely is never adopted (that is a rewrite that dropped it); it is put back.
  */
 export async function adoptSettingsEdit(name: string): Promise<boolean> {
-  const fm = await frontMatterOf(name);
-  if (!fm) return false;
-  const snap = (await readSettingsSnapshot(name)) ?? {};
-  if (!Object.keys(fm.data ?? {}).length && Object.keys(snap).length) {
-    await restoreSettings(name);
-    return false;
-  }
-  if (JSON.stringify(sortKeys(fm.data as Record<string, unknown>)) === JSON.stringify(sortKeys(snap as Record<string, unknown>))) return false;
-  await writeSettingsSnapshot(name, fm.data);
-  return true;
+  // Under the same lock as setSettings: a change from the app is written to the snapshot and then to
+  // AGENT.md, and in between AGENT.md must not be mistaken for an edit of the person's.
+  return withLock(`settings:${name}`, async () => {
+    const fm = await frontMatterOf(name);
+    if (!fm) return false;
+    const snap = (await readSettingsSnapshot(name)) ?? {};
+    if (!Object.keys(fm.data ?? {}).length && Object.keys(snap).length) {
+      await restoreSettingsNow(name);
+      return false;
+    }
+    if (JSON.stringify(sortKeys(fm.data as Record<string, unknown>)) === JSON.stringify(sortKeys(snap as Record<string, unknown>))) return false;
+    await writeSettingsSnapshot(name, fm.data);
+    return true;
+  });
 }
 
 /** Whether the agent has been given its job yet (it rewrites the placeholder AGENT.md when it has). */
@@ -305,7 +314,7 @@ export async function setSettings(name: string, patch: { [K in keyof AgentSettin
       else (next as any)[k] = v;
     }
     await writeSettingsSnapshot(name, next);
-    await restoreSettings(name);
+    await restoreSettingsNow(name);
     return next;
   });
 }
