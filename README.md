@@ -96,11 +96,9 @@ Messages from you, answers and finished helpers always wake it early.
 **It never stops to wait for you.** When something is genuinely yours to decide, the agent asks,
 with its recommendation and short options you can answer with one key, and carries on with
 everything else meanwhile. It's fully autonomous otherwise. It asks first only before
-destroying things outside its folders, spending money, or acting publicly or as you. A small
-fixed check in Overtime itself blocks the few actions that must never slip through (wiping your
-home folder, force-pushing a main branch, erasing a disk), instantly and without a model, so no
-session can ever hang on a permission prompt. It sees every action the backend asks permission
-for, and looks inside `bash -c`, `eval`, `xargs` and inline scripts.
+destroying things outside its folders, spending money, or acting publicly or as you. Overtime
+answers every permission request the backend makes itself, instantly, so no session can ever hang
+on a permission prompt.
 
 **It has full access, except what you protect.** An agent can do anything your user account can:
 install packages globally, use any tool, write wherever its work needs. If there's something no agent

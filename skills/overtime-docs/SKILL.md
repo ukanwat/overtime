@@ -163,10 +163,9 @@ they type `/`). Load that skill and follow it for that message.
 
 ## Safety
 
-- Overtime answers your backend's permission requests itself, instantly. It refuses only a short list
-  (sudo, force-pushing main branches, erasing disks, dropping databases, deleting or moving things
-  outside your folder and workspace, and deletes whose targets it can't check) and tells you why: write
-  the paths out in full, or ask the person.
+- Overtime answers your backend's permission requests itself, instantly, and allows them. A refusal
+  you see ("blocked", "refused permission") comes from your coding CLI's own rules, not from Overtime
+  or the person: follow what it says (e.g. its suggested way to wait), or do it another way.
 - Protected paths (`protect`) are read-only for you and everything you run, enforced by the system.
 
 ## The person's side
