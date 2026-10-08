@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { listSkills, skillsBlock } from "../skills.js";
-import { AGENT_MARKER, recordLeftovers } from "./leftovers.js";
+import { AGENT_MARKER, recordLeftovers, sessionSpan } from "./leftovers.js";
 import { paths } from "../paths.js";
 import { isolationEnv } from "../acp/backends.js";
 import { appendJsonl, newId } from "../fsutil.js";
@@ -158,6 +158,8 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
   act.count++;
   for (const r of scope.roots) act.roots.add(r);
   activeSessions.set(agent.name, act);
+  // And noted for other agents: a folder two agents work in at once is no proof of whose a process is.
+  const endSpan = sessionSpan(agent.name, scope.roots);
 
   try {
     session = await AcpSession.open({
@@ -288,6 +290,7 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
     if (session) await session.close();
     // A sign-in the backend refreshed during the session goes back to the person's own.
     await isolationEnv(eff.backend, paths.meta(agent.name)).catch(() => {});
+    endSpan();
     act.count--;
     if (act.count === 0) {
       activeSessions.delete(agent.name);
