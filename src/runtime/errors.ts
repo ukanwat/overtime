@@ -162,7 +162,7 @@ export function needsPerson(e: unknown, backend: string, agent: string): string 
     case "install":
       return `The ${backend} backend isn't installed on this machine, so ${agent} can't run. Install it, or switch ${agent} to another backend (Ctrl+T in the app, or \`overtime set ${agent} backend=claude\`).`;
     case "signin":
-      return `${backend} isn't signed in, so ${agent} can't run. ${signIn[backend] ?? `Sign in to ${backend}`}, then wake ${agent} (Ctrl+R in the app, or \`overtime wake ${agent}\`).`;
+      return `${backend} isn't signed in, so ${agent} can't run. ${signIn[backend] ?? `Sign in to ${backend}`}, then wake ${agent} (Ctrl+R in the app, or \`overtime wake ${agent}\`). If ${backend} already works in your terminal, open the app again: it restarts Overtime's background process, which may have lost your sign-in.`;
     case "credit":
       return `${backend} says the account is out of credit or quota, so ${agent} can't run. Top it up, then wake ${agent} (Ctrl+R).`;
     default:

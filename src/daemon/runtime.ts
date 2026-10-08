@@ -23,7 +23,7 @@ import { blockedUntil, limitInfo, LIMIT_RECHECK_MS, usageToday, type TurnUsage }
 import { workingInstructions } from "../runtime/instructions.js";
 import { StepBoundary } from "../runtime/boundary.js";
 import { MonitorRunner, reapStaleMonitors } from "./monitors.js";
-import { isTransient, needsPerson } from "../runtime/errors.js";
+import { classify, isTransient, needsPerson } from "../runtime/errors.js";
 import { describeStep, ownToolStep } from "./steps.js";
 import { probeOnline } from "../runtime/network.js";
 
@@ -33,6 +33,8 @@ const TICK_MS = 5_000;
 const DEFAULT_WAKE_MS = 60 * 60_000;
 const BACKOFF_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000];
 /** How long a helper waits before retrying after a passing provider problem (tests shorten it). */
+/** A backend that isn't signed in is checked again this often: it usually comes back once the person signs in. */
+const SIGNIN_RETRY_MS = 5 * 60_000;
 const HELPER_RETRY_MS = process.env.OVERTIME_FAST_RETRY ? [200, 400] : [60_000, 5 * 60_000];
 
 /** Wait, unless the signal fires first. */
@@ -597,7 +599,7 @@ export class Runtime extends EventEmitter implements ToolHost {
       const failures = (agent.state.failures ?? 0) + 1;
       // Some failures only the person can fix: say exactly what to do, once, and retry slowly meanwhile.
       const hint = needsPerson(e, eff.backend, agentName);
-      const wait = hint ? BACKOFF_MS[BACKOFF_MS.length - 1] : BACKOFF_MS[Math.min(BACKOFF_MS.length - 1, failures - 1)];
+      const wait = hint ? (classify(e) === "signin" ? SIGNIN_RETRY_MS : BACKOFF_MS[BACKOFF_MS.length - 1]) : BACKOFF_MS[Math.min(BACKOFF_MS.length - 1, failures - 1)];
       if (hint && agent.state.lastError !== msg.slice(0, 500)) {
         await store.addMessage({ from: "overtime", kind: "alert", title: "Needs you to fix something", text: `${hint}\n\nThe error was: ${msg}`, urgent: true, baseDir: agent.dir });
         this.notify(`${agentName} needs you`, hint);

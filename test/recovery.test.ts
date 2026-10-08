@@ -394,12 +394,14 @@ describe("common problems", () => {
     await rt.send("unsigned", "NOT_SIGNED_IN");
     const alert = await until(async () => (await rt.store("unsigned").messages()).find((m) => m.kind === "alert"), 30_000, "alert");
     expect(alert.text).toMatch(/isn't signed in/);
-    // It retries slowly, not every minute.
+    // It checks again in a few minutes (not every minute), so it carries on soon after you sign in.
     const s = await until(async () => {
       const x = await rt.store("unsigned").schedule();
       return x.wakeAt ? x : null;
     }, 20_000, "retry scheduled");
-    expect(new Date(s.wakeAt!).getTime() - Date.now()).toBeGreaterThan(30 * 60_000);
+    const wait = new Date(s.wakeAt!).getTime() - Date.now();
+    expect(wait).toBeGreaterThan(2 * 60_000);
+    expect(wait).toBeLessThanOrEqual(5 * 60_000);
   });
 
   it("says so plainly when a backend isn't installed", async () => {
