@@ -92,11 +92,11 @@ describe("helpers", () => {
   });
 
   it("get a note only between steps: a tool that's running finishes first", async () => {
-    await employ("patient");
-    await rt.send("patient", "PASS SPAWN_TOOLWAIT");
-    const h = await until(async () => (await rt.store("patient").helpers()).find((x) => x.status === "running" && x.sessionId && existsSync(join(x.workdir, "tool-started.txt"))), 30_000, "tool running");
-    await rt.tellHelper("patient", h.id, "use red");
-    const done = await until(async () => (await rt.store("patient").helpers()).find((x) => x.id === h.id && x.status === "done"), 30_000, "helper done");
+    await employ("midtool");
+    await rt.send("midtool", "PASS SPAWN_TOOLWAIT");
+    const h = await until(async () => (await rt.store("midtool").helpers()).find((x) => x.status === "running" && x.sessionId && existsSync(join(x.workdir, "tool-started.txt"))), 30_000, "tool running");
+    await rt.tellHelper("midtool", h.id, "use red");
+    const done = await until(async () => (await rt.store("midtool").helpers()).find((x) => x.id === h.id && x.status === "done"), 30_000, "helper done");
     expect(readFileSync(join(done.workdir, "tool-cut.txt"), "utf8")).toBe("false");
     expect(done.result).toBe("handled note: use red");
   });
