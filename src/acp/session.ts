@@ -90,6 +90,9 @@ export const CLAUDE_BUILTINS_OFF = [
   "Agent", "Task", "SendMessage", "ListAgents", "ScheduleWakeup", "CronCreate", "CronDelete", "CronList",
   "Skill", "RemoteTrigger", "PushNotification", "AskUserQuestion", "EnterPlanMode", "ExitPlanMode", "EnterWorktree", "ExitWorktree",
   "Workflow", "Artifact", "SendFeedback", "ClaudeDesign", "Projects", "ProposeGoal", "ProposeSkills", "ShowOnboardingRolePicker", "ReadNotifications",
+  // Claude Code's own review, design and onboarding features: ShareOnboardingGuide uploads a file to a
+  // share link (publishing, which an agent must never do unasked); the others report to a UI that isn't there.
+  "ShareOnboardingGuide", "ReportFindings", "DesignSync",
 ];
 
 /**
