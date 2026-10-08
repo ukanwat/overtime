@@ -283,6 +283,11 @@ export class App implements Component {
    */
   private anchor: "question" | "last" | null = "question";
   private lastTop = 0;
+  private loadingOlder: Promise<void> | null = null;
+  /** The line each message started on, as last drawn. */
+  private msgLine = new Map<string, number>();
+  /** After older messages are added above: the message that was on screen, so the view stays on it. */
+  private keep: { id: string; line: number; top: number } | null = null;
   private leftW = 0;
   private loadedFor = "";
   private started = false;
@@ -360,8 +365,14 @@ export class App implements Component {
           // Something new while you're at the bottom: show it (from its start if it's long), once.
           this.anchor = openQuestion(fresh)?.id === fresh.at(-1)?.id ? "question" : "last";
         }
-        this.messages = fresh;
-        this.hasMore = !!r?.hasMore;
+        // Older messages you loaded stay: a refresh only brings the latest ones, and dropping the rest
+        // would pull the conversation out from under where you're reading.
+        const k = this.loadedFor === a.name && fresh.length ? this.messages.findIndex((m) => m.id === fresh[0].id) : -1;
+        if (k > 0) this.messages = [...this.messages.slice(0, k), ...fresh];
+        else {
+          this.messages = fresh;
+          this.hasMore = !!r?.hasMore;
+        }
         // Its skills, for the / menu: when the agent changes, and every half minute (it may add some).
         if (this.skillsFor !== a.name || Date.now() - this.skillsAt > 30_000) {
           this.skills = (await this.get<SkillInfo[]>("skills", { name: a.name }).catch(() => null)) ?? [];
@@ -385,13 +396,23 @@ export class App implements Component {
     }
   }
 
-  /** Older messages, when scrolled to the top. */
-  private async loadOlder(): Promise<void> {
+  /** Older messages, when scrolled to the top. One load at a time: the wheel asks many times a second. */
+  private loadOlder(): Promise<void> {
+    this.loadingOlder ??= this.doLoadOlder().finally(() => (this.loadingOlder = null));
+    return this.loadingOlder;
+  }
+
+  private async doLoadOlder(): Promise<void> {
     const a = this.agent;
-    if (!a || this.onNewRow || !this.hasMore || !this.messages.length) return;
-    const r = await this.get<{ messages: Message[]; hasMore: boolean }>("messages", { name: a.name, before: this.messages[0].id, limit: 300 });
-    if (this.agent?.name !== a.name) return;
-    this.messages = [...(r?.messages ?? []), ...this.messages];
+    const first = this.messages[0];
+    if (!a || this.onNewRow || !this.hasMore || !first) return;
+    const r = await this.get<{ messages: Message[]; hasMore: boolean }>("messages", { name: a.name, before: first.id, limit: 300 });
+    if (this.agent?.name !== a.name || this.messages[0]?.id !== first.id) return;
+    // What you were reading stays where it was on screen, with the older messages above it.
+    const ref = this.messages.find((m) => this.msgLine.has(m.id));
+    if (ref) this.keep = { id: ref.id, line: this.msgLine.get(ref.id)!, top: this.lastTop };
+    const seen = new Set(this.messages.map((m) => m.id));
+    this.messages = [...(r?.messages ?? []).filter((m) => !seen.has(m.id)), ...this.messages];
     this.hasMore = !!r?.hasMore;
     this.tui.requestRender();
   }
@@ -1301,6 +1322,7 @@ export class App implements Component {
     let questionEnd = -1;
 
     this.linkLine = -1;
+    this.msgLine.clear();
     if (this.hasMore) body.push(muted("   ↑ older messages: ⇧↑ at the top loads them"), "");
     if (!this.messages.length) body.push("", muted(`   No messages with ${a.name} yet.`));
 
@@ -1316,6 +1338,7 @@ export class App implements Component {
         prev = undefined;
       }
       lastStart = body.length;
+      this.msgLine.set(m.id, body.length);
       const regroup = !prev || prev.from !== m.from || prev.kind !== "message" || m.kind !== "message" || new Date(m.t).getTime() - new Date(prev.t).getTime() > REGROUP_MIN * 60_000;
 
       if (m.from === "you") {
@@ -1421,6 +1444,15 @@ export class App implements Component {
     const maxScroll = Math.max(0, body.length - h);
     this.lastMax = maxScroll;
     let s: number;
+    if (this.keep) {
+      const now = this.msgLine.get(this.keep.id);
+      if (now != null) {
+        this.scroll = Math.min(maxScroll, Math.max(0, this.keep.top + now - this.keep.line));
+        if (this.scroll >= maxScroll) this.scroll = Number.MAX_SAFE_INTEGER;
+        this.anchor = null;
+      }
+      this.keep = null;
+    }
     // A link picked with Ctrl+L that's out of view: scroll to it.
     if (this.linkIdx >= 0 && this.linkLine >= 0) {
       const cur = this.scroll === Number.MAX_SAFE_INTEGER ? maxScroll : Math.min(this.scroll, maxScroll);
