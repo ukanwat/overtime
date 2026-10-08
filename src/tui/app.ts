@@ -30,6 +30,7 @@ import type { AgentSummary } from "../daemon/control.js";
 import { validateName } from "../agent/agent.js";
 import { paths } from "../paths.js";
 import { pastedFiles, type PendingAttachment } from "./attach.js";
+import { copyText } from "./clipboard.js";
 import {
   accent,
   applyTerminalColors,
@@ -71,8 +72,7 @@ const spinner = () => SPINNER[Math.floor(Date.now() / 90) % SPINNER.length];
 /** Below this width the agent list is hidden; ↑↓ still switch agents. */
 const NARROW = 80;
 const PAGE = 10;
-/** Rows above the panes: the title bar and its rule. */
-/** Rows above the panes: one empty row, so the first line isn't pressed against the top edge. */
+/** Rows above the panes: one empty row, so the first line isn't pressed against the top edge (the divider runs through it). */
 const TOP = 1;
 /** A quiet gap (minutes) after which the agent's name is shown again above its next message. */
 const REGROUP_MIN = 10;
@@ -1116,7 +1116,8 @@ export class App implements Component {
     const rightW = narrow ? width : width - leftW - 1;
     this.leftW = leftW;
 
-    const out: string[] = Array(TOP).fill("");
+    // The gap above the panes is padding only: the divider between them still runs to the top edge.
+    const out: string[] = Array(TOP).fill(narrow ? "" : " ".repeat(leftW) + faint("│"));
     const left = narrow ? [] : this.renderAgents(leftW, bodyH);
     const right = this.renderRight(rightW, bodyH, narrow ? 0 : leftW + 1, narrow);
     for (let i = 0; i < bodyH; i++) {
@@ -1760,7 +1761,7 @@ export async function runApp(o: AppOptions = {}): Promise<{ app: App; tui: TuiAl
   // the conversation itself: hand those keys to the app.
   const kb = getKeybindings();
   kb.setUserBindings({ ...kb.getUserBindings(), "tui.altScreen.pageUp": [], "tui.altScreen.pageDown": [] } as any);
-  const tui = new TuiAltScreen(term, false, undefined, { openUrl: (url) => app.openLink(url), copyOnSelect: true, mouse: o.mouse ?? !o.terminal });
+  const tui = new TuiAltScreen(term, false, undefined, { openUrl: (url) => app.openLink(url), copyOnSelect: true, copySelection: (text) => copyText(text, (seq) => term.write(seq)), mouse: o.mouse ?? !o.terminal });
   const timers: NodeJS.Timeout[] = [];
   let quitting = false;
   const app = new App(c, tui, term, () => {
