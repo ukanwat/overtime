@@ -6,7 +6,7 @@ import { fakeHome, until } from "./helpers.js";
 
 const home = fakeHome();
 const { Runtime } = await import("../src/daemon/runtime.js");
-const { loadAgent } = await import("../src/agent/agent.js");
+const { loadAgent, setSettings } = await import("../src/agent/agent.js");
 const { Store } = await import("../src/store/store.js");
 
 const meta = (a: string) => join(home, "agents", a, ".overtime");
@@ -18,12 +18,9 @@ afterAll(() => { if (process.env.SHOWLOG) console.log(logs.join("\n")); });
 afterAll(async () => rt.stop());
 
 /** Create an agent and give it its job, so it's an ordinary agent at rest. */
-async function employ(name: string, md?: string) {
+async function employ(name: string, settings?: Parameters<typeof setSettings>[1]) {
   await rt.create(name);
-  if (md) {
-    const f = join(home, "agents", name, "AGENT.md");
-    writeFileSync(f, `---\n${md}\n---\n\n` + readFileSync(f, "utf8"));
-  }
+  if (settings) await setSettings(name, settings);
   await rt.send(name, "Your job is testing.");
   await until(async () => (await loadAgent(name)).state.status === "asleep", 30_000, `${name} settled`);
 }
@@ -178,7 +175,7 @@ describe("helpers", () => {
     const ws = join(home, "plainws");
     mkdirSync(ws, { recursive: true });
     writeFileSync(join(ws, "data.txt"), "hello");
-    await employ("copier", `workspace: ${ws}`);
+    await employ("copier", { workspace: ws });
     await rt.send("copier", "PASS SPAWN");
     const h = await until(async () => (await rt.store("copier").helpers()).find((x) => x.status !== "running"), 60_000, "helper done");
     expect(h.status, h.result).toBe("done");
@@ -292,21 +289,36 @@ describe("one continuous session", () => {
 
 describe("budgets and settings", () => {
   it("doesn't spend once the daily budget is used, says so, and keeps the message", async () => {
-    await employ("thrifty", "dailyBudgetUsd: 0.005");
+    await employ("thrifty", { dailyBudgetUsd: 0.005 });
     const m = await rt.send("thrifty", "are you there?");
     await until(async () => (await rt.store("thrifty").messages()).some((e) => e.from === "overtime" && /budget/.test(e.text)), 20_000, "budget note");
     expect((await rt.store("thrifty").inbox()).some((i) => i.messageId === m.id)).toBe(true);
   });
 
-  it("keeps a settings edit the person makes while a turn is running", async () => {
-    await employ("edited");
+  it("puts back a settings block edited in AGENT.md while a turn is running: settings change only from the app or overtime set", async () => {
+    await employ("edited", { dailyBudgetUsd: 3 });
     await rt.send("edited", "PASS SLOW");
     await until(async () => (await loadAgent("edited")).state.status === "working", 30_000, "working");
     const f = join(home, "agents", "edited", "AGENT.md");
     writeFileSync(f, `---\ndailyBudgetUsd: 42\n---\n\n` + readFileSync(f, "utf8").replace(/^---[\s\S]*?---\n\n?/, ""));
     await until(async () => (await loadAgent("edited")).state.status === "asleep", 90_000, "turn over");
-    expect((await loadAgent("edited")).settings.dailyBudgetUsd).toBe(42);
-    expect(readFileSync(f, "utf8")).toContain("dailyBudgetUsd: 42");
+    expect((await loadAgent("edited")).settings.dailyBudgetUsd).toBe(3);
+    expect(readFileSync(f, "utf8")).toContain("dailyBudgetUsd: 3");
+    expect(readFileSync(f, "utf8")).not.toContain("dailyBudgetUsd: 42");
+  });
+
+  it("puts back a settings block changed between turns, however it was changed", async () => {
+    await employ("rewritten", { dailyBudgetUsd: 3, protect: [join(home, "protected")] });
+    const f = join(home, "agents", "rewritten", "AGENT.md");
+    expect(readFileSync(f, "utf8")).toContain("# Shown for reference. Change these in the app (→), with overtime set rewritten key=value, or in .overtime/settings.json");
+    // Rewritten directly (a script, git, an editor): no session's tool call ever names AGENT.md.
+    const body = readFileSync(f, "utf8").replace(/^---[\s\S]*?---\n\n?/, "");
+    writeFileSync(f, `---\ndailyBudgetUsd: 1000\n---\n\n${body}`);
+    await until(async () => !readFileSync(f, "utf8").includes("dailyBudgetUsd: 1000"), 15_000, "block put back");
+    const a = await loadAgent("rewritten");
+    expect(a.settings.dailyBudgetUsd).toBe(3);
+    expect(a.settings.protect).toEqual([join(home, "protected")]);
+    expect(a.identity.trim()).toBe(body.trim()); // the rest of AGENT.md is the agent's, and kept
   });
 
   it("won't wake a new agent that hasn't been given a job", async () => {

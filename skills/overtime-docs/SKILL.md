@@ -17,8 +17,8 @@ Overtime's home is `~/overtime` (or `$OVERTIME_HOME`).
 - `~/overtime/settings.json` - the person's settings for all agents (see Settings).
 - `~/overtime/skills/` - skills the person gives every agent.
 - `~/overtime/agents/<name>/` - your folder:
-  - `AGENT.md` - who you are, your role, goals and rules (yours to keep current). A settings block
-    between `---` lines at the top belongs to the person.
+  - `AGENT.md` - who you are, your role, goals and rules (yours to keep current). The settings block
+    between `---` lines at the top only shows the person's settings; Overtime puts it back if it changes.
   - `INDEX.md` - your map of your folder.
   - `skills/` - your own skills (see Skills).
   - `files/received/<date>/` - files the person attached to messages.
@@ -45,7 +45,8 @@ Global, in `~/overtime/settings.json`:
 | `protect` | `[]` | paths no agent may write to, e.g. `["~/Documents", "~/.ssh"]` |
 | `customBackends` | `{}` | extra ACP backends: `{ "name": { "command": "...", "args": [...] } }` |
 
-Per agent, in the settings block at the top of its `AGENT.md` (only keys that differ):
+Per agent (only keys that differ from the global ones), shown for reference in the block at the top
+of its `AGENT.md`; the copy that counts is in its `.overtime/settings.json`:
 `backend`, `model`, `dailyBudgetUsd`, `dailyTokenBudget`, `workspace` (where its work lives; default
 its own folder), `mcpServers` (extra servers), `disableMcp` (names of shared servers to leave out),
 `protect` (extra protected paths).
@@ -59,17 +60,21 @@ overtime models [backend]     # the models a backend offers
 ```
 
 `overtime set` accepts exactly these keys: `backend`, `model`, `budget`, `tokens`, `workspace`, `protect`.
-Anything else (MCP servers, global defaults) is edited in the files above, or in the app.
-
-You never change the settings block yourself: Overtime puts it back. If a change would help, tell the
-person the exact command. Changes apply from your next session.
+Global defaults are edited in `~/overtime/settings.json`; an agent's MCP servers are switched on and off,
+or removed, in the app, and the person adds one for a single agent in its `.overtime/settings.json` (see
+MCP servers). An agent's settings change only these ways: the block in `AGENT.md` is for
+reference, and any other change to it (by you, a helper, a script, git, or the person editing it by
+hand) is put back. If a change would help, tell the person the exact command. Changes apply from your
+next session.
 
 ## MCP servers
 
 An agent gets MCP servers from three places, all in the same shape (a local command, or a URL):
 
 - **Shared, for every agent:** `mcpServers` in `~/overtime/settings.json` (the person's).
-- **Set by the person for one agent:** `mcpServers` in the settings block at the top of its AGENT.md.
+- **Set by the person for one agent:** `mcpServers` in `~/overtime/agents/<name>/.overtime/settings.json`,
+  the copy of its settings that counts (the person edits it there; it's used from the next turn, and the
+  block at the top of AGENT.md then shows it). The person can remove these in the app.
 - **Added by the agent itself:** `mcp.json` in your folder. This one is yours: when you need a server,
   add it here and it's yours from your next turn. Format:
   `{ "servers": [ { "name": "github", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"], "env": { "GITHUB_TOKEN": "..." } },
@@ -79,7 +84,7 @@ An agent gets MCP servers from three places, all in the same shape (a local comm
 The person sees every server and controls it in the app (select the agent, press → for settings, "MCP
 servers"), like Claude Code's /mcp: whether it's connected (✓), failed (✗, with why) or off, how many
 tools it has; connect or disconnect it for this agent, check it again, see its tools, or remove it.
-A server they disconnect stays off for you (it's in `disableMcp` in your settings block); don't re-add
+A server they disconnect stays off for you (it's in `disableMcp` in your settings); don't re-add
 it under another name. Any change takes effect from your next turn, in the same session. On Claude and
 Codex, agents don't get the person's own CLI settings, instructions or MCP servers: only these (Codex
 agents get their own Codex home, sharing only the sign-in). Gemini and OpenCode have no way to switch

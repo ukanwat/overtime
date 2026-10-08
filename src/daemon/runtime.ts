@@ -7,7 +7,7 @@ import { execFile } from "node:child_process";
 import { isAbsolute, join, sep } from "node:path";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
-import { adoptSettingsEdit, createAgent, effectiveSettings, hasIdentity, listAgents, loadAgent, updateState, type Agent, type AgentState } from "../agent/agent.js";
+import { createAgent, effectiveSettings, hasIdentity, listAgents, loadAgent, restoreSettings, updateState, type Agent, type AgentState } from "../agent/agent.js";
 import { newId } from "../fsutil.js";
 import { paths } from "../paths.js";
 import { loadSettings, saveSettings } from "../settings.js";
@@ -380,23 +380,18 @@ export class Runtime extends EventEmitter implements ToolHost {
     return null;
   }
 
-  /** Whether any session of this agent is running (its AGENT.md may be mid-rewrite), other than `self`. */
-  private busy(agent: string, self?: "main" | string): boolean {
-    if (self !== "main" && this.mainRunning.has(agent)) return true;
-    return false;
-  }
-
   /**
-   * A changed settings block in AGENT.md while none of the agent's sessions is running can only be the
-   * person's edit: adopt it. Checked on every tick and right before each turn, so an edit followed by a
-   * message takes effect for that message.
+   * AGENT.md's settings block only shows the settings, which change only from the app or overtime set:
+   * anything else that changed it (the agent, a helper, a script, git, a hand edit) is undone. Checked on
+   * every tick while its main session isn't running (it may be mid-rewrite), and right before each turn.
    */
-  private async adoptEdits(agent: string, self?: "main" | string): Promise<void> {
-    if (!this.busy(agent, self) && (await adoptSettingsEdit(agent))) this.log(`[${agent}] adopted the settings you edited in AGENT.md`);
+  private async restoreSettingsBlock(agent: string): Promise<void> {
+    if (await restoreSettings(agent)) this.log(`[${agent}] put back its settings in AGENT.md (they change only from the app or overtime set)`);
   }
 
   private async checkAgent(a: Agent, now: Date): Promise<void> {
-    await this.adoptEdits(a.name);
+    if (this.mainRunning.has(a.name)) return;
+    await this.restoreSettingsBlock(a.name);
     a = await loadAgent(a.name);
     if (a.state.status === "stopped" || this.mainRunning.has(a.name)) return;
     const store = this.store(a.name);
@@ -479,7 +474,7 @@ export class Runtime extends EventEmitter implements ToolHost {
   /** One main turn. Returns whether it completed. */
   private async runMain(agentName: string, reason: string): Promise<boolean> {
     const store = this.store(agentName);
-    await this.adoptEdits(agentName, "main");
+    await this.restoreSettingsBlock(agentName);
     let agent = await loadAgent(agentName);
     if (agent.state.status === "stopped") return true;
     const eff = await effectiveSettings(agent);
