@@ -195,8 +195,13 @@ describe("terminal app, with a scripted daemon", () => {
     const opened: string[] = [];
     const r = await runApp({ terminal: t as any, client: c as any, onQuit: () => {}, opener: (x) => void opened.push(x) });
     stops.push(r.stop);
-    return { t, c, app: r.app, seen: seer(t), opened };
+    return { t, c, app: r.app, tui: r.tui, seen: seer(t), opened };
   }
+  const click = (t: TestTerminal, x: number, y: number) => {
+    t.press(`\x1b[<0;${x + 1};${y + 1}M`);
+    t.press(`\x1b[<0;${x + 1};${y + 1}m`);
+  };
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
   it("opens on the agent that needs you, with its question in view", async () => {
     const { t, seen } = await open();
@@ -310,6 +315,45 @@ describe("terminal app, with a scripted daemon", () => {
     t.press(`\x1b[<0;${x + 1};${y + 1}M`);
     t.press(`\x1b[<0;${x + 1};${y + 1}m`);
     await until(async () => c.calls.some((k) => k.method === "answer" && k.params.choice === 2), 5_000, "answered by click");
+  });
+
+  it("copies only the words you selected in the conversation: no agent list, divider or message bars", async () => {
+    const { t, tui, seen } = await open();
+    await seen("Merge the dependency fix?");
+    const lines = (await t.screen()).split("\n");
+    const y = lines.findIndex((l) => l.includes("Dependabot opened"));
+    const x = lines[y].indexOf("Dependabot");
+    // From the question's first word, down two rows and back over into the agent list.
+    t.press(`\x1b[<0;${x + 1};${y + 1}M`);
+    t.press(`\x1b[<32;${x + 61};${y + 2}M`);
+    t.press(`\x1b[<32;${4};${y + 3}M`);
+    t.press(`\x1b[<32;${x + 61};${y + 3}M`);
+    await sleep(100);
+    // What a release would copy (not released here: that would write this machine's clipboard).
+    const text: string = (tui as any).getActiveSelectionText();
+    expect(text.split("\n")[0]).toMatch(/^Dependabot opened #212/);
+    expect(text.split("\n").length).toBe(3);
+    expect(text).not.toMatch(/[│┃]/);
+    for (const l of text.split("\n")) expect(l).not.toMatch(/^\s/);
+    for (const name of ["repo-keeper", "game-builder", "inbox-triage", "scout", "old-bot", "New agent"]) expect(text).not.toContain(name);
+    // What's highlighted on screen is what's copied: never the agent list beside it.
+    expect((await t.cell(2, y + 1)).inverse).toBe(false);
+    expect((await t.cell(x + 1, y + 1)).inverse).toBe(true);
+  });
+
+  it("copies only the agent list when the selection starts there", async () => {
+    const { t, tui, seen } = await open();
+    await seen("Merge the dependency fix?");
+    const lines = (await t.screen()).split("\n");
+    const y = lines.findIndex((l) => l.includes("  scout"));
+    t.press(`\x1b[<0;2;${y + 1}M`);
+    t.press(`\x1b[<32;100;${y + 2}M`);
+    await sleep(100);
+    const text: string = (tui as any).getActiveSelectionText();
+    expect(text).toContain("scout");
+    expect(text).toContain("waiting for its job");
+    expect(text).not.toContain("│");
+    expect(text.split("\n").every((l) => l.length <= 34)).toBe(true);
   });
 
   it("shows the agent is on what you just wrote, with its current step", async () => {
