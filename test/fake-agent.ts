@@ -129,6 +129,8 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
           else await t.call("send", { text: `main reply to: ${said}` });
         }
       }
+      // FAIL_AFTER_REPLY: answers the person, then the provider fails (the turn doesn't finish).
+      if (/FAIL_AFTER_REPLY/.test(text) && !/RECOVERED/.test(text)) throw new acp.RequestError(-32603, "Internal error", { message: "scripted failure after replying" });
       if (/SKILLCHECK/.test(text)) writeFileSync(join(s.cwd, "skill-result.txt"), await t.call("skill", { name: "overtime-docs" }));
       if (/ESCAPE/.test(text)) {
         // Try to write into a protected path, as a script or program it wrote would.

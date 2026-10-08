@@ -77,6 +77,11 @@ export class TurnIncompleteError extends Error {
   }
 }
 
+/** Whether the agent was sent the prompt of the turn that ended with this error (see runTurn). */
+export function promptWasSent(e: unknown): boolean {
+  return !!(e as any)?.promptSent;
+}
+
 /** The context every fresh session starts with: how to work, who it is, and where things are. */
 export function sessionPreamble(agent: Agent, kind: "main" | "chat" = "main"): string {
   const parts = [
@@ -276,6 +281,8 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
     return { runId, sessionId: session.sessionId, fresh, reply: reply.trim(), stopReason: res.stopReason, usage: res.usage ?? null, backend: eff.backend, usage2, context, modelIssue };
   } catch (e: any) {
     await record("error", { message: String(e?.message ?? e) });
+    // Whatever went wrong, the caller learns whether the agent was handed this turn's prompt.
+    if (promptSent && e && typeof e === "object" && !e.promptSent) e.promptSent = true;
     // A turn that failed or was killed still spent money: count what the backend reported so far.
     if (!recorded && session?.sessionId && sessionCost != null) {
       await recordTurnUsage(agent.name, { runId, kind: o.kind, backend: eff.backend, sessionId: session.sessionId, tokens: null, sessionCostUsd: sessionCost, firstCostUsd: firstCost, context, incomplete: true }).catch(() => {});
