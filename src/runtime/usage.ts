@@ -126,7 +126,17 @@ export async function clearLimit(backend: string): Promise<void> {
   if (l?.status === "rejected") await writeLimit({ backend, status: "allowed", updatedAt: new Date().toISOString() });
 }
 
-/** Usage rows older than `cutoff` go (budgets only count today; resumed sessions are recent). */
+/**
+ * Usage rows older than `cutoff` go (budgets only count today), except each session's latest cost: a
+ * session can be resumed after any break, and without its last total its whole lifetime cost would be
+ * counted again as one turn's.
+ */
 export async function trimUsage(agent: string, cutoff: number): Promise<void> {
-  await withLock(`usage:${agent}`, () => trimJsonl<TurnUsage>(usagePath(agent), (r) => new Date(r.t).getTime() >= cutoff));
+  await withLock(`usage:${agent}`, () =>
+    trimJsonl<TurnUsage>(usagePath(agent), (r, i, all) => {
+      if (new Date(r.t).getTime() >= cutoff) return true;
+      if (r.sessionCostUsd == null) return false;
+      return !all.slice(i + 1).some((x) => x.sessionId === r.sessionId && x.sessionCostUsd != null);
+    }),
+  );
 }

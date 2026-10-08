@@ -74,3 +74,26 @@ describe("bookkeeping files", () => {
     expect(await store.unread()).toBe(0);
   });
 });
+
+describe("time and money", () => {
+  it("a daily wake-up keeps its local time across a daylight-saving change", async () => {
+    const { step } = await import("../src/store/store.js");
+    // In a process with a US time zone: 2026-03-08 is the spring-forward day there.
+    const { execFileSync } = await import("node:child_process");
+    const out = execFileSync(process.execPath, ["--import", "tsx", "-e", `import("${join(import.meta.dirname, "../src/store/store.ts")}").then(({ step }) => { const t = new Date(2026, 2, 7, 9, 0).getTime(); const n = new Date(step(t, 86400000)); console.log(n.getHours() + ":" + n.getMinutes() + " " + n.getDate()); })`], { env: { ...process.env, TZ: "America/New_York" }, encoding: "utf8" });
+    expect(out.trim()).toBe("9:0 8");
+    expect(step(1000, 3600_000)).toBe(3601_000);
+  });
+
+  it("a session resumed after its old usage rows are trimmed isn't charged its whole lifetime again", async () => {
+    const { recordTurnUsage, trimUsage, usageToday } = await import("../src/runtime/usage.js");
+    const { writeFileSync } = await import("node:fs");
+    mkdirSync(join(home, "agents", "sleeper", ".overtime"), { recursive: true });
+    const old = new Date(Date.now() - 40 * 86400_000).toISOString();
+    const row = (t: string, cost: number) => JSON.stringify({ t, runId: "r", kind: "main", backend: "claude", sessionId: "s1", tokens: null, sessionCostUsd: cost, turnCostUsd: 1, context: null });
+    writeFileSync(join(home, "agents", "sleeper", ".overtime", "usage.jsonl"), row(old, 40) + "\n" + row(old, 50) + "\n");
+    await trimUsage("sleeper", Date.now() - 30 * 86400_000);
+    await recordTurnUsage("sleeper", { runId: "r2", kind: "main", backend: "claude", sessionId: "s1", tokens: null, sessionCostUsd: 52, firstCostUsd: 50.5, context: null });
+    expect((await usageToday("sleeper")).usd).toBeCloseTo(2);
+  });
+});

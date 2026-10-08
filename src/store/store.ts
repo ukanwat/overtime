@@ -15,6 +15,17 @@ export function clampWake(at: Date, now = new Date()): Date {
   return new Date(now.getTime() + Math.min(MAX_SLEEP_MS, Math.max(MIN_SLEEP_MS, ms)));
 }
 
+/**
+ * One interval on from `t`. Whole days go by the calendar, so "every 1d at 9:00" stays at 9:00 across a
+ * daylight-saving change instead of drifting to 8:00 or 10:00.
+ */
+export function step(t: number, everyMs: number): number {
+  if (everyMs % 86400_000 !== 0) return t + everyMs;
+  const d = new Date(t);
+  d.setDate(d.getDate() + everyMs / 86400_000);
+  return d.getTime();
+}
+
 /** Parse "90s", "20m", "6h", "2d", or plain milliseconds. */
 export function parseDuration(s: string | number): number {
   if (typeof s === "number") return s;
@@ -275,7 +286,7 @@ export class Store {
       const every = Math.max(MIN_SLEEP_MS, everyMs);
       let first = firstAt && !Number.isNaN(firstAt.getTime()) ? firstAt.getTime() : now + every;
       // A first time already past moves forward by whole intervals, so "every 1d at 09:00" set at 10:00 starts tomorrow.
-      while (first < now + MIN_SLEEP_MS) first += every;
+      while (first < now + MIN_SLEEP_MS) first = step(first, every);
       const loop: Loop = { id: newId("loop"), everyMs: every, task, nextAt: new Date(first).toISOString(), createdAt: new Date(now).toISOString() };
       s.loops.push(loop);
       await writeJson(this.p("schedule.json"), s);
@@ -302,7 +313,7 @@ export class Store {
         if (new Date(l.nextAt).getTime() <= now.getTime()) {
           due.push({ ...l });
           let next = new Date(l.nextAt).getTime();
-          while (next <= now.getTime()) next += l.everyMs;
+          while (next <= now.getTime()) next = step(next, l.everyMs);
           l.nextAt = new Date(next).toISOString();
         }
       }
