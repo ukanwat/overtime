@@ -356,6 +356,31 @@ describe("terminal app, with a scripted daemon", () => {
     expect(text.split("\n").every((l) => l.length <= 34)).toBe(true);
   });
 
+  it("scrolls when you click the 'newer below' or 'lines above' hint, never acting on the line under it", async () => {
+    const { t, c, seen } = await open(120, 22);
+    await seen("newer below");
+    let s = (await t.screen()).split("\n");
+    click(t, 60, s.findIndex((l) => l.includes("newer below")));
+    await until(async () => !(await t.screen()).includes("newer below"), 5_000, "at the newest");
+    s = (await t.screen()).split("\n");
+    const above = s.findIndex((l) => l.includes("lines above"));
+    const before = s[above];
+    click(t, 60, above);
+    await until(async () => (await t.screen()).split("\n")[above] !== before, 5_000, "scrolled up");
+    await sleep(200);
+    expect(c.calls.some((k) => k.method === "answer" || k.method === "dismiss")).toBe(false);
+  });
+
+  it("never puts a panel's clicks on the message box or footer in a short terminal", async () => {
+    const { t, app } = await open(100, 9);
+    await sleep(300);
+    t.press(KEY.tab);
+    await sleep(300);
+    // 9 rows: the message box (one row when short) and the footer are the last two.
+    expect((app as any).hits.length).toBeGreaterThan(0);
+    expect((app as any).hits.every((h: any) => h.row < 7)).toBe(true);
+  });
+
   it("shows the agent is on what you just wrote, with its current step", async () => {
     const { t, app, seen } = await open();
     await seen("Merge the dependency fix?");
