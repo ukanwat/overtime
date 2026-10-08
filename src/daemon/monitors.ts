@@ -28,11 +28,17 @@ interface Running {
   stopped: boolean;
   /** The agent's protected paths; watches run under the same rules as its sessions. */
   protect?: string[];
+  /** When it last woke the agent, and its cooldown: kept here so a burst of lines is judged at once, not after a file read. */
+  lastFiredAt: number;
+  cooldownMs: number;
 }
 
 const RUN_TIMEOUT_MS = 2 * 60_000;
 const MAX_HELD_LINES = 200;
 const FAILURES_BEFORE_REPORT = 3;
+/** The longest delay a Node timer can hold (about 24.8 days); a longer one fires at once, over and over. */
+const MAX_DELAY_MS = 2 ** 31 - 1;
+const delay = (ms: number) => Math.min(MAX_DELAY_MS, Math.max(0, ms));
 
 /**
  * Runs agents' monitor scripts without any model. Long-running scripts: each printed line is an event.
@@ -103,12 +109,14 @@ export class MonitorRunner {
   start(agent: string, id: string): void {
     const k = this.key(agent, id);
     if (this.running.has(k)) return;
-    const r: Running = { agent, id, held: [], stopped: false };
+    const r: Running = { agent, id, held: [], stopped: false, lastFiredAt: 0, cooldownMs: 0 };
     this.running.set(k, r);
     void Promise.all([this.storeFor(agent).monitors(), this.protectFor(agent).catch(() => [] as string[])]).then(([ms, protect]) => {
       r.protect = protect;
       const m = ms.find((x) => x.id === id);
       if (!m || r.stopped) return this.running.delete(k);
+      r.lastFiredAt = m.lastFiredAt ? new Date(m.lastFiredAt).getTime() : 0;
+      r.cooldownMs = m.cooldownMs;
       if (m.everyMs) this.startRepeating(r, m);
       else this.startLong(r, m);
     });
@@ -142,24 +150,26 @@ export class MonitorRunner {
   }
 
   /** Fire now, or hold the output until the cooldown ends so a noisy monitor can't wake the agent constantly. */
-  private async deliver(r: Running, lines: string[]): Promise<void> {
-    const m = await this.current(r);
-    if (!m || r.stopped) return;
+  // Decided without waiting on anything: lines that arrive together go out together, in one wake-up.
+  private deliver(r: Running, lines: string[]): void {
+    if (r.stopped) return;
     r.held.push(...lines);
     if (r.held.length > MAX_HELD_LINES) r.held = r.held.slice(-MAX_HELD_LINES);
     if (r.cooldownTimer) return;
-    const since = m.lastFiredAt ? Date.now() - new Date(m.lastFiredAt).getTime() : Infinity;
-    const wait = Math.max(0, m.cooldownMs - since);
-    const flush = async () => {
-      r.cooldownTimer = undefined;
-      const out = r.held.join("\n");
-      r.held = [];
-      if (!out || r.stopped) return;
-      const fresh = await this.storeFor(r.agent).patchMonitor(r.id, { lastFiredAt: new Date().toISOString(), failures: 0, status: "active" });
-      if (fresh) this.ev.fire(r.agent, fresh, out);
-    };
-    if (wait === 0) await flush();
-    else r.cooldownTimer = setTimeout(() => void flush(), wait);
+    const wait = r.lastFiredAt ? r.cooldownMs - (Date.now() - r.lastFiredAt) : 0;
+    r.cooldownTimer = setTimeout(() => void this.flush(r), delay(wait));
+  }
+
+  private async flush(r: Running): Promise<void> {
+    r.cooldownTimer = undefined;
+    const out = r.held.join("\n");
+    r.held = [];
+    if (!out || r.stopped) return;
+    // Set before anything is awaited, so lines arriving meanwhile wait for the cooldown.
+    r.lastFiredAt = Date.now();
+    if (!(await this.current(r))) return;
+    const fresh = await this.storeFor(r.agent).patchMonitor(r.id, { lastFiredAt: new Date(r.lastFiredAt).toISOString(), failures: 0, status: "active" });
+    if (fresh && !r.stopped) this.ev.fire(r.agent, fresh, out);
   }
 
   private async failed(r: Running, detail: string): Promise<void> {
@@ -177,7 +187,8 @@ export class MonitorRunner {
       if (r.stopped) return;
       const started = Date.now();
       const l = launch(m.run, r.protect);
-      if ("error" in l) return void this.failed(r, l.error);
+      // Can't start: a failure like any other, retried with the same back-off (and reported at the third).
+      if ("error" in l) return void this.failed(r, l.error).then(restart);
       const proc = spawn(l.command, l.args, { cwd: this.cwdFor(r.agent), stdio: ["ignore", "pipe", "pipe"], detached: true });
       r.proc = proc;
       if (proc.pid) {
@@ -188,7 +199,7 @@ export class MonitorRunner {
       proc.stderr?.on("data", (c) => (stderr = (stderr + c.toString()).slice(-2000)));
       const rl = createInterface({ input: proc.stdout! });
       rl.on("line", (line) => {
-        if (line.trim()) void this.deliver(r, [line]);
+        if (line.trim()) this.deliver(r, [line]);
       });
       proc.on("error", (e) => void this.failed(r, `could not start: ${e.message}`));
       proc.on("exit", (code, sig) => {
@@ -200,13 +211,16 @@ export class MonitorRunner {
         if (r.stopped) return;
         const ranFor = Date.now() - started;
         // A long-running monitor that exits is restarted. Quick exits count as failures and back off.
-        if (ranFor < 30_000 || code !== 0) void this.failed(r, `exited (${sig ?? code}) after ${Math.round(ranFor / 1000)}s. ${stderr.trim()}`);
-        void this.current(r).then((cur) => {
-          if (!cur || r.stopped) return;
-          const delay = Math.min(30 * 60_000, 5_000 * 2 ** Math.min(8, cur.failures));
-          r.restartTimer = setTimeout(run, delay);
-        });
+        // The failure is counted before the back-off is worked out from it.
+        const counted = ranFor < 30_000 || code !== 0 ? this.failed(r, `exited (${sig ?? code}) after ${Math.round(ranFor / 1000)}s. ${stderr.trim()}`) : Promise.resolve();
+        void counted.then(restart);
       });
+    };
+    // A long-running monitor that stops is started again, backing off the more it fails.
+    const restart = async () => {
+      const cur = await this.current(r);
+      if (!cur || r.stopped) return;
+      r.restartTimer = setTimeout(run, Math.min(30 * 60_000, 5_000 * 2 ** Math.min(8, cur.failures)));
     };
     run();
   }
@@ -232,7 +246,7 @@ export class MonitorRunner {
         }
         if (out !== cur.lastOutput) {
           await this.storeFor(r.agent).patchMonitor(r.id, { lastOutput: out, failures: 0, status: "active" });
-          await this.deliver(r, [out || "(output is now empty)"]);
+          this.deliver(r, [out || "(output is now empty)"]);
         } else if (cur.failures) {
           await this.storeFor(r.agent).patchMonitor(r.id, { failures: 0, status: "active" });
         }
@@ -241,7 +255,7 @@ export class MonitorRunner {
       }
     };
     void tick();
-    r.timer = setInterval(() => void tick(), m.everyMs!);
+    r.timer = setInterval(() => void tick(), delay(m.everyMs!));
   }
 }
 
