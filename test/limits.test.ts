@@ -40,6 +40,8 @@ describe("a usage limit, on any backend", () => {
       // Your message is kept for when it resumes.
       expect((await rt.store(name).inbox()).some((i) => i.text.includes(trigger))).toBe(true);
       expect((await rt.store(name).messages()).some((m) => m.kind === "alert")).toBe(false);
+      // Its kept message hits the limit again whenever it resumes, which would put the limit back in the tests below.
+      await rt.stopAgent(name);
     });
   }
 });
@@ -57,7 +59,8 @@ describe("a usage limit that lifts before its reset (you upgraded, bought more, 
     limitOff(); // lifted early
     await rt.send("lifted", "are you back?");
     await until(async () => (await rt.store("lifted").messages()).some((m) => m.from === "agent" && m.text.includes("are you back?")), 30_000, "answered");
-    expect((await loadAgent("lifted")).state.status).not.toBe("paused");
+    // The reply is sent during the turn; the limit is cleared once the turn is over.
+    await until(async () => ((await loadAgent("lifted")).state.status === "asleep" ? true : null), 30_000, "turn over");
     expect(JSON.parse(readFileSync(join(home, "limits.json"), "utf8")).fake.status).toBe("allowed"); // cleared for every agent
   });
 
