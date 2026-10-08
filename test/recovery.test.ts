@@ -308,7 +308,9 @@ describe("budgets and settings", () => {
   });
 
   it("puts back a settings block changed between turns, however it was changed", async () => {
-    await employ("rewritten", { dailyBudgetUsd: 3, protect: [join(home, "protected")] });
+    await employ("rewritten", { dailyBudgetUsd: 3 });
+    // Protected after its first turn: a turn with protected paths only runs where they can be enforced (not every CI machine).
+    await setSettings("rewritten", { protect: [join(home, "protected")] });
     const f = join(home, "agents", "rewritten", "AGENT.md");
     expect(readFileSync(f, "utf8")).toContain("# Shown for reference. Change these in the app (→), with overtime set rewritten key=value, or in .overtime/settings.json");
     // Rewritten directly (a script, git, an editor): no session's tool call ever names AGENT.md.
