@@ -220,7 +220,7 @@ Messages, answers and finished helpers always wake you early.`,
       "tell",
       {
         description:
-          "Tell one of your helpers something, by its id. A running helper stops what it's doing, reads it, and carries on in the same session: a correction, more detail, a change of plan. A helper that finished, failed, was cancelled or was cut off carries on from where it was, in the same session with what it knew and its folder: a follow-up, a fix to its work, finishing what was left. Its result comes to you again. Prefer this to starting a new helper for the same work.",
+          "Tell one of your helpers something, by its id. A running helper reads it as soon as its current step finishes (a running command is never cut off) and carries on in the same session: a correction, more detail, a change of plan. A helper that finished, failed, was cancelled or was cut off carries on from where it was, in the same session with what it knew and its folder: a follow-up, a fix to its work, finishing what was left. Its result comes to you again. Prefer this to starting a new helper for the same work.",
         inputSchema: {
           helper: z.string().describe("The helper's id."),
           text: z.string().describe("What to tell it."),
