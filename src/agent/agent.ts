@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../paths.js";
-import { readJson, writeJson } from "../fsutil.js";
+import { readJson, writeAtomic, writeJson } from "../fsutil.js";
 import { withLock } from "../store/mutex.js";
 import { parseFrontMatter } from "./frontmatter.js";
 import { loadSettings, type McpServerConfig } from "../settings.js";
@@ -114,7 +114,7 @@ export async function createAgent(name: string, settings: AgentSettings = {}): P
   if (existsSync(dir)) throw new Error(`An agent called "${name}" already exists.`);
   await mkdir(paths.meta(name), { recursive: true });
   const { stringifyFrontMatter } = await import("./frontmatter.js");
-  await writeFile(join(dir, "AGENT.md"), stringifyFrontMatter(settings as Record<string, unknown>, blankAgentMd(name)));
+  await writeAtomic(join(dir, "AGENT.md"), stringifyFrontMatter(settings as Record<string, unknown>, blankAgentMd(name)));
   await writeSettingsSnapshot(name, settings);
   const state: AgentState = {
     formatVersion: FORMAT_VERSION,
@@ -228,7 +228,8 @@ async function restoreSettingsNow(name: string): Promise<boolean> {
   const snap = saved;
   if (JSON.stringify(sortKeys(fm.data as Record<string, unknown>)) === JSON.stringify(sortKeys(snap as Record<string, unknown>))) return false;
   const { stringifyFrontMatter } = await import("./frontmatter.js");
-  await writeFile(join(paths.agent(name), "AGENT.md"), stringifyFrontMatter(snap as Record<string, unknown>, fm.body));
+  // Atomic: a crash mid-write must never leave the agent without its AGENT.md.
+  await writeAtomic(join(paths.agent(name), "AGENT.md"), stringifyFrontMatter(snap as Record<string, unknown>, fm.body));
   return true;
 }
 

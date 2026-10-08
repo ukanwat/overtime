@@ -163,7 +163,8 @@ export class ControlServer {
       const n = Math.max(1, Math.min(2000, Number(limit) || 300));
       const page = all.slice(-n);
       if (markRead && !before && (await store.unread())) {
-        await store.markRead();
+        // Read up to what this page shows: a message that arrived meanwhile stays unread.
+        await store.markRead(page.at(-1)?.id);
         this.rt.changed(name, "messages");
       }
       return { messages: page, hasMore: all.length > page.length };

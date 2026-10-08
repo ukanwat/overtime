@@ -173,9 +173,16 @@ export class Store {
     return all.slice(from).filter((m) => m.from !== "you").length;
   }
 
-  async markRead(): Promise<void> {
-    const last = (await this.messages()).at(-1);
-    if (last) await this.patchConversation({ lastReadId: last.id });
+  /** Mark everything up to `upTo` (default: the newest message) as seen. Never moves backwards. */
+  async markRead(upTo?: string): Promise<void> {
+    await this.lock(async () => {
+      const all = await this.messages();
+      const c = await this.conversation();
+      const target = upTo ? all.findIndex((m) => m.id === upTo) : all.length - 1;
+      const cur = c.lastReadId ? all.findIndex((m) => m.id === c.lastReadId) : -1;
+      if (target < 0 || target <= cur) return;
+      await writeJson(this.p("conversation.json"), { ...c, lastReadId: all[target].id });
+    });
   }
 
   // ---------- inbox ----------
@@ -357,7 +364,7 @@ export class Store {
   // ---------- decisions (earned autonomy) ----------
 
   async recordDecision(d: Omit<Decision, "t">): Promise<void> {
-    await appendJsonl(this.p("decisions.jsonl"), { t: new Date().toISOString(), ...d });
+    await this.lock(() => appendJsonl(this.p("decisions.jsonl"), { t: new Date().toISOString(), ...d }));
   }
 
   async decisions(): Promise<Decision[]> {
@@ -366,8 +373,9 @@ export class Store {
 
   // ---------- reports ----------
 
+  // Under the lock, like trimLogs, so a report written while the file is trimmed isn't lost.
   async addReport(text: string): Promise<void> {
-    await appendJsonl(this.p("reports.jsonl"), { t: new Date().toISOString(), text });
+    await this.lock(() => appendJsonl(this.p("reports.jsonl"), { t: new Date().toISOString(), text }));
   }
 
   async reports(limit = 20): Promise<{ t: string; text: string }[]> {
