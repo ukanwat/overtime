@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fakeHome } from "./helpers.js";
 
 fakeHome();
-const { findLeftovers, recordLeftovers, liveBackground, stopBackground } = await import("../src/runtime/leftovers.js");
+const { findLeftovers, recordLeftovers, liveBackground, stopBackground, sessionSpan } = await import("../src/runtime/leftovers.js");
 
 const alive = (pid: number) => {
   try {
@@ -17,9 +17,17 @@ const alive = (pid: number) => {
   }
 };
 
-/** Start `sleep` in the background from a shell that then exits, as an agent's `cmd &` would. Returns its pid. */
+/**
+ * Start `sleep` in the background from a shell that then exits, as an agent's `nohup cmd &` would: backends
+ * run each command's shell in a session (and process group) of its own. Returns its pid.
+ */
 function orphan(cwd: string): number {
-  return Number(execFileSync("/bin/sh", ["-c", "sleep 60 >/dev/null 2>&1 & echo $!"], { cwd, encoding: "utf8" }).trim());
+  return Number(execFileSync("/bin/sh", ["-c", "nohup sleep 60 >/dev/null 2>&1 & echo $!"], { cwd, encoding: "utf8", detached: true } as any).trim());
+}
+
+/** The same from a terminal with job control (`npm run dev &`, then closing it): the job leads its own process group. */
+function terminalJob(cwd: string): number {
+  return Number(execFileSync("/bin/sh", ["-c", "set -m; nohup sleep 60 >/dev/null 2>&1 & echo $!"], { cwd, encoding: "utf8", detached: true } as any).trim());
 }
 
 describe("processes an agent keeps running in the background", () => {
@@ -79,5 +87,56 @@ describe("processes an agent keeps running in the background", () => {
     process.kill(other);
     rmSync(elsewhere, { recursive: true, force: true });
     rmSync(mine, { recursive: true, force: true });
+  });
+
+  it("aren't taken from a folder another agent was working in at the same time", async () => {
+    const since = Date.now();
+    const shared = mkdtempSync(join(tmpdir(), "ot-bg-shared-"));
+    const own = mkdtempSync(join(tmpdir(), "ot-bg-own-"));
+    const endA = sessionSpan("share-a", [own, shared]);
+    const endB = sessionSpan("share-b", [shared]);
+    const inShared = orphan(shared); // could be either agent's
+    const inOwn = orphan(own); // only share-a works here
+    await new Promise((r) => setTimeout(r, 300));
+    endB();
+    expect(await recordLeftovers("share-b", since, [shared])).toEqual([]);
+    endA();
+    expect((await recordLeftovers("share-a", since, [own, shared])).map((x) => x.pid)).toEqual([inOwn]);
+    await stopBackground("share-a");
+    expect(alive(inShared)).toBe(true); // stopping one agent never kills what may be the other's
+    process.kill(inShared);
+    rmSync(shared, { recursive: true, force: true });
+    rmSync(own, { recursive: true, force: true });
+  });
+
+  it("aren't taken when another agent already recorded them", async () => {
+    const since = Date.now();
+    const dir = mkdtempSync(join(tmpdir(), "ot-bg-taken-"));
+    const p = orphan(dir);
+    await new Promise((r) => setTimeout(r, 300));
+    expect((await recordLeftovers("taken-a", since, [dir])).map((x) => x.pid)).toEqual([p]);
+    expect(await recordLeftovers("taken-b", since, [dir])).toEqual([]);
+    // Recorded by both (as lists made before this rule can be): stopping either leaves it running.
+    const { writeJson } = await import("../src/fsutil.js");
+    const { paths } = await import("../src/paths.js");
+    await writeJson(join(paths.meta("taken-b"), "background.json"), await liveBackground("taken-a"));
+    expect(await stopBackground("taken-b")).toBe(0);
+    expect(await stopBackground("taken-a")).toBe(0);
+    expect(alive(p)).toBe(true);
+    process.kill(p);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it.runIf(process.platform !== "linux")("leave alone a job the person started from a terminal in the same folder", async () => {
+    const since = Date.now();
+    const dir = mkdtempSync(join(tmpdir(), "ot-bg-person-"));
+    const job = terminalJob(dir);
+    const agents = orphan(dir);
+    await new Promise((r) => setTimeout(r, 300));
+    expect((await recordLeftovers("persontest", since, [dir])).map((x) => x.pid)).toEqual([agents]);
+    await stopBackground("persontest");
+    expect(alive(job)).toBe(true);
+    process.kill(job);
+    rmSync(dir, { recursive: true, force: true });
   });
 });

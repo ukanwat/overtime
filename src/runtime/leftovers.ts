@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFile, readlink } from "node:fs/promises";
+import { readFile, readdir, readlink } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { promisify } from "node:util";
 import { join, sep } from "node:path";
@@ -19,11 +19,18 @@ const run = promisify(execFile);
  * starts inherits it. Where the system lets a process's environment be read (Linux), that marker is
  * what counts: a process that has it and outlived the agent's sessions is the agent's.
  *
- * Elsewhere (macOS hides other processes' environments), backends run each shell command in its own
- * process group, so these are re-parented to init when the shell that started them exits. A process
- * counts as the agent's if all three hold: its parent is gone (ppid 1), it started while the agent's
- * sessions ran, and its working folder is the agent's own folder or workspace. Apps and terminals you
- * start yourself never match.
+ * Elsewhere (macOS hides other processes' environments, and nothing records who started a process once
+ * its parent has exited), backends run each shell command in a process group of its own, so what it
+ * leaves running is re-parented to init and keeps that shell's group after the shell exits. A process
+ * counts as the agent's only if all of these hold:
+ * - its parent is gone (ppid 1) and so is the leader of its process group: a shell's leftover. A
+ *   process leading its own group is a job you started from a terminal, or a daemon that detached
+ *   itself (gradle, bazel), and is never taken.
+ * - it started while the agent's sessions ran;
+ * - its working folder is the agent's own folder or workspace, and no other agent's session worked
+ *   in that folder when it started: there it could be either agent's, so it's neither's.
+ * And on every system, a process another agent has already recorded is never taken. Better to miss
+ * one of the agent's own (it just isn't listed or stopped) than to stop someone else's.
  */
 
 /** The environment variable that marks a backend, and everything it starts, as an agent's. */
@@ -36,11 +43,45 @@ export interface BackgroundProcess {
   cwd: string;
 }
 
+/** When each agent's sessions ran and in which folders, so a folder two agents worked in at once isn't taken as proof of either. */
+const spans: { agent: string; roots: string[]; from: number; to: number | null }[] = [];
+const SPAN_KEEP_MS = 24 * 3600_000;
+
+/** A session of the agent's started, working in these folders. Returns what to call when it ends. */
+export function sessionSpan(agent: string, roots: string[]): () => void {
+  const span = { agent, roots: roots.map(realOr), from: Date.now(), to: null as number | null };
+  spans.push(span);
+  return () => {
+    span.to = Date.now();
+    // Long over: no session still being recorded can overlap it.
+    for (let i = spans.length - 1; i >= 0; i--) if (spans[i].to !== null && spans[i].to! < Date.now() - SPAN_KEEP_MS) spans.splice(i, 1);
+  };
+}
+
+const inside = (p: string, root: string) => p === root || p.startsWith(root.endsWith(sep) ? root : root + sep);
+
+/** Whether another agent's session was working in the folder `cwd` is in at time `t`. */
+function shared(agent: string | undefined, cwd: string, t: number): boolean {
+  return spans.some((s) => s.agent !== agent && s.from - 1000 <= t && t <= (s.to ?? Date.now()) + 1000 && s.roots.some((r) => inside(cwd, r)));
+}
+
+/** What other agents have recorded as theirs ("pid started" keys). */
+async function othersRecorded(agent: string): Promise<Set<string>> {
+  const names = await readdir(paths.agentsDir()).catch(() => [] as string[]);
+  const keys = new Set<string>();
+  for (const n of names) {
+    if (n === agent) continue;
+    for (const b of await readJson<BackgroundProcess[]>(file(n), [])) keys.add(`${b.pid} ${b.started}`);
+  }
+  return keys;
+}
+
 const file = (agent: string) => join(paths.meta(agent), "background.json");
 
 interface PsRow {
   pid: number;
   ppid: number;
+  pgid: number;
   started: string;
   command: string;
 }
@@ -48,12 +89,12 @@ interface PsRow {
 async function ps(): Promise<PsRow[]> {
   try {
     // The C locale, so lstart is always the same five English fields whatever the person's language.
-    const { stdout } = await run("ps", ["-x", "-o", "pid=,ppid=,lstart=,command="], { timeout: 10_000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, LC_ALL: "C" } });
+    const { stdout } = await run("ps", ["-x", "-o", "pid=,ppid=,pgid=,lstart=,command="], { timeout: 10_000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, LC_ALL: "C" } });
     const rows: PsRow[] = [];
     for (const line of stdout.split("\n")) {
       // lstart is a fixed five-field date: "Sat Oct  3 23:26:41 2026".
-      const m = /^\s*(\d+)\s+(\d+)\s+(\w{3}\s+\w{3}\s+\d+\s+[\d:]+\s+\d{4})\s+(.*)$/.exec(line);
-      if (m) rows.push({ pid: Number(m[1]), ppid: Number(m[2]), started: m[3].replace(/\s+/g, " "), command: m[4] });
+      const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\w{3}\s+\w{3}\s+\d+\s+[\d:]+\s+\d{4})\s+(.*)$/.exec(line);
+      if (m) rows.push({ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]), started: m[4].replace(/\s+/g, " "), command: m[5] });
     }
     return rows;
   } catch {
@@ -95,10 +136,12 @@ function realOr(p: string): string {
 /** Processes left running by the agent's sessions that ran since `since` (inside the given folders, where that's the test). */
 export async function findLeftovers(since: number, roots: string[], agent?: string): Promise<BackgroundProcess[]> {
   const real = roots.map(realOr);
-  const inside = (p: string) => real.some((r) => p === r || p.startsWith(r.endsWith(sep) ? r : r + sep));
   const found: BackgroundProcess[] = [];
-  for (const r of await ps()) {
-    if (r.pid === process.pid) continue;
+  const rows = await ps();
+  const running = new Set(rows.map((r) => r.pid));
+  const taken = agent ? await othersRecorded(agent) : new Set<string>();
+  for (const r of rows) {
+    if (r.pid === process.pid || taken.has(`${r.pid} ${r.started}`)) continue;
     const t = new Date(r.started).getTime();
     if (!Number.isFinite(t) || t < since - 1000) continue; // lstart has one-second resolution
     // Marked as this agent's: it is, wherever it runs. Marked as another agent's: it isn't. Unmarked
@@ -109,9 +152,9 @@ export async function findLeftovers(since: number, roots: string[], agent?: stri
       continue;
     }
     if (marker) continue;
-    if (r.ppid !== 1) continue;
+    if (r.ppid !== 1 || r.pgid === r.pid || running.has(r.pgid)) continue;
     const cwd = await cwdOf(r.pid);
-    if (cwd && inside(cwd)) found.push({ pid: r.pid, started: r.started, command: r.command, cwd });
+    if (cwd && real.some((root) => inside(cwd, root)) && !shared(agent, cwd, t)) found.push({ pid: r.pid, started: r.started, command: r.command, cwd });
   }
   return found;
 }
@@ -142,7 +185,9 @@ export async function recordLeftovers(agent: string, since: number, roots: strin
 
 /** Stop an agent's background processes (the agent was stopped or archived). Returns how many. */
 export async function stopBackground(agent: string): Promise<number> {
-  const live = await liveBackground(agent);
+  // One another agent recorded too (lists from before the rule above) could be either's: left running.
+  const taken = await othersRecorded(agent);
+  const live = (await liveBackground(agent)).filter((b) => !taken.has(`${b.pid} ${b.started}`));
   const signal = (sig: NodeJS.Signals) => {
     for (const b of live) {
       try {
