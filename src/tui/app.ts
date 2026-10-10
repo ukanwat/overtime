@@ -261,6 +261,8 @@ export class App implements Component {
   choosing: { id: string; n: number } | null = null;
   fieldInput = new Input({ prompt: "", placeholderStyle: muted });
   pending: PendingAttachment[] = [];
+  /** What you'd started writing (and attaching) to each agent, kept while you look at another one. */
+  private drafts = new Map<string | null, { text: string; pending: PendingAttachment[] }>();
   connected = true;
   live = new Map<string, LiveState>();
   private hits: Hit[] = [];
@@ -295,7 +297,8 @@ export class App implements Component {
     });
     // Enter is the app's to handle (send), never the editor's own submit.
     this.input.disableSubmit = true;
-    this.input.setAutocompleteProvider(new SkillCompletion(() => this.skills));
+    // The selected agent's skills; on "+ New agent" the box takes a name, and the last agent's skills aren't its.
+    this.input.setAutocompleteProvider(new SkillCompletion(() => (this.onNewRow ? [] : this.skills)));
   }
 
   get agent(): AgentSummary | undefined {
@@ -546,8 +549,15 @@ export class App implements Component {
     const next = Math.min(Math.max(0, n), this.agents.length);
     if (next !== this.sel) {
       this.choosing = null;
+      // A half-written message stays with the agent it was for, never sent to the next one by Enter.
+      const text = this.input.getValue();
+      if (text || this.pending.length) this.drafts.set(this.selName, { text, pending: this.pending });
+      else this.drafts.delete(this.selName);
       this.sel = next;
       this.selName = this.agents[next]?.name ?? null;
+      const draft = this.drafts.get(this.selName);
+      this.input.setValue(draft?.text ?? "");
+      this.pending = draft?.pending ?? [];
       this.messages = [];
       this.loadedFor = "";
       this.scroll = Number.MAX_SAFE_INTEGER;

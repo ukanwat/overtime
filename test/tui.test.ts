@@ -388,6 +388,21 @@ describe("terminal app, with a scripted daemon", () => {
     expect(c.calls.some((k) => k.method === "answer" || k.method === "dismiss")).toBe(false);
   });
 
+  it("keeps what you were writing with its agent when you move to another", async () => {
+    const { t, c, seen } = await open();
+    await seen("Merge the dependency fix?");
+    t.type("delete the old branches");
+    await seen("delete the old branches");
+    t.press(KEY.down);
+    await seen("Harbour blockout done");
+    expect(await t.screen()).not.toContain("delete the old branches");
+    t.press(KEY.enter);
+    await sleep(200);
+    expect(c.calls.some((k) => k.method === "send" || k.method === "answer")).toBe(false);
+    t.press(KEY.up);
+    await seen("delete the old branches");
+  });
+
   it("never puts a panel's clicks on the message box or footer in a short terminal", async () => {
     const { t, app } = await open(100, 9);
     await sleep(300);
