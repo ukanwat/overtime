@@ -9,7 +9,7 @@ import { effectiveSettings, loadAgent, restoreSettings, updateState, type Agent 
 import type { McpServerConfig } from "../settings.js";
 import { INSTRUCTIONS_VERSION, workingInstructions } from "./instructions.js";
 import { answer } from "./permissions.js";
-import { clearLimit, recordTurnUsage, writeLimit, type TurnUsage } from "./usage.js";
+import { clearLimit, readLimits, recordTurnUsage, writeLimit, type TurnUsage } from "./usage.js";
 import { classify } from "./errors.js";
 
 export type SessionKind = "main" | "chat" | "helper";
@@ -229,6 +229,13 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
       if (stopped) throw new TurnIncompleteError(stopped, promptSent);
       // A usage limit, whichever backend says so: noted for the backend, so every agent on it waits
       // (see blockedUntil), and reported as a limit rather than a failure.
+      // Claude reports a used-up subscription limit with the same error kind as a passing rate limit.
+      // What tells them apart is the limit status the backend itself last reported for the account
+      // (its structured rate-limit updates, kept in limits.json): rejected, with a reset still ahead.
+      if (classify(e) === "transient") {
+        const rec = (await readLimits())[eff.backend];
+        if (rec?.status === "rejected" && rec.resetsAt && rec.resetsAt * 1000 > Date.now()) throw new UsageLimitError(eff.backend, new Date(rec.resetsAt * 1000));
+      }
       if (classify(e) === "limit") {
         await writeLimit({ backend: eff.backend, status: "rejected", updatedAt: new Date().toISOString() });
         throw new UsageLimitError(eff.backend, null);

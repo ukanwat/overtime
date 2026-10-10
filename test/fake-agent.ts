@@ -60,6 +60,7 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
   // A usage limit, as Codex reports it (structured) and as a backend that sends only words would.
   if (/LIMIT_CODEX/.test(text)) throw new acp.RequestError(-32603, "Internal error", { message: "You've hit your usage limit.", codexErrorInfo: "usageLimitExceeded" });
   if (/LIMIT_WORDS/.test(text)) throw new acp.RequestError(-32603, "Internal error", { message: "Quota exceeded for this model; try again later" });
+  if (/RATE_LIMITED_TURN/.test(text)) throw new acp.RequestError(-32603, "Internal error", { errorKind: "rate_limit", message: "You've hit your session limit" }); // Claude's shape
   if (/OVERLOADED_TURN/.test(text)) throw new acp.RequestError(-32603, "Internal error", { errorKind: "overloaded", message: "API Error: 529" }); // Claude's shape
   if (/FAIL_TURN/.test(text) && !/RECOVERED/.test(text)) throw new acp.RequestError(-32603, "Internal error", { message: "scripted failure" });
   if (/SAVE_ON_EXIT/.test(text)) {

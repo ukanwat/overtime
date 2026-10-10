@@ -100,12 +100,19 @@ describe("a usage limit that lifts before its reset (you upgraded, bought more, 
   });
 });
 
-describe("Claude's own limit wording", () => {
-  it("a session limit Claude labels rate_limit is a usage limit, not a passing problem", async () => {
-    const { classify } = await import("../src/runtime/errors.js");
-    const { BackendError } = await import("../src/runtime/errors.js");
-    const e = new BackendError("claude: Internal error: You've hit your session limit · resets 1:40am (Asia/Calcutta)", "claude", -32603, { errorKind: "rate_limit", message: "You've hit your session limit · resets 1:40am (Asia/Calcutta)" });
-    expect(classify(e)).toBe("limit");
-    expect(classify(new BackendError("claude: rate limited", "claude", -32603, { errorKind: "rate_limit", message: "Request rate limited, retry" }))).toBe("transient");
+describe("a limit reported with the same kind as a passing rate limit (Claude's way)", () => {
+  it("is a usage limit when the backend last reported the account over its limit, not \"can't reach\"", async () => {
+    await employ("ratekind");
+    const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+    writeFileSync(join(home, "limits.json"), JSON.stringify({ fake: { backend: "fake", status: "rejected", resetsAt, updatedAt: new Date().toISOString() } }));
+    await rt.send("ratekind", "RATE_LIMITED_TURN now");
+    const a = await until(async () => {
+      const x = await loadAgent("ratekind");
+      return x.state.status === "paused" ? x : null;
+    }, 30_000, "paused");
+    expect(a.state.pauseReason).toBe("limit");
+    expect(a.state.troubleSince ?? null).toBeNull();
+    expect(new Date(a.state.limitResetsAt!).getTime()).toBe(resetsAt * 1000);
+    await rt.stopAgent("ratekind");
   });
 });
