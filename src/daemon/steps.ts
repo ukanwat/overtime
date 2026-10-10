@@ -5,6 +5,7 @@ const OVERTIME_TOOLS: Record<string, string> = {
   wake: "Planning when to work next",
   cancel: "Stopping a watch or helper",
   spawn: "Starting a helper",
+  tell: "Writing to a helper",
   done: "Handing back its result",
   skill: "Reading a skill",
 };

@@ -115,6 +115,10 @@ then `overtime set <name> backend=goose`. Cost is read when the backend reports 
   workspace's last commit (or a copy of a small non-git workspace). Up to 6 at once. Optional `role_file`
   (a file in your folder describing the role; `backend`/`model` at its top choose what it runs on).
   Its result arrives in your inbox; its folder is removed a week after it finished (git branches stay).
+- `tell` - tell one of your helpers something, by id. A running helper reads it at once and carries
+  on in its session; one that finished, failed, was cancelled or was cut off carries on from where it
+  was (same session and folder). Use it to correct a helper, add what it needs, or ask a finished one
+  for a follow-up instead of starting a new one. `cancel` stops one.
 - `done` - helpers only: hand back the result.
 - `skill` - load a skill by name (or list them).
 

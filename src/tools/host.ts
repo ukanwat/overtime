@@ -28,6 +28,8 @@ export interface ToolHost {
   withdrawQuestion(agent: string, questionId: string): Promise<boolean>;
   /** Stop a running helper. False if there is no such running helper. */
   cancelHelper(agent: string, helperId: string): Promise<boolean>;
+  /** Send a helper a note: a running one reads it and carries on; a finished one carries on from where it was. */
+  tellHelper(agent: string, helperId: string, text: string): Promise<string>;
   startMonitor(agent: string, monitorId: string): void;
   stopMonitor(agent: string, monitorId: string): void;
   notify(title: string, body: string): void;
