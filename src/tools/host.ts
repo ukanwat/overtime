@@ -23,13 +23,17 @@ export interface ToolHost {
   agentDir(agent: string): string;
   /** Wake the agent's main session soon (coalesced if one is running). */
   wakeMain(agent: string, reason: string): void;
-  spawnHelper(ctx: ToolContext, req: { role?: string; instructions?: string; task: string; backend?: string; model?: string }): Promise<{ id: string; workdir: string; note?: string }>;
+  spawnHelper(ctx: ToolContext, req: { role?: string; instructions?: string; task: string; backend?: string; model?: string; withContext?: boolean }): Promise<{ id: string; workdir: string; note?: string }>;
   /** Withdraw one of the agent's own open questions. False if there is no such open question. */
   withdrawQuestion(agent: string, questionId: string): Promise<boolean>;
   /** Stop a running helper. False if there is no such running helper. */
   cancelHelper(agent: string, helperId: string): Promise<boolean>;
   /** Send a helper a note: a running one reads it and carries on; a finished one carries on from where it was. */
   tellHelper(agent: string, helperId: string, text: string): Promise<string>;
+  /** A helper reports how it's going (urgent: wake the agent for it now). */
+  helperUpdate(ctx: ToolContext, text: string, urgent: boolean): Promise<void>;
+  /** The agent's helpers, as a few plain lines each: running ones first, then recent ones. */
+  helpersReport(agent: string): Promise<string>;
   startMonitor(agent: string, monitorId: string): void;
   stopMonitor(agent: string, monitorId: string): void;
   notify(title: string, body: string): void;

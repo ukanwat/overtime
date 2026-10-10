@@ -31,7 +31,7 @@ function safe<A>(fn: (a: A) => Promise<Result>): (a: A) => Promise<Result> {
 const when = (d: Date) => `${d.toISOString()} (${d.toString()})`;
 
 /**
- * Overtime's tools: deliberately few. Main sessions get wake, cancel, ask, send, spawn, tell.
+ * Overtime's tools: deliberately few. Main sessions get wake, cancel, ask, send, spawn, tell, helpers.
  * Chat sessions get ask and send. Helpers get done; they hand results back and don't start their own.
  */
 export function registerTools(mcp: McpServer, ctx: ToolContext, host: ToolHost): void {
@@ -196,9 +196,10 @@ Messages, answers and finished helpers always wake you early.`,
           role_file: z.string().optional().describe("Path of a role you wrote, inside your folder (relative to it, or absolute)."),
           backend: z.string().optional(),
           model: z.string().optional(),
+          with_context: z.boolean().optional().describe("Start it knowing what you know: what you were told, did and said in your recent sessions is given to it, instead of a clean start. It costs more; use it when the context matters more than a clean start."),
         },
       },
-      safe(async ({ task, role_file, backend, model }) => {
+      safe(async ({ task, role_file, backend, model, with_context }) => {
         let instructions = "";
         let roleBackend: string | undefined;
         let roleModel: string | undefined;
@@ -209,7 +210,7 @@ Messages, answers and finished helpers always wake you early.`,
           roleBackend = typeof data.backend === "string" ? data.backend : undefined;
           roleModel = typeof data.model === "string" ? data.model : undefined;
         }
-        const h = await host.spawnHelper(ctx, { task, instructions, role: role_file, backend: backend ?? roleBackend, model: model ?? roleModel });
+        const h = await host.spawnHelper(ctx, { task, instructions, role: role_file, backend: backend ?? roleBackend, model: model ?? roleModel, withContext: !!with_context });
         host.changed(ctx.agent, "helpers");
         return ok(`Helper ${h.id} started in ${h.workdir}. Its result will come to you.${h.note ? `\n\nNote: ${h.note}` : ""}`);
       }),
@@ -230,6 +231,15 @@ Messages, answers and finished helpers always wake you early.`,
         host.changed(ctx.agent, "helpers");
         return ok(r);
       }),
+    );
+
+    reg(
+      "helpers",
+      {
+        description: "Your helpers right now: each running one (what it's doing this moment and what it last reported), then the ones that finished recently, with their ids, results and folders.",
+        inputSchema: {},
+      },
+      safe(async () => ok(await host.helpersReport(ctx.agent))),
     );
 
   }
@@ -266,6 +276,19 @@ Messages, answers and finished helpers always wake you early.`,
       safe(async ({ result }) => {
         ctx.result = result;
         return ok("Thanks. End your turn now.");
+      }),
+    );
+
+    reg(
+      "update",
+      {
+        description:
+          "Tell the agent that started you how it's going, while you keep working: progress, something it should know now, a question you're stuck on. It reads it at its next turn; urgent wakes it now (only when you're blocked or it must act). Keep working afterwards; your result still goes in done.",
+        inputSchema: { text: z.string(), urgent: z.boolean().optional() },
+      },
+      safe(async ({ text, urgent }) => {
+        await host.helperUpdate(ctx, text, !!urgent);
+        return ok(urgent ? "Sent, and it was woken for it. Keep working (or wait for its answer if you're blocked)." : "Sent. Keep working.");
       }),
     );
   }

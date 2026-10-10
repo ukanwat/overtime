@@ -61,7 +61,7 @@ export interface Conversation {
   chatPrompt?: string;
 }
 
-export type InboxType = "message" | "answer" | "monitor" | "helper" | "system" | "loop";
+export type InboxType = "message" | "answer" | "monitor" | "helper" | "helper-update" | "system" | "loop";
 
 export interface InboxItem {
   id: string;
@@ -137,4 +137,8 @@ export interface HelperRecord {
   result?: string;
   /** Its backend session, so it can be told more, or carry on after it finished, with what it knew. */
   sessionId?: string | null;
+  /** Started with the agent's context: what it was given of the agent's recent work. */
+  contextText?: string;
+  /** What it reported while working (the latest last). */
+  updates?: { t: string; text: string }[];
 }

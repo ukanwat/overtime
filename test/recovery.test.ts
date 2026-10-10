@@ -91,6 +91,47 @@ describe("helpers", () => {
     await until(async () => (await rt.store("teller").inbox()).some((i) => i.type === "helper" && i.text.includes("one more thing")) || readFileSync(join(meta("teller"), "inbox-delivered.jsonl"), "utf8").includes("one more thing"), 30_000, "result reached the agent");
   });
 
+  it("report how they're going while they work, and the agent can check on them any time", async () => {
+    await employ("reporter");
+    await rt.send("reporter", "PASS SPAWN_SLOW");
+    const h = await until(async () => (await rt.store("reporter").helpers()).find((x) => x.status === "running"), 30_000, "helper running");
+    const report = await until(async () => {
+      const r = await rt.helpersReport("reporter");
+      return r.includes("now:") ? r : null;
+    }, 30_000, "a step to show");
+    expect(report).toMatch(new RegExp(`Running \\(1\\):\\n${h.id} · running`));
+    expect(report).toContain(`folder: ${h.workdir}`);
+    await rt.cancelHelper("reporter", h.id);
+    await until(async () => (await rt.store("reporter").helpers()).find((x) => x.id === h.id && x.status === "cancelled"), 30_000, "cancelled");
+    expect(await rt.helpersReport("reporter")).toMatch(/Finished recently:\n.*cancelled/);
+
+    // An update: kept on the helper, and in the agent's inbox; urgent wakes the agent for it.
+    const ctx = { token: "t", agent: "reporter", kind: "main" as const, depth: 0, wakeChosen: false };
+    const u = await rt.spawnHelper(ctx, { task: "UPDATE_URGENT write result.txt" });
+    const done = await until(async () => (await rt.store("reporter").helpers()).find((x) => x.id === u.id && x.status === "done"), 30_000, "helper done");
+    expect(done.updates?.map((x) => x.text)).toEqual(["halfway there"]);
+    const delivered = () => (existsSync(join(meta("reporter"), "inbox-delivered.jsonl")) ? readFileSync(join(meta("reporter"), "inbox-delivered.jsonl"), "utf8") : "");
+    await until(async () => delivered().includes("helper-update") || (await rt.store("reporter").inbox()).some((i) => i.type === "helper-update"), 30_000, "update reached the agent");
+  });
+
+  it("can start knowing what the agent knows: its recent work, on any backend", async () => {
+    await employ("ctxboss");
+    await rt.send("ctxboss", "Remember the code word MARIGOLD");
+    await until(async () => (await rt.store("ctxboss").messages()).some((m) => m.from === "agent" && m.text.includes("MARIGOLD")), 30_000, "turn done");
+    const ctx = { token: "t", agent: "ctxboss", kind: "main" as const, depth: 0, wakeChosen: false };
+    const h = await rt.spawnHelper(ctx, { task: "write result.txt", withContext: true });
+    const done = await until(async () => (await rt.store("ctxboss").helpers()).find((x) => x.id === h.id && x.status === "done"), 30_000, "helper done");
+    const given = readFileSync(join(done.workdir, ".context-given"), "utf8");
+    expect(given).toContain("It was told:");
+    expect(given).toContain("MARIGOLD"); // what the person told the agent
+    expect(given).toContain("It said:"); // and what the agent said
+    expect(given).not.toContain("# Your folder"); // not Overtime's standing instructions
+    // Without with_context, a helper starts clean.
+    const clean = await rt.spawnHelper(ctx, { task: "write result.txt" });
+    const done2 = await until(async () => (await rt.store("ctxboss").helpers()).find((x) => x.id === clean.id && x.status === "done"), 30_000, "helper done");
+    expect(existsSync(join(done2.workdir, ".context-given"))).toBe(false);
+  });
+
   it("won't carry on a helper whose folder is gone, or one that doesn't exist", async () => {
     await expect(rt.tellHelper("teller", "helper_nope", "x")).rejects.toThrow(/no helper/);
     const h = (await rt.store("teller").helpers())[0];
