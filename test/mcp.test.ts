@@ -19,8 +19,9 @@ afterAll(async () => rt.stop());
 describe("MCP servers", () => {
   it("gives agents the shared servers, their own extras, minus ones they switched off, plus Overtime's tools", async () => {
     await rt.create("mcpbot");
-    const md = join(home, "agents", "mcpbot", "AGENT.md");
-    writeFileSync(md, `---\nmcpServers:\n  - name: own-c\n    command: node\n    args: ["-e", "0"]\ndisableMcp:\n  - shared-b\n---\n\n` + readFileSync(md, "utf8"));
+    // A server for this agent only: added where its settings are kept (the copy that counts).
+    const file = join(home, "agents", "mcpbot", ".overtime", "settings.json");
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), mcpServers: [{ name: "own-c", command: "node", args: ["-e", "0"] }], disableMcp: ["shared-b"] }));
     await rt.send("mcpbot", "go");
     await until(async () => (await loadAgent("mcpbot")).state.status === "asleep", 30_000, "turn");
     const seen = readFileSync(join(home, "agents", "mcpbot", ".mcp-seen"), "utf8").trim().split(",");
@@ -30,6 +31,8 @@ describe("MCP servers", () => {
     expect(seen).not.toContain("shared-b");
     // Its own rewrite of AGENT.md must not lose the person's MCP settings.
     expect((await loadAgent("mcpbot")).settings.disableMcp).toEqual(["shared-b"]);
+    // And its AGENT.md shows it.
+    expect(readFileSync(join(home, "agents", "mcpbot", "AGENT.md"), "utf8")).toMatch(/^---\n[\s\S]*name: own-c[\s\S]*\n---\n/);
   });
 });
 

@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { homedir } from "node:os";
 import { judge, answer } from "../src/runtime/permissions.js";
-import { touchesAgentMd } from "../src/runtime/turn.js";
 import { clean, cleanDeep, openPlan } from "../src/tui/app.js";
 import { mkdtempSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -79,16 +78,6 @@ describe("the permission guard", () => {
     ];
     expect(answer({ options: opts } as any, { allowed: true, reason: "" })).toEqual({ outcome: { outcome: "selected", optionId: "a1" } });
     expect(answer({ options: opts } as any, { allowed: false, reason: "" })).toEqual({ outcome: { outcome: "selected", optionId: "r1" } });
-  });
-});
-
-describe("who changed AGENT.md", () => {
-  it("counts the agent's writes, not its reads", () => {
-    const md = join(agentDir, "AGENT.md");
-    expect(touchesAgentMd({ sessionUpdate: "tool_call", kind: "edit", locations: [{ path: md }] } as any, agentDir)).toBe(true);
-    expect(touchesAgentMd({ sessionUpdate: "tool_call", kind: "execute", rawInput: { command: "cat > AGENT.md <<EOF" } } as any, agentDir)).toBe(true);
-    expect(touchesAgentMd({ sessionUpdate: "tool_call", kind: "read", locations: [{ path: md }] } as any, agentDir)).toBe(false);
-    expect(touchesAgentMd({ sessionUpdate: "tool_call", kind: "edit", locations: [{ path: join(agentDir, "INDEX.md") }] } as any, agentDir)).toBe(false);
   });
 });
 

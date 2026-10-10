@@ -79,9 +79,11 @@ run, Overtime asks whether to start it when you log in.
 the agent decides to keep:
 
 - `AGENT.md`: who it is, its job, its rules and how you like things. The agent writes it from your
-  first conversation and keeps it current. A few settings sit at the top (backend, model, daily
-  budget, where the work lives); those are yours, and Overtime puts them back if the agent ever
-  removes them.
+  first conversation and keeps it current. Its settings (backend, model, daily budget, where the
+  work lives, protected paths) are shown at the top for reference. They're yours and change only in
+  the app, with `overtime set`, or in the agent's `.overtime/settings.json` (the copy that counts):
+  if anything else changes that block (the agent, a script, git, or
+  an edit by hand), Overtime puts it back, so no agent can raise its own budget or unprotect a path.
 - `INDEX.md`: the agent's own map of its folder. It's shown to the agent at the start of every
   session, so it always knows where to look.
 - Everything else (notes, data, decisions, scripts, archives) is organised by the agent, the way
@@ -103,7 +105,7 @@ on a permission prompt.
 **It has full access, except what you protect.** An agent can do anything your user account can:
 install packages globally, use any tool, write wherever its work needs. If there's something no agent
 should ever change, list it under `protect` in `~/overtime/settings.json` (for every agent) or in an
-agent's settings, for example `~/Documents` or `~/.ssh`. Those paths become read-only for the agent's
+agent's settings (`overtime set <name> protect=…`), for example `~/Documents` or `~/.ssh`. Those paths become read-only for the agent's
 backend and everything it starts, scripts and programs it wrote included, enforced by the operating
 system (Seatbelt on macOS, bubblewrap on Linux). Nothing is protected unless you list it.
 
@@ -171,8 +173,11 @@ to backends that can't reach MCP servers over HTTP, reads cost when the backend 
 tokens when it doesn't), and if an agent answers without using its tools, its final words still
 reach you.
 
-MCP servers you list in `settings.json` under `mcpServers` are given to every agent; an agent's
-`AGENT.md` settings can add more or switch shared ones off. Agents don't inherit your personal
+MCP servers you list in `~/overtime/settings.json` under `mcpServers` are given to every agent;
+switch one off for a single agent in the app (its settings, "MCP servers"). To give one agent a server
+of its own, add it under `mcpServers` in `~/overtime/agents/<name>/.overtime/settings.json` (same
+shape; keep the file valid JSON): it's used from the agent's next turn, and its `AGENT.md` shows it.
+An agent can also add servers for itself in `mcp.json` in its folder. Agents don't inherit your personal
 Claude Code settings, instructions or MCP servers: they get exactly what Overtime gives them.
 
 ## In your editor

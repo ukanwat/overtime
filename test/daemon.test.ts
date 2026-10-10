@@ -6,7 +6,7 @@ import { fakeHome, until } from "./helpers.js";
 
 const home = fakeHome();
 const { Runtime } = await import("../src/daemon/runtime.js");
-const { loadAgent } = await import("../src/agent/agent.js");
+const { loadAgent, setSettings } = await import("../src/agent/agent.js");
 const { usageToday } = await import("../src/runtime/usage.js");
 
 const logs: string[] = [];
@@ -112,8 +112,7 @@ describe("an agent's life", () => {
     mkdirSync(ws, { recursive: true });
     execFileSync("git", ["init", "-q", ws]);
     execFileSync("git", ["-C", ws, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"]);
-    const agentMd = join(home, "agents", "tester", "AGENT.md");
-    writeFileSync(agentMd, `---\nworkspace: ${ws}\n---\n\n` + readFileSync(agentMd, "utf8"));
+    await setSettings("tester", { workspace: ws });
     await rt.send("tester", "PASS SPAWN");
     const h = await until(async () => (await rt.store("tester").helpers()).find((x) => x.status !== "running"), 60_000, "helper done");
     expect(h.status, h.result).toBe("done");
@@ -150,8 +149,7 @@ describe("an agent's life", () => {
 
   it("pauses at the daily budget and says so once", async () => {
     await rt.create("budget");
-    const md = join(home, "agents", "budget", "AGENT.md");
-    writeFileSync(md, `---\ndailyBudgetUsd: 0.005\n---\n\n` + readFileSync(md, "utf8"));
+    await setSettings("budget", { dailyBudgetUsd: 0.005 });
     await rt.send("budget", "go");
     await until(async () => (await loadAgent("budget")).state.status === "asleep", 30_000, "first turn");
     rt.wakeMain("budget", "test");

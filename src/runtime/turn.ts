@@ -5,7 +5,7 @@ import { paths } from "../paths.js";
 import { isolationEnv } from "../acp/backends.js";
 import { appendJsonl, newId } from "../fsutil.js";
 import { AcpSession, type SessionUpdate, type PromptResult } from "../acp/session.js";
-import { adoptSettingsEdit, effectiveSettings, loadAgent, restoreSettings, updateState, type Agent } from "../agent/agent.js";
+import { effectiveSettings, loadAgent, restoreSettings, updateState, type Agent } from "../agent/agent.js";
 import type { McpServerConfig } from "../settings.js";
 import { INSTRUCTIONS_VERSION, workingInstructions } from "./instructions.js";
 import { answer } from "./permissions.js";
@@ -99,27 +99,6 @@ const KILL_GRACE_MS = 20_000;
 /** Per agent: how many of its sessions are running, and since when, for cleaning up what they leave behind. */
 const activeSessions = new Map<string, { count: number; since: number; roots: Set<string> }>();
 
-
-
-/** When an agent's own session last wrote (or may have written) its AGENT.md, per agent. */
-const agentMdTouched = new Map<string, number>();
-/** Sessions still running that wrote AGENT.md: until they end, no change to it can be the person's. */
-const agentMdWriters = new Map<string, Set<string>>();
-
-/** Whether a tool call from the agent writes, or may write, its AGENT.md. */
-export function touchesAgentMd(u: SessionUpdate, agentDir: string): boolean {
-  if (u.sessionUpdate !== "tool_call" && u.sessionUpdate !== "tool_call_update") return false;
-  const tc = u as any;
-  if (tc.kind === "read" || tc.kind === "search" || tc.kind === "fetch" || tc.kind === "think") return false;
-  const target = `${agentDir.replace(/\/+$/, "")}/AGENT.md`;
-  const paths = [...(tc.locations ?? []).map((l: any) => l?.path), tc.rawInput?.file_path, tc.rawInput?.path, tc.rawInput?.notebook_path].filter((p) => typeof p === "string");
-  if (paths.some((p: string) => p === target || p === "AGENT.md" || p.endsWith("/AGENT.md"))) return true;
-  // The command, however the backend sends it: a string, a list of arguments, or only in the title.
-  const cmd = tc.rawInput?.command ?? tc.rawInput?.cmd;
-  const text = typeof cmd === "string" ? cmd : Array.isArray(cmd) ? cmd.join(" ") : tc.kind === "execute" && typeof tc.title === "string" ? tc.title : "";
-  return text.includes("AGENT.md");
-}
-
 export async function runTurn(o: TurnOptions): Promise<TurnResult> {
   if (o.signal?.aborted) throw new TurnIncompleteError("cancelled before it started");
   const agent = await loadAgent(o.agent);
@@ -129,7 +108,6 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
   const runLog = join(paths.meta(agent.name), "runs", `${runId}.jsonl`);
   const record = (event: string, data: unknown) => appendJsonl(runLog, { t: new Date().toISOString(), event, data }).catch(() => {});
   const scope = { roots: [agent.dir, base.workspace, eff.workspace] };
-  const startedAt = Date.now();
 
   let reply = "";
   let sessionCost: number | null = null;
@@ -173,11 +151,6 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
       env: { [AGENT_MARKER]: agent.name, ...(await isolationEnv(eff.backend, paths.meta(agent.name))) },
       mcpServers: [...eff.mcpServers, ...(o.extraMcp ?? [])],
       onUpdate: (u) => {
-        if (o.kind !== "helper" && touchesAgentMd(u, agent.dir)) {
-          agentMdTouched.set(agent.name, Date.now());
-          if (!agentMdWriters.has(agent.name)) agentMdWriters.set(agent.name, new Set());
-          agentMdWriters.get(agent.name)!.add(runId);
-        }
         if (u.sessionUpdate === "agent_message_chunk" && u.content.type === "text") {
           // Text from separate messages (with tool calls between) becomes separate paragraphs, not one run-on line.
           if (afterTool && reply && !/\s$/.test(reply)) reply += "\n\n";
@@ -302,14 +275,7 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
       const fresh = await recordLeftovers(agent.name, act.since, [...act.roots]).catch(() => []);
       if (fresh.length) o.log?.(`[${agent.name}] keeps running in the background: ${fresh.map((b) => `${b.pid} ${b.command.slice(0, 80)}`).join("; ")}`);
     }
-    // The settings block is the person's. If an agent session wrote AGENT.md since this turn began, a
-    // changed block is the agent's doing and is put back; if none did, the change is the person's edit.
-    if (o.kind !== "helper") {
-      const writers = agentMdWriters.get(agent.name);
-      writers?.delete(runId);
-      if ((agentMdTouched.get(agent.name) ?? 0) >= startedAt || writers?.size) {
-        if (await restoreSettings(agent.name)) o.log?.(`[${agent.name}] put back the person's settings in AGENT.md after the agent's rewrite`);
-      } else if (await adoptSettingsEdit(agent.name)) o.log?.(`[${agent.name}] adopted the settings you edited in AGENT.md`);
-    }
+    // The settings block only shows the person's settings: whatever changed it during the turn is undone.
+    if (o.kind !== "helper" && (await restoreSettings(agent.name))) o.log?.(`[${agent.name}] put back its settings in AGENT.md (they change only from the app or overtime set)`);
   }
 }

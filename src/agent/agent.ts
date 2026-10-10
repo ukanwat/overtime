@@ -114,7 +114,7 @@ export async function createAgent(name: string, settings: AgentSettings = {}): P
   if (existsSync(dir)) throw new Error(`An agent called "${name}" already exists.`);
   await mkdir(paths.meta(name), { recursive: true });
   const { stringifyFrontMatter } = await import("./frontmatter.js");
-  await writeAtomic(join(dir, "AGENT.md"), stringifyFrontMatter(settings as Record<string, unknown>, blankAgentMd(name)));
+  await writeAtomic(join(dir, "AGENT.md"), stringifyFrontMatter(settings as Record<string, unknown>, blankAgentMd(name), settingsComment(name)));
   await writeSettingsSnapshot(name, settings);
   const state: AgentState = {
     formatVersion: FORMAT_VERSION,
@@ -190,8 +190,8 @@ export async function updateState(name: string, patch: Partial<AgentState>, opts
 const settingsFile = (name: string) => join(paths.meta(name), "settings.json");
 
 /**
- * The person's settings for an agent. AGENT.md's front matter shows them, but the agent rewrites
- * AGENT.md, so the daemon keeps its own copy and that copy is what counts.
+ * The person's settings for an agent: the only copy that counts. AGENT.md's front matter shows them for
+ * reference, and is put back to match whenever anything else changes it.
  */
 export async function readSettingsSnapshot(name: string): Promise<AgentSettings | null> {
   return readJson<AgentSettings | null>(settingsFile(name), null);
@@ -210,7 +210,15 @@ async function frontMatterOf(name: string): Promise<{ data: AgentSettings; body:
   }
 }
 
-/** After a turn: make AGENT.md's settings block exactly the person's settings again. */
+/** The line at the top of AGENT.md's settings block saying where they're changed. */
+function settingsComment(name: string): string {
+  return `Shown for reference. Change these in the app (→), with overtime set ${name} key=value, or in .overtime/settings.json`;
+}
+
+/**
+ * Make AGENT.md's settings block exactly the person's settings again, whoever changed it (the agent, a
+ * helper, a script, git, or a hand edit). Settings change only through setSettings.
+ */
 export async function restoreSettings(name: string): Promise<boolean> {
   return withLock(`settings:${name}`, () => restoreSettingsNow(name));
 }
@@ -229,29 +237,8 @@ async function restoreSettingsNow(name: string): Promise<boolean> {
   if (JSON.stringify(sortKeys(fm.data as Record<string, unknown>)) === JSON.stringify(sortKeys(snap as Record<string, unknown>))) return false;
   const { stringifyFrontMatter } = await import("./frontmatter.js");
   // Atomic: a crash mid-write must never leave the agent without its AGENT.md.
-  await writeAtomic(join(paths.agent(name), "AGENT.md"), stringifyFrontMatter(snap as Record<string, unknown>, fm.body));
+  await writeAtomic(join(paths.agent(name), "AGENT.md"), stringifyFrontMatter(snap as Record<string, unknown>, fm.body, settingsComment(name)));
   return true;
-}
-
-/**
- * While no session is running: a changed settings block in AGENT.md is the person's edit, so adopt it.
- * A block that disappeared entirely is never adopted (that is a rewrite that dropped it); it is put back.
- */
-export async function adoptSettingsEdit(name: string): Promise<boolean> {
-  // Under the same lock as setSettings: a change from the app is written to the snapshot and then to
-  // AGENT.md, and in between AGENT.md must not be mistaken for an edit of the person's.
-  return withLock(`settings:${name}`, async () => {
-    const fm = await frontMatterOf(name);
-    if (!fm) return false;
-    const snap = (await readSettingsSnapshot(name)) ?? {};
-    if (!Object.keys(fm.data ?? {}).length && Object.keys(snap).length) {
-      await restoreSettingsNow(name);
-      return false;
-    }
-    if (JSON.stringify(sortKeys(fm.data as Record<string, unknown>)) === JSON.stringify(sortKeys(snap as Record<string, unknown>))) return false;
-    await writeSettingsSnapshot(name, fm.data);
-    return true;
-  });
 }
 
 /** Whether the agent has been given its job yet (it rewrites the placeholder AGENT.md when it has). */
