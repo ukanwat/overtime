@@ -448,6 +448,33 @@ describe("terminal app, with a scripted daemon", () => {
     expect(await t.screen()).toBe(shown);
   });
 
+  it("keeps the settings selection on the same row when the rows above it change", async () => {
+    const { t, c, seen } = await open();
+    await seen("Merge the dependency fix?");
+    t.press("\x1b[C"); // → settings
+    await seen("CONTROL");
+    for (let i = 0; i < 30 && !(await t.screen()).includes("› Stop"); i++) {
+      t.press(KEY.down);
+      await sleep(20);
+    }
+    expect(await t.screen()).toContain("› Stop");
+    // A server above it goes away while the panel is open (removed elsewhere): Stop stays selected.
+    c.data.mcp = c.data.mcp.filter((m: any) => m.name !== "github");
+    c.emit({ type: "changed", agent: "repo-keeper", what: "agents" });
+    await until(async () => !(await t.screen()).includes("github"), 5_000, "github gone");
+    expect(await t.screen()).toContain("› Stop");
+    // And one added: still Stop.
+    c.data.mcp = [{ name: "linear", source: "person", enabled: true, describe: "linear" }, ...c.data.mcp];
+    c.emit({ type: "changed", agent: "repo-keeper", what: "agents" });
+    await seen("linear");
+    expect(await t.screen()).toContain("› Stop");
+    t.press(KEY.enter);
+    await seen("Start");
+    expect(c.calls.some((x) => x.method === "stop")).toBe(true);
+    expect(await t.screen()).toContain("› Start"); // Stop became Start: the same row, still selected
+    expect(await t.screen()).not.toContain("Archive repo-keeper?");
+  });
+
   it("never puts a panel's clicks on the message box or footer in a short terminal", async () => {
     const { t, app } = await open(100, 9);
     await sleep(300);
