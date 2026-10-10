@@ -15,6 +15,7 @@ import {
   getImageDimensions,
   matchesKey,
   renderImage,
+  stripTerminalSequences,
   visibleWidth,
   wrapTextWithAnsi,
   type Component,
@@ -263,6 +264,11 @@ export class App implements Component {
   connected = true;
   live = new Map<string, LiveState>();
   private hits: Hit[] = [];
+  /** Screen rows the two panes take (from the top edge down to the message box), as last drawn. */
+  private paneRows = 0;
+  private width = 0;
+  /** Per screen row of the right pane, the columns its text is in: past a message's bar, inside a panel's frame. */
+  private textCols = new Map<number, [number, number]>();
   private inflight: Promise<void> | null = null;
   private again = false;
   private flashTimer: NodeJS.Timeout | null = null;
@@ -1102,10 +1108,24 @@ export class App implements Component {
     this.onQuit();
   }
 
+  /**
+   * Where a mouse selection that starts at (x, y) may reach: the rows of the pane it started in, and on
+   * each row only the columns that pane's text is in. So a copy from the conversation never picks up the
+   * agent list, the divider or a message's bar, and one from the agent list stays in the list.
+   * A selection that starts below the panes (the message box, the footer) is left as it is.
+   */
+  selectionArea(x: number, y: number): { top: number; bottom: number; cols: (row: number) => [number, number] } | null {
+    if (y >= this.paneRows) return null;
+    if (this.leftW > 0 && x < this.leftW) return { top: 0, bottom: this.paneRows - 1, cols: () => [0, this.leftW] };
+    const x0 = this.leftW > 0 ? this.leftW + 1 : 0;
+    return { top: 0, bottom: this.paneRows - 1, cols: (row) => this.textCols.get(row) ?? [x0, this.width] };
+  }
+
   // ---------- rendering ----------
 
   render(width: number): string[] {
     this.hits = [];
+    this.textCols.clear();
     const rows = Math.max(8, this.term.rows);
     const chipsH = this.pending.length && !this.onNewRow ? 1 : 0;
     const composer = this.renderComposer(width, rows >= 16);
@@ -1115,6 +1135,8 @@ export class App implements Component {
     const leftW = narrow ? 0 : Math.min(34, Math.max(26, Math.floor(width * 0.26)));
     const rightW = narrow ? width : width - leftW - 1;
     this.leftW = leftW;
+    this.paneRows = TOP + bodyH;
+    this.width = width;
 
     // The gap above the panes is padding only: the divider between them still runs to the top edge.
     const out: string[] = Array(TOP).fill(narrow ? "" : " ".repeat(leftW) + faint("│"));
@@ -1403,6 +1425,11 @@ export class App implements Component {
       const row = bh.line - s;
       if (row >= 0 && row < h) this.hits.push({ row: top + row, x0: x, x1: x + w, act: bh.act });
     }
+    // Where each row's words start, past the bar the message is drawn with, so a selection copies only the words.
+    view.forEach((v, i) => {
+      const g = typeof v === "string" ? (/^(?:  [┃│] |┃ {1,2})/.exec(stripTerminalSequences(v))?.[0].length ?? 0) : 0;
+      if (g) this.textCols.set(top + i, [x + g, x + w]);
+    });
     return view;
   }
 
@@ -1470,6 +1497,7 @@ export class App implements Component {
     for (const hh of bodyHits) {
       this.hits.push({ row: top + 2 + hh.line, x0: x + indent + 2 + (hh.x0 ?? 0), x1: hh.x1 != null ? x + indent + 2 + hh.x1 : x + indent + bw - 2, act: hh.act });
     }
+    body.forEach((_, i) => this.textCols.set(top + 2 + i, [x + indent + 2, x + indent + bw - 2]));
     return ["", ...box(title, body, bw).map((l) => " ".repeat(indent) + l)];
   }
 
@@ -1740,6 +1768,34 @@ function fmtTokens(n: number): string {
   return `${n} tokens`;
 }
 
+/**
+ * The screen library selects whole screen rows, straight across both panes. Narrow what it highlights
+ * and copies to the pane the selection started in, and to that pane's text (App.selectionArea).
+ * The app draws exactly one screen, so the library's rows are screen rows.
+ */
+function keepSelectionInPane(tui: TuiAltScreen, app: App): void {
+  type Point = { row: number; col: number; boundary?: boolean };
+  const t = tui as any;
+  const bounds: () => { start: Point; end: Point } | undefined = t.getSelectionBounds.bind(tui);
+  const columns = t.getSelectionColumns.bind(tui);
+  let area: ReturnType<App["selectionArea"]> = null;
+  t.getSelectionBounds = () => {
+    const b = bounds();
+    const anchor: Point | undefined = t.selectionAnchor;
+    area = b && anchor ? app.selectionArea(anchor.col, anchor.row) : null;
+    if (!b || !area) return b;
+    let { start, end } = b;
+    if (start.row < area.top) start = { ...start, row: area.top, col: area.cols(area.top)[0] };
+    if (end.row > area.bottom) end = { ...end, row: area.bottom, col: area.cols(area.bottom)[1], boundary: true };
+    return start.row > end.row ? undefined : { start, end };
+  };
+  t.getSelectionColumns = (line: string, row: number, sel: unknown, min = 0, max = visibleWidth(line)) => {
+    if (!area) return columns(line, row, sel, min, max);
+    const [x0, x1] = area.cols(row);
+    return columns(line, row, sel, Math.max(min, x0), Math.min(max, x1));
+  };
+}
+
 export interface AppOptions {
   terminal?: Terminal;
   client?: DaemonClient;
@@ -1769,6 +1825,7 @@ export async function runApp(o: AppOptions = {}): Promise<{ app: App; tui: TuiAl
     for (const t of timers) clearInterval(t);
     (o.onQuit ?? (() => process.exit(0)))();
   }, opener);
+  keepSelectionInPane(tui, app);
   tui.addChild(app);
   tui.setFocus(app);
   tui.start();
