@@ -17,6 +17,8 @@ export interface AgentSummary {
   ownStatus: string;
   /** Why it's paused, when it is. */
   pauseReason: "budget" | "limit" | null;
+  /** Paused by a usage limit: when the backend said it resets. */
+  limitResetsAt?: string | null;
   /** It (or one of its helpers) can't reach its backend: since when, and which. */
   trouble: { since: string; backend: string } | null;
   /** When this machine lost its internet connection, or null. */
@@ -282,6 +284,7 @@ export class ControlServer {
       trouble: await this.rt.trouble(name),
       offlineSince: this.rt.offlineSince,
       pauseReason: a.state.status === "paused" ? (a.state.pauseReason ?? null) : null,
+      limitResetsAt: a.state.status === "paused" && a.state.pauseReason === "limit" ? (a.state.limitResetsAt ?? null) : null,
       nextWake: a.state.nextWake,
       pausedUntil: a.state.pausedUntil ?? null,
       waiting: open,

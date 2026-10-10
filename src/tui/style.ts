@@ -237,6 +237,7 @@ export interface StatusLike {
   status: string;
   activity: string;
   pauseReason?: "budget" | "limit" | null;
+  limitResetsAt?: string | null;
   trouble?: { since: string; backend: string } | null;
   offlineSince?: string | null;
   nextWake: string | null;
@@ -256,7 +257,11 @@ export function statusParts(a: StatusLike): { dot: string; word: string; detail:
     case "working":
       return { dot: "●", word: "working", detail: a.helpersRunning ? `${a.helpersRunning} helper${a.helpersRunning === 1 ? "" : "s"}` : "", color: accent };
     case "paused": {
-      const why = a.pauseReason === "budget" ? "budget used" : a.pauseReason === "limit" ? "usage limit" : "paused";
+      if (a.pauseReason === "limit") {
+        // It tries again before the reset (the limit can lift early): say when it resets, if known.
+        return { dot: "◌", word: "paused", detail: a.limitResetsAt ? `usage limit, resets ${when(a.limitResetsAt)}` : `usage limit, trying again ${when(a.pausedUntil)}`, color: muted };
+      }
+      const why = a.pauseReason === "budget" ? "budget used" : "paused";
       return { dot: "◌", word: "paused", detail: `${why}${a.pausedUntil ? `, back ${when(a.pausedUntil)}` : ""}`, color: muted };
     }
     case "stopped":

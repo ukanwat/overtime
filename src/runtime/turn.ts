@@ -9,7 +9,7 @@ import { adoptSettingsEdit, effectiveSettings, loadAgent, restoreSettings, updat
 import type { McpServerConfig } from "../settings.js";
 import { INSTRUCTIONS_VERSION, workingInstructions } from "./instructions.js";
 import { answer, judge } from "./permissions.js";
-import { recordTurnUsage, writeLimit, type TurnUsage } from "./usage.js";
+import { clearLimit, recordTurnUsage, writeLimit, type TurnUsage } from "./usage.js";
 import { classify } from "./errors.js";
 
 export type SessionKind = "main" | "chat" | "helper";
@@ -268,6 +268,8 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
     });
     recorded = true;
     if (limitRejected) throw new UsageLimitError(eff.backend, (limitRejected as { resetsAt: Date | null }).resetsAt);
+    // It got through: a limit recorded for this backend is over, for every agent on it.
+    await clearLimit(eff.backend);
     if (o.kind === "main") await updateState(agent.name, { mainSessionId: session.sessionId, mainSessionBackend: eff.backend, mainSessionModel: eff.model ?? null, lastRunAt: new Date().toISOString() });
     if (stopped || res.stopReason === "cancelled") throw new TurnIncompleteError(stopped ?? "the backend cancelled the turn", true);
     return { runId, sessionId: session.sessionId, fresh, reply: reply.trim(), stopReason: res.stopReason, usage: res.usage ?? null, backend: eff.backend, usage2, context, modelIssue };
