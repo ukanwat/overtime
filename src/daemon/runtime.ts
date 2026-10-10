@@ -21,6 +21,7 @@ import { AcpSession } from "../acp/session.js";
 import { runTurn, sessionPreamble, TurnIncompleteError, UsageLimitError, type TurnResult } from "../runtime/turn.js";
 import { blockedUntil, limitInfo, LIMIT_RECHECK_MS, usageToday, type TurnUsage } from "../runtime/usage.js";
 import { workingInstructions } from "../runtime/instructions.js";
+import { StepBoundary } from "../runtime/boundary.js";
 import { MonitorRunner, reapStaleMonitors } from "./monitors.js";
 import { isTransient, needsPerson } from "../runtime/errors.js";
 import { describeStep, ownToolStep } from "./steps.js";
@@ -92,6 +93,8 @@ export class Runtime extends EventEmitter implements ToolHost {
   private helperSteps = new Map<string, string>();
   /** Cancels the running main turn of an agent, to answer the person (see deliver). */
   private mainAborts = new Map<string, AbortController>();
+  /** Where each running turn is between steps (main by agent name, helpers by agent/id), so it's stopped only between them. */
+  private boundaries = new Map<string, StepBoundary>();
   /** Agents whose running main turn was interrupted by the person: not a failure, it carries on next turn. */
   private interrupted = new Set<string>();
   /** Cancels a single helper. */
@@ -468,6 +471,8 @@ export class Runtime extends EventEmitter implements ToolHost {
     const items = await store.takeInbox(runId);
     const turnCtl = new AbortController();
     this.mainAborts.set(agentName, turnCtl);
+    const boundary = new StepBoundary();
+    this.boundaries.set(agentName, boundary);
     this.interrupted.delete(agentName);
     const { ctx, mcp } = this.tools.open({ agent: agentName, kind: "main", depth: 0 });
     let result: TurnResult | null = null;
@@ -507,7 +512,10 @@ export class Runtime extends EventEmitter implements ToolHost {
         signal: this.signalFor(agentName, turnCtl.signal),
         // Recorded as soon as the session exists, so a turn interrupted to answer you resumes this session.
         onSession: (id) => void updateState(agentName, { mainSessionId: id, mainSessionBackend: eff.backend, mainSessionModel: eff.model ?? null, mainSessionPrompt: promptVersion("main") }).catch(() => {}),
-        onUpdate: (u) => this.emit("update", { agent: agentName, kind: "main", update: u }),
+        onUpdate: (u) => {
+          boundary.update(u);
+          this.emit("update", { agent: agentName, kind: "main", update: u });
+        },
         log: this.log,
       });
       await store.ackInbox(runId);
@@ -606,6 +614,7 @@ export class Runtime extends EventEmitter implements ToolHost {
       return false;
     } finally {
       if (this.mainAborts.get(agentName) === turnCtl) this.mainAborts.delete(agentName);
+      if (this.boundaries.get(agentName) === boundary) this.boundaries.delete(agentName);
       this.tools.close(ctx.token);
       this.emit("turnEnd", { agent: agentName, kind: "main" });
       await this.refreshNextWake(agentName).catch(() => {});
@@ -721,7 +730,10 @@ export class Runtime extends EventEmitter implements ToolHost {
     const running = this.mainAborts.get(agentName);
     if (running && !running.signal.aborted) {
       this.interrupted.add(agentName);
-      running.abort();
+      // At the next step: a tool that's running finishes first.
+      const boundary = this.boundaries.get(agentName);
+      if (boundary) boundary.stop(() => running.abort());
+      else running.abort();
       this.wakeMain(agentName, `${reason} (you paused your work to answer: reply first, then carry on where you left off)`);
       return;
     }
@@ -997,6 +1009,8 @@ export class Runtime extends EventEmitter implements ToolHost {
       .catch((e) => this.log(`[${ctx.agent}] helper ${rec.id}: ${e?.stack ?? e}`))
       .finally(() => {
         this.helperRuns.delete(key);
+        // Only now: until the run is gone, a note waits for it to finish and then carries it on.
+        this.helperClosing.delete(key);
         this.helperAborts.delete(key);
       });
     this.helperRuns.set(key, run);
@@ -1104,9 +1118,13 @@ export class Runtime extends EventEmitter implements ToolHost {
       const notes = this.helperNotes.get(key) ?? [];
       notes.push(text);
       this.helperNotes.set(key, notes);
-      // Its current turn stops at once; the next one starts with the note, in the same session.
-      this.helperTurns.get(key)?.abort();
-      return `Told ${id}. It reads this now and carries on.`;
+      // Its current turn stops at the next step (a tool that's running finishes first); the next turn
+      // starts with the note, in the same session.
+      const turn = this.helperTurns.get(key);
+      const boundary = this.boundaries.get(key);
+      if (turn && boundary) boundary.stop(() => turn.abort());
+      else turn?.abort();
+      return `Told ${id}. It reads this as soon as its current step finishes, and carries on.`;
     }
     // Finishing just now: wait for it, then carry on from there.
     await this.helperRuns.get(key)?.catch(() => {});
@@ -1133,6 +1151,7 @@ export class Runtime extends EventEmitter implements ToolHost {
       .catch((e) => this.log(`[${agentName}] helper ${now.id}: ${e?.stack ?? e}`))
       .finally(() => {
         this.helperRuns.delete(key);
+        this.helperClosing.delete(key);
         this.helperAborts.delete(key);
       });
     this.helperRuns.set(key, run);
@@ -1165,6 +1184,8 @@ export class Runtime extends EventEmitter implements ToolHost {
       const limitedSince = { t: 0 };
       const cutOff = "(An earlier attempt was cut off by a problem at the provider. Check what's already in your folder, and carry on from there.)";
       const run = async (text: (fresh: boolean) => string, signal: AbortSignal): Promise<TurnResult> => {
+        // Each attempt starts with nothing in flight; a stop still waiting carries over.
+        this.boundaries.set(key, new StepBoundary(this.boundaries.get(key)));
         try {
           return await runTurn({
             agent: agentName,
@@ -1187,6 +1208,7 @@ export class Runtime extends EventEmitter implements ToolHost {
             timeoutMs: (await loadSettings()).turnTimeoutMinutes * 60_000,
             signal: this.signalFor(agentName, signal),
             onUpdate: (u) => {
+              this.boundaries.get(key)?.update(u);
               const step = describeStep(u);
               if (step) this.helperSteps.set(key, step);
               this.emit("update", { agent: agentName, kind: "helper", helperId: rec.id, update: u });
@@ -1236,7 +1258,10 @@ export class Runtime extends EventEmitter implements ToolHost {
             // Stopped to read a note: carry on below. Anything else ends the helper.
             if (!(turn.signal.aborted && !cancel.aborted && !this.stopping && this.helperNotes.get(key)?.length)) throw e;
           } finally {
-            if (this.helperTurns.get(key) === turn) this.helperTurns.delete(key);
+            if (this.helperTurns.get(key) === turn) {
+              this.helperTurns.delete(key);
+              this.boundaries.delete(key);
+            }
           }
           attempt = 0;
           const notes = this.helperNotes.get(key);
@@ -1278,7 +1303,6 @@ export class Runtime extends EventEmitter implements ToolHost {
     }
     rec.finishedAt = new Date().toISOString();
     await store.saveHelper(rec);
-    this.helperClosing.delete(key);
     await store.pushInbox({ type: "helper", text: helperInboxText(rec), data: { helperId: rec.id } });
     this.changed(agentName, "helpers");
     if (!this.stopping && rec.status !== "stopped") this.wakeMain(agentName, `helper ${rec.id} ${rec.status === "done" ? "finished" : rec.status}`);

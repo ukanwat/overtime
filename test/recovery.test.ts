@@ -76,7 +76,7 @@ describe("helpers", () => {
     await rt.send("teller", "PASS SPAWN_SLOW");
     const h = await until(async () => (await rt.store("teller").helpers()).find((x) => x.status === "running" && x.sessionId), 30_000, "helper running");
     const started = Date.now();
-    expect(await rt.tellHelper("teller", h.id, "use blue")).toMatch(/reads this now/);
+    expect(await rt.tellHelper("teller", h.id, "use blue")).toMatch(/reads this/);
     const done = await until(async () => (await rt.store("teller").helpers()).find((x) => x.id === h.id && x.status === "done"), 30_000, "helper done");
     expect(Date.now() - started).toBeLessThan(30_000); // it didn't sit out its slow work first
     expect(done.result).toBe("handled note: use blue"); // same session: no "(new session)"
@@ -89,6 +89,16 @@ describe("helpers", () => {
     expect(again.sessionId).toBe(h.sessionId);
     expect(readFileSync(join(again.workdir, "notes.txt"), "utf8")).toBe("use blue\none more thing\n");
     await until(async () => (await rt.store("teller").inbox()).some((i) => i.type === "helper" && i.text.includes("one more thing")) || readFileSync(join(meta("teller"), "inbox-delivered.jsonl"), "utf8").includes("one more thing"), 30_000, "result reached the agent");
+  });
+
+  it("get a note only between steps: a tool that's running finishes first", async () => {
+    await employ("patient");
+    await rt.send("patient", "PASS SPAWN_TOOLWAIT");
+    const h = await until(async () => (await rt.store("patient").helpers()).find((x) => x.status === "running" && x.sessionId && existsSync(join(x.workdir, "tool-started.txt"))), 30_000, "tool running");
+    await rt.tellHelper("patient", h.id, "use red");
+    const done = await until(async () => (await rt.store("patient").helpers()).find((x) => x.id === h.id && x.status === "done"), 30_000, "helper done");
+    expect(readFileSync(join(done.workdir, "tool-cut.txt"), "utf8")).toBe("false");
+    expect(done.result).toBe("handled note: use red");
   });
 
   it("report how they're going while they work, and the agent can check on them any time", async () => {

@@ -90,6 +90,17 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
       // Started with the agent's context: keep what it was given, so tests can check it.
       const given = /has been doing lately \(for context: you know what it knows\)\n\n([\s\S]*)$/.exec(text)?.[1];
       if (given) writeFileSync(join(s.cwd, ".context-given"), given);
+      // TOOLWAIT: a tool call that takes a few seconds, then slow thinking. Notes it whether the turn was
+      // cancelled while the tool was still running.
+      if (/TOOLWAIT/.test(text)) {
+        const update = (status: string) => cx.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: status === "in_progress" ? "tool_call" : "tool_call_update", toolCallId: "long1", title: "Render", kind: "execute", status } as any });
+        await update("in_progress");
+        writeFileSync(join(s.cwd, "tool-started.txt"), "1");
+        for (const start = Date.now(); Date.now() - start < 4_000; ) await new Promise((r) => setTimeout(r, 100));
+        writeFileSync(join(s.cwd, "tool-cut.txt"), String(cancelled));
+        await update("completed");
+        if (await slow()) return { stopReason: "cancelled" };
+      }
       if (/SLOW/.test(text)) {
         await t.call("done", { result: "partial: got halfway" });
         if (await slow()) return { stopReason: "cancelled" };
@@ -133,6 +144,7 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
       if (/SPAWN_MISSING/.test(text) && names.includes("spawn")) writeFileSync(join(s.cwd, "spawn-note.txt"), await t.call("spawn", { task: "write result.txt", backend: "not-installed-cli", model: "some-model" }));
       else if (/SPAWN_FLAKY/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "FLAKY write result.txt" });
       else if (/SPAWN_SLOW/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "SLOW write result.txt" });
+      else if (/SPAWN_TOOLWAIT/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "TOOLWAIT write result.txt" });
       else if (/SPAWN/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "write result.txt" });
       if (/SLOW/.test(text) && !/SPAWN_SLOW/.test(text) && !/Helper result/.test(text) && (await slow())) return { stopReason: "cancelled" };
       if (/WATCH_LONG/.test(text)) await t.call("wake", { watch: "for i in 1 2 3; do echo tick $i; sleep 1; done; sleep 600", reason: "long test", cooldown: "1s" });
