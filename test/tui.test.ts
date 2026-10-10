@@ -433,7 +433,8 @@ describe("terminal app, with a scripted daemon", () => {
     t.press(KEY.down);
     await seen("newer message 59");
     await sleep(100);
-    for (let i = 0; i < 40; i++) t.press("\x1b[<64;80;10M"); // the wheel, up, to the top and on
+    // The wheel, up, to the top (steps past it while they load move on into them: see below).
+    for (let i = 0; i < 100 && (app as any).scroll !== 0; i++) t.press("\x1b[<64;80;10M");
     await until(async () => app.messages[0]?.id === "o0", 5_000, "older loaded");
     await sleep(200);
     expect(c.calls.filter((k) => k.method === "messages" && k.params.before).length).toBe(1);
@@ -495,6 +496,66 @@ describe("terminal app, with a scripted daemon", () => {
       expect(s).not.toContain(`↑ ${15 - shown} more`);
       expect(s.split("\n").every((l) => l.length <= 120)).toBe(true);
     }
+  });
+
+  /** A client whose game-builder has `all` messages, served in pages of 300 like the daemon's. */
+  function paged(all: any[], slow = 150) {
+    const c = new FakeClient();
+    const call = c.call.bind(c);
+    c.call = async (m: string, p: any) => {
+      if (m === "messages" && p.name === "game-builder") {
+        c.calls.push({ method: m, params: p });
+        const end = p.before ? all.findIndex((x) => x.id === p.before) : all.length;
+        const start = Math.max(0, end - (p.limit ?? 300));
+        if (p.before) await sleep(slow);
+        return { messages: all.slice(start, end), hasMore: start > 0 };
+      }
+      return call(m, p);
+    };
+    return c;
+  }
+  const msgs = (prefix: string, n: number, from: number) => Array.from({ length: n }, (_, i) => ({ id: `${prefix}${i}`, t: new Date(Date.now() - from + i * 1000).toISOString(), from: "agent", kind: "message", text: `${prefix} message ${i}` }));
+
+  it("applies wheel steps made while older messages load, once they're in", async () => {
+    const all = [...msgs("old", 320, 9e8), ...msgs("new", 40, 6e5)];
+    const c = paged(all);
+    const { t, app, seen } = await open(120, 36, c);
+    await seen("Merge the dependency fix?");
+    t.press(KEY.down);
+    await seen("new message 39");
+    await sleep(100);
+    const a = app as any;
+    for (let i = 0; i < 2000 && a.scroll !== 0; i++) t.press("\x1b[<64;80;10M");
+    expect(a.scroll).toBe(0);
+    const before = a.msgLine.get(a.messages[0].id);
+    const first = a.messages[0].id;
+    // Two more steps (6 lines) while it loads: they aren't lost.
+    t.press("\x1b[<64;80;10M");
+    t.press("\x1b[<64;80;10M");
+    await until(async () => app.messages.length > 300, 5_000, "older loaded");
+    await sleep(100);
+    expect(c.calls.filter((k) => k.method === "messages" && k.params.before).length).toBe(1);
+    expect(a.scroll).toBe(a.msgLine.get(first) - before - 6);
+  });
+
+  it("keeps the older messages you loaded when more than a page of new ones arrives while you read", async () => {
+    const all = [...msgs("old", 5, 9e8), ...msgs("new", 60, 6e5)];
+    const c = paged(all);
+    const { t, app, seen } = await open(120, 36, c);
+    await seen("Merge the dependency fix?");
+    t.press(KEY.down);
+    await seen("new message 59");
+    await sleep(100);
+    for (let i = 0; i < 100 && (app as any).scroll !== 0; i++) t.press("\x1b[<64;80;10M");
+    await until(async () => app.messages[0]?.id === "old0", 5_000, "older loaded");
+    await sleep(200);
+    const shown = await t.screen();
+    // 400 new messages arrive: the latest page no longer reaches what you loaded.
+    all.push(...msgs("more", 400, 1e5));
+    await app.refresh();
+    await sleep(100);
+    expect(app.messages.map((m) => m.id)).toEqual(all.map((m) => m.id));
+    expect(await t.screen()).toBe(shown);
   });
 
   it("never puts a panel's clicks on the message box or footer in a short terminal", async () => {
