@@ -81,6 +81,11 @@ const PROVIDER_CODES: Record<string, Trouble> = {
   UNAUTHENTICATED: "signin",
 };
 
+/** A subscription usage limit, as Claude Code words it: "You've hit your session limit", "weekly limit", ... */
+function hitLimit(message: string): boolean {
+  return /\bhit your (\w+ )?limit\b|\busage limit\b/i.test(message);
+}
+
 /** Network failures, by the system's error code. */
 const NETWORK_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EAI_AGAIN", "ENOTFOUND", "EPIPE", "ENETUNREACH", "EHOSTUNREACH", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT"]);
 
@@ -101,6 +106,9 @@ function fromStructure(e: any): Trouble | undefined {
   const data = e.data;
   if (data && typeof data === "object") {
     const kind = (data as any).errorKind;
+    // Claude labels a subscription limit ("You've hit your session limit · resets 1:40am") rate_limit too:
+    // that one lasts until its reset, so it's a usage limit, not a passing blip.
+    if (kind === "rate_limit" && hitLimit(String((data as any).message ?? e.message ?? ""))) return "limit";
     if (typeof kind === "string") return CLAUDE_KINDS[kind] ?? null;
     const info = (data as any).codexErrorInfo;
     if (typeof info === "string") return CODEX_KINDS[info] ?? null;

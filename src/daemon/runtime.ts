@@ -19,7 +19,7 @@ import type { ToolContext, ToolHost } from "../tools/host.js";
 import { ToolServer } from "../tools/server.js";
 import { AcpSession } from "../acp/session.js";
 import { promptWasSent, runTurn, sessionPreamble, TurnIncompleteError, UsageLimitError, type TurnResult } from "../runtime/turn.js";
-import { blockedUntil, limitInfo, LIMIT_RECHECK_MS, usageToday, type TurnUsage } from "../runtime/usage.js";
+import { blockedUntil, limitInfo, LIMIT_RECHECK_MS, usageToday, type TurnUsage, readLimits } from "../runtime/usage.js";
 import { workingInstructions } from "../runtime/instructions.js";
 import { StepBoundary } from "../runtime/boundary.js";
 import { MonitorRunner, reapStaleMonitors } from "./monitors.js";
@@ -1288,7 +1288,13 @@ export class Runtime extends EventEmitter implements ToolHost {
             if (Date.now() - limitedSince.t < 24 * 3600_000) {
               const until = e.resetsAt ?? (await blockedUntil(e.backend)) ?? new Date(Date.now() + 15 * 60_000);
               this.log(`[${agentName}] helper ${rec.id}: ${e.backend} usage limit, waiting until ${until.toISOString()}`);
-              await sleep(Math.max(60_000, until.getTime() - Date.now()), waiting);
+              // Checked every minute: a turn of any agent getting through clears the limit (it often lifts
+              // before the reset it gave), and then this helper carries on too.
+              const end = Math.max(Date.now() + 60_000, until.getTime());
+              while (Date.now() < end && !over() && !waiting.aborted) {
+                await sleep(Math.min(60_000, end - Date.now()), waiting);
+                if ((await readLimits())[e.backend]?.status !== "rejected") break;
+              }
               if (over() || waiting.aborted) throw e;
               attempt = Math.max(attempt, 1);
               return run(text, signal);
