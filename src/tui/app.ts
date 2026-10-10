@@ -112,11 +112,16 @@ interface SettingsRow {
   /** Keep the panel open after running (wake, stop/start). */
   stay?: boolean;
   danger?: boolean;
+  /** What the row is, when its label can change or be another row's (Stop/Start, a server's name). */
+  key?: string;
 }
+
+/** A settings row's identity, kept across refreshes. */
+const rowKey = (r: SettingsRow) => r.key ?? r.field ?? r.label;
 
 type McpEntry = { name: string; source: "shared" | "person" | "agent"; enabled: boolean; describe: string; signedIn?: boolean };
 type McpStatus = Record<string, { ok: boolean; tools: string[]; error?: string; needsSignIn?: boolean }>;
-type SettingsOverlay = { kind: "settings"; data: AgentSettingsView | null; extra: any; mcp?: McpEntry[]; mcpStatus?: McpStatus; idx: number; editing?: Field; error?: string };
+type SettingsOverlay = { kind: "settings"; data: AgentSettingsView | null; extra: any; mcp?: McpEntry[]; mcpStatus?: McpStatus; idx: number; sel?: string; editing?: Field; error?: string };
 type Overlay =
   | null
   | { kind: "help" }
@@ -857,7 +862,8 @@ export class App implements Component {
     if (!this.needAgent()) return;
     const o: SettingsOverlay = { kind: "settings", data: null, extra: null, idx: 0 };
     // On the first row you can act on, straight away: keys pressed while it loads are never undone.
-    o.idx = this.settingsRows(o).findIndex((r) => !!(r.field || r.run));
+    const rows = this.settingsRows(o);
+    this.selectSetting(o, rows, rows.findIndex((r) => !!(r.field || r.run)));
     this.overlay = o;
     this.tui.requestRender();
     await this.loadSettings(o);
@@ -918,13 +924,13 @@ export class App implements Component {
               const value = !m.enabled ? "○ off" : !o.mcpStatus ? "… checking" : st?.ok ? "✓ connected" : st?.needsSignIn ? "! sign in" : "✗ failed";
               const from = m.source === "shared" ? "all agents" : m.source === "person" ? "set by you" : `added by ${a.name}`;
               const detail = !m.enabled ? from : st?.ok ? `${st.tools.length} tool${st.tools.length === 1 ? "" : "s"} · ${from}` : st?.error ? `${st.error} · ${from}` : from;
-              return { label: m.name, value, note: detail, stay: true, run: () => this.showMcpMenu(m, st) };
+              return { label: m.name, key: `mcp:${m.name}`, value, note: detail, stay: true, run: () => this.showMcpMenu(m, st) };
             }),
           ]
         : []),
       { label: "Control", heading: true },
       { label: "Wake now", stay: true, run: () => this.wake() },
-      { label: a.status === "stopped" ? "Start" : "Stop", stay: true, note: a.status === "stopped" ? "it carries on from where it was" : "keeps its folder and messages", run: () => this.toggleStop() },
+      { label: a.status === "stopped" ? "Start" : "Stop", key: "stop", stay: true, note: a.status === "stopped" ? "it carries on from where it was" : "keeps its folder and messages", run: () => this.toggleStop() },
       { label: "Archive…", danger: true, run: () => this.confirmArchive() },
       { label: "Files", heading: true },
       { label: "Open its folder", note: tilde(a.dir), stay: true, run: () => this.openLink(a.dir) },
@@ -942,19 +948,34 @@ export class App implements Component {
       for (const b of x.background ?? []) rows.push({ label: "In the background", note: `pid ${b.pid} · ${b.command}` });
       if (x.skills?.length) {
         rows.push({ label: "Skills", heading: true });
-        for (const k of x.skills) rows.push({ label: k.name, note: `${k.source === "built-in" ? "" : `${k.source} · `}${k.description}`, stay: true, run: () => this.openLink(k.file) });
+        for (const k of x.skills) rows.push({ label: k.name, key: `skill:${k.name}`, note: `${k.source === "built-in" ? "" : `${k.source} · `}${k.description}`, stay: true, run: () => this.openLink(k.file) });
       }
     }
     return rows;
+  }
+
+  private selectSetting(o: SettingsOverlay, rows: SettingsRow[], i: number): void {
+    o.idx = i;
+    o.sel = rows[i] ? rowKey(rows[i]) : undefined;
+  }
+
+  /**
+   * Where the selected row is now. Found by what it is, not where it was: a refresh can add or remove
+   * rows above it (a server, a skill), and the highlight and Enter must stay on the row you chose.
+   */
+  private settingsIdx(o: SettingsOverlay, rows: SettingsRow[]): number {
+    const i = o.sel === undefined ? -1 : rows.findIndex((r) => rowKey(r) === o.sel);
+    if (i >= 0) o.idx = i;
+    return o.idx;
   }
 
   private moveSettings(d: number): void {
     const o = this.overlay;
     if (o?.kind !== "settings" || o.editing) return;
     const rows = this.settingsRows(o);
-    for (let i = o.idx + d; i >= 0 && i < rows.length; i += d) {
+    for (let i = this.settingsIdx(o, rows) + d; i >= 0 && i < rows.length; i += d) {
       if (rows[i].field || rows[i].run) {
-        o.idx = i;
+        this.selectSetting(o, rows, i);
         break;
       }
     }
@@ -1125,7 +1146,8 @@ export class App implements Component {
       if (matchesKey(data, Key.up)) return this.moveSettings(-1);
       if (matchesKey(data, Key.down)) return this.moveSettings(1);
       if (matchesKey(data, Key.enter) || matchesKey(data, Key.right)) {
-        const row = this.settingsRows(o)[o.idx];
+        const rows = this.settingsRows(o);
+        const row = rows[this.settingsIdx(o, rows)];
         if (row) await this.activateSetting(o, row);
       } else if (matchesKey(data, Key.ctrl("r"))) await this.wake();
       else if (matchesKey(data, Key.ctrl("s"))) await this.toggleStop();
@@ -1592,12 +1614,13 @@ export class App implements Component {
     if (!notes) valueW = Math.max(8, iw - 2 - labelW);
     const body: string[] = [];
     const lineOf: number[] = [];
+    const idx = this.settingsIdx(o, rows);
     rows.forEach((r, i) => {
       if (r.heading) {
         body.push("", muted(r.label.toUpperCase()));
         return;
       }
-      const on = i === o.idx;
+      const on = i === idx;
       lineOf[i] = body.length;
       if (r.field && o.editing === r.field) {
         this.fieldInput.focused = true;
@@ -1622,7 +1645,7 @@ export class App implements Component {
     body.push("");
     // Keep the selected row in view.
     const bh = Math.max(3, h - 3);
-    const selLine = lineOf[o.idx] ?? 0;
+    const selLine = lineOf[idx] ?? 0;
     const start = Math.max(0, Math.min(selLine - Math.floor(bh / 2), body.length - bh));
     const hits: { line: number; act: () => Promise<void> }[] = [];
     rows.forEach((r, i) => {
@@ -1632,7 +1655,7 @@ export class App implements Component {
         hits.push({
           line,
           act: async () => {
-            o.idx = i;
+            this.selectSetting(o, rows, i);
             await this.activateSetting(o, r);
           },
         });
