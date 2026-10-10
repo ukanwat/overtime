@@ -581,6 +581,12 @@ export class App implements Component {
     this.say(`Attached ${files.map((f) => f.name).join(", ")}. It goes with your next message.`, "ok");
   }
 
+  /** Pick an option of the open question (0: dismiss it), waiting for Enter, as its number key does. */
+  private choose(q: Message, n: number): void {
+    this.choosing = { id: q.id, n };
+    this.tui.requestRender();
+  }
+
   private async dismiss(q: Message): Promise<void> {
     const a = this.agent;
     if (!a || this.onNewRow) return;
@@ -1282,6 +1288,7 @@ export class App implements Component {
     let prev: Message | undefined;
     let lastStart = 0;
     let questionStart = -1;
+    let questionEnd = -1;
 
     this.linkLine = -1;
     if (this.hasMore) body.push(muted("   ↑ older messages: ⇧↑ at the top loads them"), "");
@@ -1342,16 +1349,20 @@ export class App implements Component {
             const label = optionLabel(o);
             const tag = i === rec ? muted("  · suggested") : "";
             if (open) {
-              bodyHits.push({ line: body.length, act: () => ((this.choosing = null), this.answer(m, n)) });
               const num = picked ? inverse(bold(yellow(` ${n} `))) : inverse(accent(` ${n} `));
-              body.push(line(`${num} ${picked ? bold(label) : label}${tag}${picked ? `  ${yellow("← Enter to answer, Esc to cancel")}` : ""}`));
+              const shown = `${num} ${picked ? bold(label) : label}`;
+              // A click picks the option, like its number key; Enter answers. Only where it's written.
+              bodyHits.push({ line: body.length, x0: 4, x1: 4 + visibleWidth(shown), act: () => this.choose(m, n) });
+              body.push(line(`${shown}${tag}${picked ? `  ${yellow("← Enter to answer, Esc to cancel")}` : ""}`));
             } else body.push(line(muted(`${n}  ${label}`)));
           });
         }
         if (open) {
           const picked = this.choosing?.id === m.id && this.choosing.n === 0;
-          bodyHits.push({ line: body.length, act: () => ((this.choosing = null), this.dismiss(m)) });
-          body.push(line(`${picked ? inverse(bold(yellow(" 0 "))) : muted(" 0 ")} ${picked ? bold("Dismiss this question") : muted("Dismiss this question")}${picked ? `  ${yellow("← Enter to dismiss, Esc to cancel")}` : ""}`));
+          const shown = `${picked ? inverse(bold(yellow(" 0 "))) : muted(" 0 ")} ${picked ? bold("Dismiss this question") : muted("Dismiss this question")}`;
+          bodyHits.push({ line: body.length, x0: 4, x1: 4 + visibleWidth(shown), act: () => this.choose(m, 0) });
+          body.push(line(`${shown}${picked ? `  ${yellow("← Enter to dismiss, Esc to cancel")}` : ""}`));
+          questionEnd = body.length;
         }
         if (open) {
           body.push(line(""));
@@ -1413,7 +1424,9 @@ export class App implements Component {
     else if (live) s = maxScroll;
     else if (this.anchor) {
       // A one-time jump: the open question from its top, or a long new message from its start.
-      const target = this.anchor === "question" && questionStart >= 0 ? questionStart - 1 : body.length - lastStart > h ? lastStart - 1 : maxScroll;
+      // A question taller than the view: its end, so its options and Dismiss show (the last row may be the "newer below" hint).
+      const question = questionEnd - (questionStart - 1) > h - 1 ? questionEnd - (h - 1) : questionStart - 1;
+      const target = this.anchor === "question" && questionStart >= 0 ? question : body.length - lastStart > h ? lastStart - 1 : maxScroll;
       s = Math.min(maxScroll, Math.max(0, target));
       this.anchor = null;
       if (s < maxScroll) this.scroll = s; // from here on, your scrolling decides

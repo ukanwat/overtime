@@ -306,15 +306,32 @@ describe("terminal app, with a scripted daemon", () => {
     expect(c.calls.some((x) => x.method === "archive" && x.params.name === "repo-keeper")).toBe(true);
   });
 
-  it("answers by clicking an option", async () => {
+  it("picks an option with a click and answers with Enter, like its number key", async () => {
     const { t, c, seen } = await open();
     await seen("Merge the dependency fix?");
     const lines = (await t.screen()).split("\n");
     const y = lines.findIndex((l) => l.includes("2  Wait for 1.35"));
-    const x = lines[y].indexOf("2  Wait");
-    t.press(`\x1b[<0;${x + 1};${y + 1}M`);
-    t.press(`\x1b[<0;${x + 1};${y + 1}m`);
-    await until(async () => c.calls.some((k) => k.method === "answer" && k.params.choice === 2), 5_000, "answered by click");
+    // Beside the option, past its words: nothing.
+    click(t, lines[y].indexOf("Wait for 1.35") + 30, y);
+    await sleep(200);
+    expect(await t.screen()).not.toContain("Enter to answer");
+    click(t, lines[y].indexOf("2  Wait"), y);
+    await seen("Enter to answer");
+    await sleep(200);
+    expect(c.calls.some((k) => k.method === "answer")).toBe(false);
+    t.press(KEY.enter);
+    await until(async () => c.calls.some((k) => k.method === "answer" && k.params.choice === 2), 5_000, "answered with Enter");
+  });
+
+  it("keeps the options and Dismiss in view when it opens on a question taller than the screen", async () => {
+    const c = new FakeClient();
+    const q = c.data.messages["repo-keeper"].find((m: any) => m.id === "m5");
+    q.text += "\n\n" + Array.from({ length: 30 }, (_, i) => `Detail ${i} about the bump.`).join("\n\n");
+    const { t, seen } = await open(120, 30, c);
+    await seen("Dismiss this question");
+    const s = await t.screen();
+    expect(s).toContain("1  Merge it");
+    expect(s).toContain("3  Close it");
   });
 
   it("copies only the words you selected in the conversation: no agent list, divider or message bars", async () => {
