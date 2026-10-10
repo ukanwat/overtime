@@ -1,6 +1,6 @@
 {
   "name": "@ukanwat/overtime",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Agents that exist, not sessions. Brief a coding agent once; it works on its own, keeps its own folder, and checks in only when it needs you.",
   "keywords": [
     "agents",
