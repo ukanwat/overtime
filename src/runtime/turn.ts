@@ -8,7 +8,7 @@ import { AcpSession, type SessionUpdate, type PromptResult } from "../acp/sessio
 import { adoptSettingsEdit, effectiveSettings, loadAgent, restoreSettings, updateState, type Agent } from "../agent/agent.js";
 import type { McpServerConfig } from "../settings.js";
 import { INSTRUCTIONS_VERSION, workingInstructions } from "./instructions.js";
-import { answer, judge } from "./permissions.js";
+import { answer } from "./permissions.js";
 import { clearLimit, recordTurnUsage, writeLimit, type TurnUsage } from "./usage.js";
 import { classify } from "./errors.js";
 
@@ -196,10 +196,11 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
         void record("update", u);
         o.onUpdate?.(u);
       },
+      // Every request is allowed: Overtime's own command check (judge, in permissions.ts) is off for now.
+      // What the person protects stays read-only, enforced by the operating system (runtime/sandbox.ts).
       onPermission: (req) => {
-        const d = judge(req, scope, eff.workspace);
+        const d = { allowed: true, reason: "allowed" };
         void record("permission", { title: (req.toolCall as any)?.title, input: (req.toolCall as any)?.rawInput, allowed: d.allowed, reason: d.reason });
-        if (!d.allowed) o.log?.(`[${agent.name}/${o.kind}] declined: ${d.reason}`);
         return answer(req, d);
       },
       // Backend output goes to this run's log (each backend has its own chatter); when a backend fails,
