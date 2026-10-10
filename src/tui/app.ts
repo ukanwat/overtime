@@ -570,6 +570,12 @@ export class App implements Component {
     this.tui.requestRender();
   }
 
+  private scrollToEnd(): void {
+    this.anchor = null;
+    this.scroll = Number.MAX_SAFE_INTEGER;
+    this.tui.requestRender();
+  }
+
   private attach(files: PendingAttachment[]): void {
     for (const f of files) if (!this.pending.some((p) => p.path === f.path)) this.pending.push(f);
     this.say(`Attached ${files.map((f) => f.name).join(", ")}. It goes with your next message.`, "ok");
@@ -1266,7 +1272,7 @@ export class App implements Component {
   /** The DM: the agent's words plain, yours on a tinted panel with a bar, questions and alerts as cards. */
   private renderMessages(a: AgentSummary, w: number, h: number, x: number, top: number): Line[] {
     const body: Line[] = [];
-    const bodyHits: { line: number; act: () => void | Promise<void> }[] = [];
+    const bodyHits: { line: number; x0?: number; x1?: number; act: () => void | Promise<void> }[] = [];
     const inner = Math.max(12, w - 6);
     const wrap = (s: string, width = inner) => (s.trim() ? wrapTextWithAnsi(s, Math.max(8, width)) : [""]);
     const paras = (s: string, width = inner) => s.split("\n").flatMap((p) => wrap(p, width));
@@ -1419,11 +1425,21 @@ export class App implements Component {
       const v = view[i];
       if (typeof v !== "string" && i + v.rows > view.length) view[i] = "";
     }
-    if (s > 0 && view.length > 1 && typeof view[0] === "string") view[0] = muted(`   ↑ ${s} line${s === 1 ? "" : "s"} above · ⇧↑`);
-    if (s < maxScroll && view.length === h && h > 1) view[h - 1] = muted(`   ↓ newer below · ⇧↓`);
+    // The hints cover a row of the conversation: a click there scrolls, never does what was under it.
+    const hintRows = new Set<number>();
+    if (s > 0 && view.length > 1 && typeof view[0] === "string") {
+      view[0] = muted(`   ↑ ${s} line${s === 1 ? "" : "s"} above · ⇧↑`);
+      hintRows.add(0);
+      this.hits.push({ row: top, x0: x, x1: x + w, act: () => this.scrollBy(-PAGE) });
+    }
+    if (s < maxScroll && view.length === h && h > 1) {
+      view[h - 1] = muted(`   ↓ newer below · ⇧↓`);
+      hintRows.add(h - 1);
+      this.hits.push({ row: top + h - 1, x0: x, x1: x + w, act: () => this.scrollToEnd() });
+    }
     for (const bh of bodyHits) {
       const row = bh.line - s;
-      if (row >= 0 && row < h) this.hits.push({ row: top + row, x0: x, x1: x + w, act: bh.act });
+      if (row >= 0 && row < h && !hintRows.has(row)) this.hits.push({ row: top + row, x0: x + (bh.x0 ?? 0), x1: Math.min(x + w, x + (bh.x1 ?? w)), act: bh.act });
     }
     // Where each row's words start, past the bar the message is drawn with, so a selection copies only the words.
     view.forEach((v, i) => {
@@ -1491,11 +1507,13 @@ export class App implements Component {
   }
 
   /** Every panel (settings, pickers, help, confirmations) is a framed box on top of the conversation. */
-  private framed(title: string, body: string[], bodyHits: { line: number; x0?: number; x1?: number; act: () => void | Promise<void> }[], w: number, x: number, top: number): Line[] {
+  private framed(title: string, body: string[], bodyHits: { line: number; x0?: number; x1?: number; act: () => void | Promise<void> }[], w: number, x: number, top: number, h: number): Line[] {
     const indent = w < 50 ? 1 : 2;
     const bw = Math.max(20, Math.min(w - indent * 2, 92));
     for (const hh of bodyHits) {
-      this.hits.push({ row: top + 2 + hh.line, x0: x + indent + 2 + (hh.x0 ?? 0), x1: hh.x1 != null ? x + indent + 2 + hh.x1 : x + indent + bw - 2, act: hh.act });
+      const row = top + 2 + hh.line;
+      // A panel taller than the pane is cut off at its bottom: rows below that are the message box's.
+      if (row < top + h) this.hits.push({ row, x0: x + indent + 2 + (hh.x0 ?? 0), x1: hh.x1 != null ? x + indent + 2 + hh.x1 : x + indent + bw - 2, act: hh.act });
     }
     body.forEach((_, i) => this.textCols.set(top + 2 + i, [x + indent + 2, x + indent + bw - 2]));
     return ["", ...box(title, body, bw).map((l) => " ".repeat(indent) + l)];
@@ -1510,7 +1528,7 @@ export class App implements Component {
   private renderSettings(o: SettingsOverlay, w: number, x: number, top: number, h: number): Line[] {
     const title = `${this.agent?.name ?? ""} · settings`;
     const iw = this.innerW(w);
-    if (!o.data && !o.error) return this.framed(title, ["", muted(`${spinner()} Loading settings…`), ""], [], w, x, top);
+    if (!o.data && !o.error) return this.framed(title, ["", muted(`${spinner()} Loading settings…`), ""], [], w, x, top, h);
     const rows = this.settingsRows(o);
     const labelW = 16;
     let valueW = Math.min(30, Math.max(12, ...rows.filter((r) => r.field).map((r) => visibleWidth(r.value ?? "") + 2)));
@@ -1568,7 +1586,7 @@ export class App implements Component {
     // Say when there's more than fits, rather than cutting it off silently.
     if (start + bh < body.length) shown[shown.length - 1] = muted("  ↓ more below");
     if (start > 0) shown[0] = muted("  ↑ more above");
-    return this.framed(title, shown, hits.filter((hh) => hh.line > (start > 0 ? 0 : -1) && hh.line < (start + bh < body.length ? bh - 1 : bh)), w, x, top);
+    return this.framed(title, shown, hits.filter((hh) => hh.line > (start > 0 ? 0 : -1) && hh.line < (start + bh < body.length ? bh - 1 : bh)), w, x, top, h);
   }
 
   private renderOverlay(w: number, h: number, x: number, top: number): Line[] {
@@ -1601,7 +1619,7 @@ export class App implements Component {
         ...row("Ctrl+C", "quit (your agents keep running)"),
         "",
       ];
-      return this.framed("Keys", body.slice(0, Math.max(3, h - 3)), [], w, x, top);
+      return this.framed("Keys", body.slice(0, Math.max(3, h - 3)), [], w, x, top, h);
     }
     if (o.kind === "confirm") {
       const body: string[] = [""];
@@ -1630,7 +1648,7 @@ export class App implements Component {
         },
         { line, x0: yw + 3, x1: yw + 3 + visibleWidth(no), act: () => ((this.overlay = null), this.tui.requestRender()) },
       ];
-      return this.framed(o.title, body, hits, w, x, top);
+      return this.framed(o.title, body, hits, w, x, top, h);
     }
     if (o.kind !== "pick") return [];
     const body: string[] = [""];
@@ -1657,7 +1675,7 @@ export class App implements Component {
       body.push(on && hasTints() ? selected(line, iw) : line);
     });
     body.push("");
-    return this.framed(o.title, body, hits, w, x, top);
+    return this.framed(o.title, body, hits, w, x, top, h);
   }
 
   private placeholder(): string {
