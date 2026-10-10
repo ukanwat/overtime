@@ -22,6 +22,7 @@ beforeAll(async () => {
   await rt.start();
   control = new ControlServer(rt, () => {}, () => {});
   await control.start();
+  control.open();
   await rt.create("editorbot");
   await rt.send("editorbot", "Your job is answering from the editor.");
   await until(async () => (await loadAgent("editorbot")).state.status === "asleep", 30_000, "job learned");

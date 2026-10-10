@@ -66,6 +66,9 @@ export class ControlServer {
   /** What each running session is writing and doing right now, streamed to the app as it happens. */
   private live = new Map<string, LiveState & { timer?: NodeJS.Timeout }>();
 
+  private opened!: () => void;
+  private readonly ready = new Promise<void>((r) => (this.opened = r));
+
   constructor(private readonly rt: Runtime, private readonly log: (s: string) => void, private readonly onShutdown: () => void) {
     rt.on("change", (e: ChangeEvent) => this.broadcast({ event: "change", ...e }));
     rt.on("update", (e: { agent: string; kind: string; threadId?: string; helperId?: string; update: any }) => this.onUpdate(e));
@@ -312,7 +315,9 @@ export class ControlServer {
 
   async start(): Promise<void> {
     const sockPath = paths.socket();
-    // Only remove a socket nobody answers on: a live one belongs to a running daemon.
+    // Only the daemon holding the lock gets here (main.ts), so no other daemon of this version is
+    // binding the socket at the same time. A socket file left behind is a dead daemon's; one that
+    // answers belongs to a daemon that doesn't use this lock (an older version), never replace it.
     if (existsSync(sockPath)) {
       if (await socketAnswers(sockPath)) throw new Error("Another Overtime daemon is answering on its socket.");
       unlinkSync(sockPath);
@@ -337,6 +342,11 @@ export class ControlServer {
     });
   }
 
+  /** Start answering requests: the runtime has started. */
+  open(): void {
+    this.opened();
+  }
+
   private async handle(line: string, sock: Socket): Promise<void> {
     let msg: { id?: unknown; method?: string; params?: unknown };
     try {
@@ -344,6 +354,9 @@ export class ControlServer {
     } catch {
       return;
     }
+    // The socket is bound before the runtime starts (so a second daemon is turned away before it
+    // touches any agent); requests wait until it has. Ping answers at once: it is how others see a daemon is here.
+    if (msg.method !== "ping") await this.ready;
     const reply = (body: object) => !sock.destroyed && sock.write(JSON.stringify({ id: msg.id, ...body }) + "\n");
     const h = msg.method ? this.methods[msg.method] : undefined;
     if (!h) return void reply({ error: `Unknown method ${msg.method}` });

@@ -20,6 +20,8 @@ export const paths = {
   },
   daemonLog: () => join(home(), "overtimed.log"),
   daemonLock: () => join(home(), "overtimed.lock"),
+  /** What decides which daemon runs (see daemon/lock.ts). */
+  daemonLocks: () => join(home(), "overtimed.locks"),
   agent: (name: string) => join(home(), "agents", name),
   /** Overtime's own bookkeeping for one agent. The agent never manages this. */
   meta: (name: string) => join(home(), "agents", name, ".overtime"),

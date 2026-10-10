@@ -39,6 +39,7 @@ describe("terminal app, against a real daemon", () => {
     await rt.start();
     control = new ControlServer(rt, () => {}, () => {});
     await control.start();
+    control.open();
     const client = await DaemonClient.connect();
     ({ stop } = await runApp({ terminal: t as any, client, onQuit: () => {}, opener: (x) => void opened.push(x) }));
   });
