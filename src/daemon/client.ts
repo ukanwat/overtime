@@ -120,12 +120,22 @@ export class DaemonClient {
  * Whether to keep the running daemon. Only an older one is replaced (never a newer one), so two
  * different installs talking to the same home can't keep replacing each other's daemon.
  */
-async function sameBuild(c: DaemonClient): Promise<boolean> {
+async function sameBuild(c: DaemonClient): Promise<{ keep: boolean; pid?: number }> {
   try {
-    const p = await c.call<{ build?: string }>("ping", {}, 5_000);
-    return !p.build || p.build === buildId() ? !!p.build : compareBuilds(p.build, buildId()) >= 0;
+    const p = await c.call<{ build?: string; pid?: number }>("ping", {}, 5_000);
+    return { keep: !p.build || p.build === buildId() ? !!p.build : compareBuilds(p.build, buildId()) >= 0, pid: p.pid };
   } catch {
-    return true; // busy or slow: keep it rather than restart on a guess
+    return { keep: true }; // busy or slow: keep it rather than restart on a guess
+  }
+}
+
+/** Whether a process is still running. */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e: any) {
+    return e?.code === "EPERM";
   }
 }
 
@@ -149,18 +159,17 @@ export function compareBuilds(a: string, b: string): number {
 export async function ensureDaemon(): Promise<DaemonClient> {
   try {
     const c = await DaemonClient.connect();
-    if (await sameBuild(c)) return c;
-    // An older (or newer) daemon from before an update: replace it. Agents carry on where they were.
+    const b = await sameBuild(c);
+    if (b.keep) return c;
+    // An older daemon from before an update: replace it. Agents carry on where they were. It stops
+    // taking connections at once but takes a while to finish (its sessions close properly), and the
+    // new one can't start until it has: wait for the process itself to end.
     await c.call("shutdown", {}, 5_000).catch(() => {});
     c.close();
-    const until = Date.now() + 40_000;
+    const until = Date.now() + 90_000;
     while (Date.now() < until) {
       await new Promise((r) => setTimeout(r, 250));
-      try {
-        (await DaemonClient.connect()).close();
-      } catch {
-        break;
-      }
+      if (b.pid ? !alive(b.pid) : await DaemonClient.connect().then((x) => (x.close(), false), () => true)) break;
     }
   } catch {}
   await mkdir(home(), { recursive: true });
