@@ -99,3 +99,13 @@ describe("a usage limit that lifts before its reset (you upgraded, bought more, 
     await until(async () => ((await loadAgent("second")).state.status !== "paused" ? true : null), 30_000, "second resumed");
   });
 });
+
+describe("Claude's own limit wording", () => {
+  it("a session limit Claude labels rate_limit is a usage limit, not a passing problem", async () => {
+    const { classify } = await import("../src/runtime/errors.js");
+    const { BackendError } = await import("../src/runtime/errors.js");
+    const e = new BackendError("claude: Internal error: You've hit your session limit · resets 1:40am (Asia/Calcutta)", "claude", -32603, { errorKind: "rate_limit", message: "You've hit your session limit · resets 1:40am (Asia/Calcutta)" });
+    expect(classify(e)).toBe("limit");
+    expect(classify(new BackendError("claude: rate limited", "claude", -32603, { errorKind: "rate_limit", message: "Request rate limited, retry" }))).toBe("transient");
+  });
+});
