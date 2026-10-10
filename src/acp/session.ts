@@ -397,13 +397,33 @@ export class AcpSession {
       await Promise.race([this.exited, new Promise((r) => setTimeout(r, 5000))]);
       clearTimeout(t);
     }
-    // Anything the backend left behind in its group.
+    // The backend's own processes (a CLI it runs underneath, like Claude Code's) often finish after it:
+    // saving the session, including the running cost total the next turn starts from. Give them a few
+    // seconds to finish on their own, so nothing is cut off mid-save; whatever is still there then goes.
+    await groupGone(this.proc, GROUP_GRACE_MS);
     killGroup(this.proc, "SIGKILL");
   }
 
   /** Close every open backend session (daemon shutdown). */
   static async closeAll(): Promise<void> {
     await Promise.allSettled([...open].map((s) => s.close()));
+  }
+}
+
+/** How long a closed backend's remaining processes get to finish by themselves. */
+const GROUP_GRACE_MS = 5_000;
+
+/** Wait until no process is left in the backend's group, or the time is up. */
+async function groupGone(p: ChildProcess, ms: number): Promise<void> {
+  if (!p.pid) return;
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    try {
+      process.kill(-p.pid, 0);
+    } catch {
+      return; // the group is empty
+    }
+    await new Promise((r) => setTimeout(r, 50));
   }
 }
 
