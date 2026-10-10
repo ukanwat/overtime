@@ -298,6 +298,8 @@ export class App implements Component {
   private msgLine = new Map<string, number>();
   /** After older messages are added above: the message that was on screen, so the view stays on it. */
   private keep: { id: string; line: number; top: number } | null = null;
+  /** Lines scrolled up past the top while older messages load, applied once they're in. */
+  private pendingUp = 0;
   private leftW = 0;
   private loadedFor = "";
   private started = false;
@@ -367,7 +369,17 @@ export class App implements Component {
       if (a) {
         const r = await this.get<{ messages: Message[]; hasMore: boolean }>("messages", { name: a.name, markRead: true, limit: 300 });
         if (this.agent?.name !== a.name) return;
-        const fresh = r?.messages ?? [];
+        let fresh = r?.messages ?? [];
+        let more = !!r?.hasMore;
+        // More than a page came since, while you're reading further up: fetch the ones in between too, so
+        // what you're reading (and the older messages you loaded) stays, with nothing missing below it.
+        const have = new Set(this.loadedFor === a.name && this.scroll !== Number.MAX_SAFE_INTEGER ? this.messages.map((m) => m.id) : []);
+        for (let page = 0; page < 10 && have.size && more && fresh.length && !fresh.some((m) => have.has(m.id)); page++) {
+          const gap = await this.get<{ messages: Message[]; hasMore: boolean }>("messages", { name: a.name, before: fresh[0].id, limit: 300 });
+          if (this.agent?.name !== a.name) return;
+          fresh = [...(gap?.messages ?? []), ...fresh];
+          more = !!gap?.hasMore;
+        }
         if (this.loadedFor !== a.name) {
           this.scroll = Number.MAX_SAFE_INTEGER;
           this.anchor = "question";
@@ -381,7 +393,7 @@ export class App implements Component {
         if (k > 0) this.messages = [...this.messages.slice(0, k), ...fresh];
         else {
           this.messages = fresh;
-          this.hasMore = !!r?.hasMore;
+          this.hasMore = more;
         }
         // Its skills, for the / menu: when the agent changes, and every half minute (it may add some).
         if (this.skillsFor !== a.name || Date.now() - this.skillsAt > 30_000) {
@@ -408,7 +420,11 @@ export class App implements Component {
 
   /** Older messages, when scrolled to the top. One load at a time: the wheel asks many times a second. */
   private loadOlder(): Promise<void> {
-    this.loadingOlder ??= this.doLoadOlder().finally(() => (this.loadingOlder = null));
+    this.loadingOlder ??= this.doLoadOlder().finally(() => {
+      this.loadingOlder = null;
+      // Nothing older came: there's nowhere to take the steps made meanwhile.
+      if (!this.keep) this.pendingUp = 0;
+    });
     return this.loadingOlder;
   }
 
@@ -605,9 +621,20 @@ export class App implements Component {
     // Already at the bottom: scrolling further down does nothing (it must never move the view up).
     if (atBottom && d > 0) return;
     const cur = atBottom ? this.lastMax : this.scroll;
+    // Past the top while older messages load (or are about to be drawn): remember how far, so the
+    // view moves on into them once they're in, instead of losing the wheel steps made meanwhile.
+    if (this.loadingOlder || this.keep) {
+      if (cur + d < 0) this.pendingUp += cur + d;
+      else if (d > 0 && this.pendingUp < 0) {
+        // Back down: undo those first.
+        const back = Math.min(d, -this.pendingUp);
+        this.pendingUp += back;
+        d -= back;
+      }
+    }
     this.scroll = Math.max(0, cur + d);
     if (this.scroll >= this.lastMax) this.scroll = Number.MAX_SAFE_INTEGER;
-    if (this.scroll === 0 && d < 0) void this.loadOlder();
+    if (this.scroll === 0 && d < 0 && !this.keep) void this.loadOlder();
     this.tui.requestRender();
   }
 
@@ -1474,11 +1501,12 @@ export class App implements Component {
     if (this.keep) {
       const now = this.msgLine.get(this.keep.id);
       if (now != null) {
-        this.scroll = Math.min(maxScroll, Math.max(0, this.keep.top + now - this.keep.line));
+        this.scroll = Math.min(maxScroll, Math.max(0, this.keep.top + now - this.keep.line + this.pendingUp));
         if (this.scroll >= maxScroll) this.scroll = Number.MAX_SAFE_INTEGER;
         this.anchor = null;
       }
       this.keep = null;
+      this.pendingUp = 0;
     }
     // A link picked with Ctrl+L that's out of view: scroll to it.
     if (this.linkIdx >= 0 && this.linkLine >= 0) {
