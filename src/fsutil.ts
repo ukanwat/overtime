@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile, appendFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, writeFile, appendFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { randomBytes } from "node:crypto";
 
@@ -39,7 +39,27 @@ export async function writeJson(path: string, value: unknown): Promise<void> {
 
 export async function appendJsonl(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  await appendFile(path, JSON.stringify(value) + "\n");
+  // A torn last line (a crash, a full disk) is closed off first, so this record doesn't join it and get lost too.
+  await appendFile(path, ((await endsTorn(path)) ? "\n" : "") + JSON.stringify(value) + "\n");
+}
+
+/** Whether a file's last byte isn't a newline (a line was cut off). Missing or empty: no. */
+async function endsTorn(path: string): Promise<boolean> {
+  let fh;
+  try {
+    fh = await open(path, "r");
+  } catch {
+    return false;
+  }
+  try {
+    const { size } = await fh.stat();
+    if (!size) return false;
+    const b = Buffer.alloc(1);
+    await fh.read(b, 0, 1, size - 1);
+    return b[0] !== 0x0a;
+  } finally {
+    await fh.close();
+  }
 }
 
 export async function readJsonl<T>(path: string): Promise<T[]> {

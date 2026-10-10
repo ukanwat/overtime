@@ -50,3 +50,27 @@ describe("watches", () => {
     expect(readFileSync(counter, "utf8").trim().split("\n").length).toBe(1);
   });
 });
+
+describe("bookkeeping files", () => {
+  it("a record appended after a torn last line survives", async () => {
+    const { appendJsonl, readJsonl } = await import("../src/fsutil.js");
+    const { writeFileSync } = await import("node:fs");
+    const f = join(home, "torn.jsonl");
+    writeFileSync(f, '{"a":1}\n{"half":');
+    await appendJsonl(f, { b: 2 });
+    expect(await readJsonl(f)).toEqual([{ a: 1 }, { b: 2 }]);
+  });
+
+  it("opening the conversation marks read only what it showed", async () => {
+    const store = new Store("reader");
+    mkdirSync(join(home, "agents", "reader"), { recursive: true });
+    const a = await store.addMessage({ from: "agent", kind: "message", text: "one", baseDir: home });
+    await store.addMessage({ from: "agent", kind: "message", text: "two", baseDir: home });
+    await store.markRead(a.id);
+    expect(await store.unread()).toBe(1);
+    await store.markRead();
+    expect(await store.unread()).toBe(0);
+    await store.markRead(a.id); // never moves backwards
+    expect(await store.unread()).toBe(0);
+  });
+});
