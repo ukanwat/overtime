@@ -15,6 +15,7 @@ import {
   getImageDimensions,
   matchesKey,
   renderImage,
+  stripTerminalSequences,
   visibleWidth,
   wrapTextWithAnsi,
   type Component,
@@ -30,6 +31,7 @@ import type { AgentSummary } from "../daemon/control.js";
 import { validateName } from "../agent/agent.js";
 import { paths } from "../paths.js";
 import { pastedFiles, type PendingAttachment } from "./attach.js";
+import { copyText } from "./clipboard.js";
 import {
   accent,
   applyTerminalColors,
@@ -71,8 +73,7 @@ const spinner = () => SPINNER[Math.floor(Date.now() / 90) % SPINNER.length];
 /** Below this width the agent list is hidden; ↑↓ still switch agents. */
 const NARROW = 80;
 const PAGE = 10;
-/** Rows above the panes: the title bar and its rule. */
-/** Rows above the panes: one empty row, so the first line isn't pressed against the top edge. */
+/** Rows above the panes: one empty row, so the first line isn't pressed against the top edge (the divider runs through it). */
 const TOP = 1;
 /** A quiet gap (minutes) after which the agent's name is shown again above its next message. */
 const REGROUP_MIN = 10;
@@ -260,9 +261,16 @@ export class App implements Component {
   choosing: { id: string; n: number } | null = null;
   fieldInput = new Input({ prompt: "", placeholderStyle: muted });
   pending: PendingAttachment[] = [];
+  /** What you'd started writing (and attaching) to each agent, kept while you look at another one. */
+  private drafts = new Map<string | null, { text: string; pending: PendingAttachment[] }>();
   connected = true;
   live = new Map<string, LiveState>();
   private hits: Hit[] = [];
+  /** Screen rows the two panes take (from the top edge down to the message box), as last drawn. */
+  private paneRows = 0;
+  private width = 0;
+  /** Per screen row of the right pane, the columns its text is in: past a message's bar, inside a panel's frame. */
+  private textCols = new Map<number, [number, number]>();
   private inflight: Promise<void> | null = null;
   private again = false;
   private flashTimer: NodeJS.Timeout | null = null;
@@ -275,6 +283,11 @@ export class App implements Component {
    */
   private anchor: "question" | "last" | null = "question";
   private lastTop = 0;
+  private loadingOlder: Promise<void> | null = null;
+  /** The line each message started on, as last drawn. */
+  private msgLine = new Map<string, number>();
+  /** After older messages are added above: the message that was on screen, so the view stays on it. */
+  private keep: { id: string; line: number; top: number } | null = null;
   private leftW = 0;
   private loadedFor = "";
   private started = false;
@@ -289,7 +302,8 @@ export class App implements Component {
     });
     // Enter is the app's to handle (send), never the editor's own submit.
     this.input.disableSubmit = true;
-    this.input.setAutocompleteProvider(new SkillCompletion(() => this.skills));
+    // The selected agent's skills; on "+ New agent" the box takes a name, and the last agent's skills aren't its.
+    this.input.setAutocompleteProvider(new SkillCompletion(() => (this.onNewRow ? [] : this.skills)));
   }
 
   get agent(): AgentSummary | undefined {
@@ -351,8 +365,14 @@ export class App implements Component {
           // Something new while you're at the bottom: show it (from its start if it's long), once.
           this.anchor = openQuestion(fresh)?.id === fresh.at(-1)?.id ? "question" : "last";
         }
-        this.messages = fresh;
-        this.hasMore = !!r?.hasMore;
+        // Older messages you loaded stay: a refresh only brings the latest ones, and dropping the rest
+        // would pull the conversation out from under where you're reading.
+        const k = this.loadedFor === a.name && fresh.length ? this.messages.findIndex((m) => m.id === fresh[0].id) : -1;
+        if (k > 0) this.messages = [...this.messages.slice(0, k), ...fresh];
+        else {
+          this.messages = fresh;
+          this.hasMore = !!r?.hasMore;
+        }
         // Its skills, for the / menu: when the agent changes, and every half minute (it may add some).
         if (this.skillsFor !== a.name || Date.now() - this.skillsAt > 30_000) {
           this.skills = (await this.get<SkillInfo[]>("skills", { name: a.name }).catch(() => null)) ?? [];
@@ -376,13 +396,23 @@ export class App implements Component {
     }
   }
 
-  /** Older messages, when scrolled to the top. */
-  private async loadOlder(): Promise<void> {
+  /** Older messages, when scrolled to the top. One load at a time: the wheel asks many times a second. */
+  private loadOlder(): Promise<void> {
+    this.loadingOlder ??= this.doLoadOlder().finally(() => (this.loadingOlder = null));
+    return this.loadingOlder;
+  }
+
+  private async doLoadOlder(): Promise<void> {
     const a = this.agent;
-    if (!a || this.onNewRow || !this.hasMore || !this.messages.length) return;
-    const r = await this.get<{ messages: Message[]; hasMore: boolean }>("messages", { name: a.name, before: this.messages[0].id, limit: 300 });
-    if (this.agent?.name !== a.name) return;
-    this.messages = [...(r?.messages ?? []), ...this.messages];
+    const first = this.messages[0];
+    if (!a || this.onNewRow || !this.hasMore || !first) return;
+    const r = await this.get<{ messages: Message[]; hasMore: boolean }>("messages", { name: a.name, before: first.id, limit: 300 });
+    if (this.agent?.name !== a.name || this.messages[0]?.id !== first.id) return;
+    // What you were reading stays where it was on screen, with the older messages above it.
+    const ref = this.messages.find((m) => this.msgLine.has(m.id));
+    if (ref) this.keep = { id: ref.id, line: this.msgLine.get(ref.id)!, top: this.lastTop };
+    const seen = new Set(this.messages.map((m) => m.id));
+    this.messages = [...(r?.messages ?? []).filter((m) => !seen.has(m.id)), ...this.messages];
     this.hasMore = !!r?.hasMore;
     this.tui.requestRender();
   }
@@ -540,8 +570,15 @@ export class App implements Component {
     const next = Math.min(Math.max(0, n), this.agents.length);
     if (next !== this.sel) {
       this.choosing = null;
+      // A half-written message stays with the agent it was for, never sent to the next one by Enter.
+      const text = this.input.getValue();
+      if (text || this.pending.length) this.drafts.set(this.selName, { text, pending: this.pending });
+      else this.drafts.delete(this.selName);
       this.sel = next;
       this.selName = this.agents[next]?.name ?? null;
+      const draft = this.drafts.get(this.selName);
+      this.input.setValue(draft?.text ?? "");
+      this.pending = draft?.pending ?? [];
       this.messages = [];
       this.loadedFor = "";
       this.scroll = Number.MAX_SAFE_INTEGER;
@@ -564,9 +601,21 @@ export class App implements Component {
     this.tui.requestRender();
   }
 
+  private scrollToEnd(): void {
+    this.anchor = null;
+    this.scroll = Number.MAX_SAFE_INTEGER;
+    this.tui.requestRender();
+  }
+
   private attach(files: PendingAttachment[]): void {
     for (const f of files) if (!this.pending.some((p) => p.path === f.path)) this.pending.push(f);
     this.say(`Attached ${files.map((f) => f.name).join(", ")}. It goes with your next message.`, "ok");
+  }
+
+  /** Pick an option of the open question (0: dismiss it), waiting for Enter, as its number key does. */
+  private choose(q: Message, n: number): void {
+    this.choosing = { id: q.id, n };
+    this.tui.requestRender();
   }
 
   private async dismiss(q: Message): Promise<void> {
@@ -1102,10 +1151,24 @@ export class App implements Component {
     this.onQuit();
   }
 
+  /**
+   * Where a mouse selection that starts at (x, y) may reach: the rows of the pane it started in, and on
+   * each row only the columns that pane's text is in. So a copy from the conversation never picks up the
+   * agent list, the divider or a message's bar, and one from the agent list stays in the list.
+   * A selection that starts below the panes (the message box, the footer) is left as it is.
+   */
+  selectionArea(x: number, y: number): { top: number; bottom: number; cols: (row: number) => [number, number] } | null {
+    if (y >= this.paneRows) return null;
+    if (this.leftW > 0 && x < this.leftW) return { top: 0, bottom: this.paneRows - 1, cols: () => [0, this.leftW] };
+    const x0 = this.leftW > 0 ? this.leftW + 1 : 0;
+    return { top: 0, bottom: this.paneRows - 1, cols: (row) => this.textCols.get(row) ?? [x0, this.width] };
+  }
+
   // ---------- rendering ----------
 
   render(width: number): string[] {
     this.hits = [];
+    this.textCols.clear();
     const rows = Math.max(8, this.term.rows);
     const chipsH = this.pending.length && !this.onNewRow ? 1 : 0;
     const composer = this.renderComposer(width, rows >= 16);
@@ -1115,8 +1178,11 @@ export class App implements Component {
     const leftW = narrow ? 0 : Math.min(34, Math.max(26, Math.floor(width * 0.26)));
     const rightW = narrow ? width : width - leftW - 1;
     this.leftW = leftW;
+    this.paneRows = TOP + bodyH;
+    this.width = width;
 
-    const out: string[] = Array(TOP).fill("");
+    // The gap above the panes is padding only: the divider between them still runs to the top edge.
+    const out: string[] = Array(TOP).fill(narrow ? "" : " ".repeat(leftW) + faint("│"));
     const left = narrow ? [] : this.renderAgents(leftW, bodyH);
     const right = this.renderRight(rightW, bodyH, narrow ? 0 : leftW + 1, narrow);
     for (let i = 0; i < bodyH; i++) {
@@ -1243,7 +1309,7 @@ export class App implements Component {
   /** The DM: the agent's words plain, yours on a tinted panel with a bar, questions and alerts as cards. */
   private renderMessages(a: AgentSummary, w: number, h: number, x: number, top: number): Line[] {
     const body: Line[] = [];
-    const bodyHits: { line: number; act: () => void | Promise<void> }[] = [];
+    const bodyHits: { line: number; x0?: number; x1?: number; act: () => void | Promise<void> }[] = [];
     const inner = Math.max(12, w - 6);
     const wrap = (s: string, width = inner) => (s.trim() ? wrapTextWithAnsi(s, Math.max(8, width)) : [""]);
     const paras = (s: string, width = inner) => s.split("\n").flatMap((p) => wrap(p, width));
@@ -1253,8 +1319,10 @@ export class App implements Component {
     let prev: Message | undefined;
     let lastStart = 0;
     let questionStart = -1;
+    let questionEnd = -1;
 
     this.linkLine = -1;
+    this.msgLine.clear();
     if (this.hasMore) body.push(muted("   ↑ older messages: ⇧↑ at the top loads them"), "");
     if (!this.messages.length) body.push("", muted(`   No messages with ${a.name} yet.`));
 
@@ -1270,6 +1338,7 @@ export class App implements Component {
         prev = undefined;
       }
       lastStart = body.length;
+      this.msgLine.set(m.id, body.length);
       const regroup = !prev || prev.from !== m.from || prev.kind !== "message" || m.kind !== "message" || new Date(m.t).getTime() - new Date(prev.t).getTime() > REGROUP_MIN * 60_000;
 
       if (m.from === "you") {
@@ -1313,16 +1382,20 @@ export class App implements Component {
             const label = optionLabel(o);
             const tag = i === rec ? muted("  · suggested") : "";
             if (open) {
-              bodyHits.push({ line: body.length, act: () => ((this.choosing = null), this.answer(m, n)) });
               const num = picked ? inverse(bold(yellow(` ${n} `))) : inverse(accent(` ${n} `));
-              body.push(line(`${num} ${picked ? bold(label) : label}${tag}${picked ? `  ${yellow("← Enter to answer, Esc to cancel")}` : ""}`));
+              const shown = `${num} ${picked ? bold(label) : label}`;
+              // A click picks the option, like its number key; Enter answers. Only where it's written.
+              bodyHits.push({ line: body.length, x0: 4, x1: 4 + visibleWidth(shown), act: () => this.choose(m, n) });
+              body.push(line(`${shown}${tag}${picked ? `  ${yellow("← Enter to answer, Esc to cancel")}` : ""}`));
             } else body.push(line(muted(`${n}  ${label}`)));
           });
         }
         if (open) {
           const picked = this.choosing?.id === m.id && this.choosing.n === 0;
-          bodyHits.push({ line: body.length, act: () => ((this.choosing = null), this.dismiss(m)) });
-          body.push(line(`${picked ? inverse(bold(yellow(" 0 "))) : muted(" 0 ")} ${picked ? bold("Dismiss this question") : muted("Dismiss this question")}${picked ? `  ${yellow("← Enter to dismiss, Esc to cancel")}` : ""}`));
+          const shown = `${picked ? inverse(bold(yellow(" 0 "))) : muted(" 0 ")} ${picked ? bold("Dismiss this question") : muted("Dismiss this question")}`;
+          bodyHits.push({ line: body.length, x0: 4, x1: 4 + visibleWidth(shown), act: () => this.choose(m, 0) });
+          body.push(line(`${shown}${picked ? `  ${yellow("← Enter to dismiss, Esc to cancel")}` : ""}`));
+          questionEnd = body.length;
         }
         if (open) {
           body.push(line(""));
@@ -1371,6 +1444,15 @@ export class App implements Component {
     const maxScroll = Math.max(0, body.length - h);
     this.lastMax = maxScroll;
     let s: number;
+    if (this.keep) {
+      const now = this.msgLine.get(this.keep.id);
+      if (now != null) {
+        this.scroll = Math.min(maxScroll, Math.max(0, this.keep.top + now - this.keep.line));
+        if (this.scroll >= maxScroll) this.scroll = Number.MAX_SAFE_INTEGER;
+        this.anchor = null;
+      }
+      this.keep = null;
+    }
     // A link picked with Ctrl+L that's out of view: scroll to it.
     if (this.linkIdx >= 0 && this.linkLine >= 0) {
       const cur = this.scroll === Number.MAX_SAFE_INTEGER ? maxScroll : Math.min(this.scroll, maxScroll);
@@ -1384,7 +1466,9 @@ export class App implements Component {
     else if (live) s = maxScroll;
     else if (this.anchor) {
       // A one-time jump: the open question from its top, or a long new message from its start.
-      const target = this.anchor === "question" && questionStart >= 0 ? questionStart - 1 : body.length - lastStart > h ? lastStart - 1 : maxScroll;
+      // A question taller than the view: its end, so its options and Dismiss show (the last row may be the "newer below" hint).
+      const question = questionEnd - (questionStart - 1) > h - 1 ? questionEnd - (h - 1) : questionStart - 1;
+      const target = this.anchor === "question" && questionStart >= 0 ? question : body.length - lastStart > h ? lastStart - 1 : maxScroll;
       s = Math.min(maxScroll, Math.max(0, target));
       this.anchor = null;
       if (s < maxScroll) this.scroll = s; // from here on, your scrolling decides
@@ -1396,12 +1480,27 @@ export class App implements Component {
       const v = view[i];
       if (typeof v !== "string" && i + v.rows > view.length) view[i] = "";
     }
-    if (s > 0 && view.length > 1 && typeof view[0] === "string") view[0] = muted(`   ↑ ${s} line${s === 1 ? "" : "s"} above · ⇧↑`);
-    if (s < maxScroll && view.length === h && h > 1) view[h - 1] = muted(`   ↓ newer below · ⇧↓`);
+    // The hints cover a row of the conversation: a click there scrolls, never does what was under it.
+    const hintRows = new Set<number>();
+    if (s > 0 && view.length > 1 && typeof view[0] === "string") {
+      view[0] = muted(`   ↑ ${s} line${s === 1 ? "" : "s"} above · ⇧↑`);
+      hintRows.add(0);
+      this.hits.push({ row: top, x0: x, x1: x + w, act: () => this.scrollBy(-PAGE) });
+    }
+    if (s < maxScroll && view.length === h && h > 1) {
+      view[h - 1] = muted(`   ↓ newer below · ⇧↓`);
+      hintRows.add(h - 1);
+      this.hits.push({ row: top + h - 1, x0: x, x1: x + w, act: () => this.scrollToEnd() });
+    }
     for (const bh of bodyHits) {
       const row = bh.line - s;
-      if (row >= 0 && row < h) this.hits.push({ row: top + row, x0: x, x1: x + w, act: bh.act });
+      if (row >= 0 && row < h && !hintRows.has(row)) this.hits.push({ row: top + row, x0: x + (bh.x0 ?? 0), x1: Math.min(x + w, x + (bh.x1 ?? w)), act: bh.act });
     }
+    // Where each row's words start, past the bar the message is drawn with, so a selection copies only the words.
+    view.forEach((v, i) => {
+      const g = typeof v === "string" ? (/^(?:  [┃│] |┃ {1,2})/.exec(stripTerminalSequences(v))?.[0].length ?? 0) : 0;
+      if (g) this.textCols.set(top + i, [x + g, x + w]);
+    });
     return view;
   }
 
@@ -1463,12 +1562,15 @@ export class App implements Component {
   }
 
   /** Every panel (settings, pickers, help, confirmations) is a framed box on top of the conversation. */
-  private framed(title: string, body: string[], bodyHits: { line: number; x0?: number; x1?: number; act: () => void | Promise<void> }[], w: number, x: number, top: number): Line[] {
+  private framed(title: string, body: string[], bodyHits: { line: number; x0?: number; x1?: number; act: () => void | Promise<void> }[], w: number, x: number, top: number, h: number): Line[] {
     const indent = w < 50 ? 1 : 2;
     const bw = Math.max(20, Math.min(w - indent * 2, 92));
     for (const hh of bodyHits) {
-      this.hits.push({ row: top + 2 + hh.line, x0: x + indent + 2 + (hh.x0 ?? 0), x1: hh.x1 != null ? x + indent + 2 + hh.x1 : x + indent + bw - 2, act: hh.act });
+      const row = top + 2 + hh.line;
+      // A panel taller than the pane is cut off at its bottom: rows below that are the message box's.
+      if (row < top + h) this.hits.push({ row, x0: x + indent + 2 + (hh.x0 ?? 0), x1: hh.x1 != null ? x + indent + 2 + hh.x1 : x + indent + bw - 2, act: hh.act });
     }
+    body.forEach((_, i) => this.textCols.set(top + 2 + i, [x + indent + 2, x + indent + bw - 2]));
     return ["", ...box(title, body, bw).map((l) => " ".repeat(indent) + l)];
   }
 
@@ -1481,7 +1583,7 @@ export class App implements Component {
   private renderSettings(o: SettingsOverlay, w: number, x: number, top: number, h: number): Line[] {
     const title = `${this.agent?.name ?? ""} · settings`;
     const iw = this.innerW(w);
-    if (!o.data && !o.error) return this.framed(title, ["", muted(`${spinner()} Loading settings…`), ""], [], w, x, top);
+    if (!o.data && !o.error) return this.framed(title, ["", muted(`${spinner()} Loading settings…`), ""], [], w, x, top, h);
     const rows = this.settingsRows(o);
     const labelW = 16;
     let valueW = Math.min(30, Math.max(12, ...rows.filter((r) => r.field).map((r) => visibleWidth(r.value ?? "") + 2)));
@@ -1539,7 +1641,7 @@ export class App implements Component {
     // Say when there's more than fits, rather than cutting it off silently.
     if (start + bh < body.length) shown[shown.length - 1] = muted("  ↓ more below");
     if (start > 0) shown[0] = muted("  ↑ more above");
-    return this.framed(title, shown, hits.filter((hh) => hh.line > (start > 0 ? 0 : -1) && hh.line < (start + bh < body.length ? bh - 1 : bh)), w, x, top);
+    return this.framed(title, shown, hits.filter((hh) => hh.line > (start > 0 ? 0 : -1) && hh.line < (start + bh < body.length ? bh - 1 : bh)), w, x, top, h);
   }
 
   private renderOverlay(w: number, h: number, x: number, top: number): Line[] {
@@ -1572,7 +1674,7 @@ export class App implements Component {
         ...row("Ctrl+C", "quit (your agents keep running)"),
         "",
       ];
-      return this.framed("Keys", body.slice(0, Math.max(3, h - 3)), [], w, x, top);
+      return this.framed("Keys", body.slice(0, Math.max(3, h - 3)), [], w, x, top, h);
     }
     if (o.kind === "confirm") {
       const body: string[] = [""];
@@ -1601,7 +1703,7 @@ export class App implements Component {
         },
         { line, x0: yw + 3, x1: yw + 3 + visibleWidth(no), act: () => ((this.overlay = null), this.tui.requestRender()) },
       ];
-      return this.framed(o.title, body, hits, w, x, top);
+      return this.framed(o.title, body, hits, w, x, top, h);
     }
     if (o.kind !== "pick") return [];
     const body: string[] = [""];
@@ -1628,7 +1730,7 @@ export class App implements Component {
       body.push(on && hasTints() ? selected(line, iw) : line);
     });
     body.push("");
-    return this.framed(o.title, body, hits, w, x, top);
+    return this.framed(o.title, body, hits, w, x, top, h);
   }
 
   private placeholder(): string {
@@ -1739,6 +1841,34 @@ function fmtTokens(n: number): string {
   return `${n} tokens`;
 }
 
+/**
+ * The screen library selects whole screen rows, straight across both panes. Narrow what it highlights
+ * and copies to the pane the selection started in, and to that pane's text (App.selectionArea).
+ * The app draws exactly one screen, so the library's rows are screen rows.
+ */
+function keepSelectionInPane(tui: TuiAltScreen, app: App): void {
+  type Point = { row: number; col: number; boundary?: boolean };
+  const t = tui as any;
+  const bounds: () => { start: Point; end: Point } | undefined = t.getSelectionBounds.bind(tui);
+  const columns = t.getSelectionColumns.bind(tui);
+  let area: ReturnType<App["selectionArea"]> = null;
+  t.getSelectionBounds = () => {
+    const b = bounds();
+    const anchor: Point | undefined = t.selectionAnchor;
+    area = b && anchor ? app.selectionArea(anchor.col, anchor.row) : null;
+    if (!b || !area) return b;
+    let { start, end } = b;
+    if (start.row < area.top) start = { ...start, row: area.top, col: area.cols(area.top)[0] };
+    if (end.row > area.bottom) end = { ...end, row: area.bottom, col: area.cols(area.bottom)[1], boundary: true };
+    return start.row > end.row ? undefined : { start, end };
+  };
+  t.getSelectionColumns = (line: string, row: number, sel: unknown, min = 0, max = visibleWidth(line)) => {
+    if (!area) return columns(line, row, sel, min, max);
+    const [x0, x1] = area.cols(row);
+    return columns(line, row, sel, Math.max(min, x0), Math.min(max, x1));
+  };
+}
+
 export interface AppOptions {
   terminal?: Terminal;
   client?: DaemonClient;
@@ -1756,11 +1886,13 @@ export async function runApp(o: AppOptions = {}): Promise<{ app: App; tui: TuiAl
   const c = o.client ?? (await connectFn());
   const term = o.terminal ?? new ProcessTerminal();
   const opener = o.opener ?? openTarget;
-  // The screen library pages its own viewport on PgUp/PgDn, but this app draws one screen and scrolls
-  // the conversation itself: hand those keys to the app.
+  // The screen library pages, jumps and searches its own viewport (PgUp/PgDn, Home/End, Ctrl+↑↓,
+  // Ctrl+Shift+F), but this app draws one screen and scrolls the conversation itself: hand those keys to
+  // the app, so Home and End move the cursor in the message box.
   const kb = getKeybindings();
-  kb.setUserBindings({ ...kb.getUserBindings(), "tui.altScreen.pageUp": [], "tui.altScreen.pageDown": [] } as any);
-  const tui = new TuiAltScreen(term, false, undefined, { openUrl: (url) => app.openLink(url), copyOnSelect: true, mouse: o.mouse ?? !o.terminal });
+  const off = ["pageUp", "pageDown", "top", "bottom", "previousPrompt", "nextPrompt", "search"].map((k) => [`tui.altScreen.${k}`, []]);
+  kb.setUserBindings({ ...kb.getUserBindings(), ...Object.fromEntries(off) } as any);
+  const tui = new TuiAltScreen(term, false, undefined, { openUrl: (url) => app.openLink(url), copyOnSelect: true, copySelection: (text) => copyText(text, (seq) => term.write(seq)), mouse: o.mouse ?? !o.terminal });
   const timers: NodeJS.Timeout[] = [];
   let quitting = false;
   const app = new App(c, tui, term, () => {
@@ -1768,6 +1900,7 @@ export async function runApp(o: AppOptions = {}): Promise<{ app: App; tui: TuiAl
     for (const t of timers) clearInterval(t);
     (o.onQuit ?? (() => process.exit(0)))();
   }, opener);
+  keepSelectionInPane(tui, app);
   tui.addChild(app);
   tui.setFocus(app);
   tui.start();

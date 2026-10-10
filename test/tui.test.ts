@@ -195,8 +195,13 @@ describe("terminal app, with a scripted daemon", () => {
     const opened: string[] = [];
     const r = await runApp({ terminal: t as any, client: c as any, onQuit: () => {}, opener: (x) => void opened.push(x) });
     stops.push(r.stop);
-    return { t, c, app: r.app, seen: seer(t), opened };
+    return { t, c, app: r.app, tui: r.tui, seen: seer(t), opened };
   }
+  const click = (t: TestTerminal, x: number, y: number) => {
+    t.press(`\x1b[<0;${x + 1};${y + 1}M`);
+    t.press(`\x1b[<0;${x + 1};${y + 1}m`);
+  };
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
   it("opens on the agent that needs you, with its question in view", async () => {
     const { t, seen } = await open();
@@ -301,15 +306,156 @@ describe("terminal app, with a scripted daemon", () => {
     expect(c.calls.some((x) => x.method === "archive" && x.params.name === "repo-keeper")).toBe(true);
   });
 
-  it("answers by clicking an option", async () => {
+  it("picks an option with a click and answers with Enter, like its number key", async () => {
     const { t, c, seen } = await open();
     await seen("Merge the dependency fix?");
     const lines = (await t.screen()).split("\n");
     const y = lines.findIndex((l) => l.includes("2  Wait for 1.35"));
-    const x = lines[y].indexOf("2  Wait");
+    // Beside the option, past its words: nothing.
+    click(t, lines[y].indexOf("Wait for 1.35") + 30, y);
+    await sleep(200);
+    expect(await t.screen()).not.toContain("Enter to answer");
+    click(t, lines[y].indexOf("2  Wait"), y);
+    await seen("Enter to answer");
+    await sleep(200);
+    expect(c.calls.some((k) => k.method === "answer")).toBe(false);
+    t.press(KEY.enter);
+    await until(async () => c.calls.some((k) => k.method === "answer" && k.params.choice === 2), 5_000, "answered with Enter");
+  });
+
+  it("keeps the options and Dismiss in view when it opens on a question taller than the screen", async () => {
+    const c = new FakeClient();
+    const q = c.data.messages["repo-keeper"].find((m: any) => m.id === "m5");
+    q.text += "\n\n" + Array.from({ length: 30 }, (_, i) => `Detail ${i} about the bump.`).join("\n\n");
+    const { t, seen } = await open(120, 30, c);
+    await seen("Dismiss this question");
+    const s = await t.screen();
+    expect(s).toContain("1  Merge it");
+    expect(s).toContain("3  Close it");
+  });
+
+  it("copies only the words you selected in the conversation: no agent list, divider or message bars", async () => {
+    const { t, tui, seen } = await open();
+    await seen("Merge the dependency fix?");
+    const lines = (await t.screen()).split("\n");
+    const y = lines.findIndex((l) => l.includes("Dependabot opened"));
+    const x = lines[y].indexOf("Dependabot");
+    // From the question's first word, down two rows and back over into the agent list.
     t.press(`\x1b[<0;${x + 1};${y + 1}M`);
-    t.press(`\x1b[<0;${x + 1};${y + 1}m`);
-    await until(async () => c.calls.some((k) => k.method === "answer" && k.params.choice === 2), 5_000, "answered by click");
+    t.press(`\x1b[<32;${x + 61};${y + 2}M`);
+    t.press(`\x1b[<32;${4};${y + 3}M`);
+    t.press(`\x1b[<32;${x + 61};${y + 3}M`);
+    await sleep(100);
+    // What a release would copy (not released here: that would write this machine's clipboard).
+    const text: string = (tui as any).getActiveSelectionText();
+    expect(text.split("\n")[0]).toMatch(/^Dependabot opened #212/);
+    expect(text.split("\n").length).toBe(3);
+    expect(text).not.toMatch(/[│┃]/);
+    for (const l of text.split("\n")) expect(l).not.toMatch(/^\s/);
+    for (const name of ["repo-keeper", "game-builder", "inbox-triage", "scout", "old-bot", "New agent"]) expect(text).not.toContain(name);
+    // What's highlighted on screen is what's copied: never the agent list beside it.
+    expect((await t.cell(2, y + 1)).inverse).toBe(false);
+    expect((await t.cell(x + 1, y + 1)).inverse).toBe(true);
+  });
+
+  it("copies only the agent list when the selection starts there", async () => {
+    const { t, tui, seen } = await open();
+    await seen("Merge the dependency fix?");
+    const lines = (await t.screen()).split("\n");
+    const y = lines.findIndex((l) => l.includes("  scout"));
+    t.press(`\x1b[<0;2;${y + 1}M`);
+    t.press(`\x1b[<32;100;${y + 2}M`);
+    await sleep(100);
+    const text: string = (tui as any).getActiveSelectionText();
+    expect(text).toContain("scout");
+    expect(text).toContain("waiting for its job");
+    expect(text).not.toContain("│");
+    expect(text.split("\n").every((l) => l.length <= 34)).toBe(true);
+  });
+
+  it("scrolls when you click the 'newer below' or 'lines above' hint, never acting on the line under it", async () => {
+    const { t, c, seen } = await open(120, 22);
+    await seen("newer below");
+    let s = (await t.screen()).split("\n");
+    click(t, 60, s.findIndex((l) => l.includes("newer below")));
+    await until(async () => !(await t.screen()).includes("newer below"), 5_000, "at the newest");
+    s = (await t.screen()).split("\n");
+    const above = s.findIndex((l) => l.includes("lines above"));
+    const before = s[above];
+    click(t, 60, above);
+    await until(async () => (await t.screen()).split("\n")[above] !== before, 5_000, "scrolled up");
+    await sleep(200);
+    expect(c.calls.some((k) => k.method === "answer" || k.method === "dismiss")).toBe(false);
+  });
+
+  it("keeps what you were writing with its agent when you move to another", async () => {
+    const { t, c, seen } = await open();
+    await seen("Merge the dependency fix?");
+    t.type("delete the old branches");
+    await seen("delete the old branches");
+    t.press(KEY.down);
+    await seen("Harbour blockout done");
+    expect(await t.screen()).not.toContain("delete the old branches");
+    t.press(KEY.enter);
+    await sleep(200);
+    expect(c.calls.some((k) => k.method === "send" || k.method === "answer")).toBe(false);
+    t.press(KEY.up);
+    await seen("delete the old branches");
+  });
+
+  it("moves the cursor with Home and End in the message box", async () => {
+    const { t, app, seen } = await open();
+    await seen("Merge the dependency fix?");
+    t.type("abc");
+    t.press("\x1b[H");
+    t.type("X");
+    t.press("\x1b[F");
+    t.type("Y");
+    await sleep(100);
+    expect(app.input.getValue()).toBe("XabcY");
+  });
+
+  it("loads older messages once, keeps your place, and keeps them through a refresh", async () => {
+    const c = new FakeClient();
+    const older = Array.from({ length: 5 }, (_, i) => ({ id: `o${i}`, t: new Date(Date.now() - 9e8 + i * 1000).toISOString(), from: "agent", kind: "message", text: `older message ${i}` }));
+    const newer = Array.from({ length: 60 }, (_, i) => ({ id: `n${i}`, t: new Date(Date.now() - 6e5 + i * 1000).toISOString(), from: "agent", kind: "message", text: `newer message ${i}` }));
+    const call = c.call.bind(c);
+    c.call = async (m: string, p: any) => {
+      if (m === "messages" && p.name === "game-builder") {
+        c.calls.push({ method: m, params: p });
+        if (p.before) return await sleep(150), { messages: older, hasMore: false };
+        return { messages: newer, hasMore: true };
+      }
+      return call(m, p);
+    };
+    const { t, app, seen } = await open(120, 36, c);
+    await seen("Merge the dependency fix?");
+    t.press(KEY.down);
+    await seen("newer message 59");
+    await sleep(100);
+    for (let i = 0; i < 40; i++) t.press("\x1b[<64;80;10M"); // the wheel, up, to the top and on
+    await until(async () => app.messages[0]?.id === "o0", 5_000, "older loaded");
+    await sleep(200);
+    expect(c.calls.filter((k) => k.method === "messages" && k.params.before).length).toBe(1);
+    expect(app.messages.map((m) => m.id)).toEqual([...older, ...newer].map((m) => m.id));
+    // Still reading where you were: the oldest of the newer ones, with the older ones above it.
+    const shown = await t.screen();
+    expect(shown).toContain("newer message 0");
+    expect(shown).toContain("lines above");
+    await app.refresh();
+    await sleep(100);
+    expect(app.messages.map((m) => m.id)).toEqual([...older, ...newer].map((m) => m.id));
+    expect(await t.screen()).toBe(shown);
+  });
+
+  it("never puts a panel's clicks on the message box or footer in a short terminal", async () => {
+    const { t, app } = await open(100, 9);
+    await sleep(300);
+    t.press(KEY.tab);
+    await sleep(300);
+    // 9 rows: the message box (one row when short) and the footer are the last two.
+    expect((app as any).hits.length).toBeGreaterThan(0);
+    expect((app as any).hits.every((h: any) => h.row < 7)).toBe(true);
   });
 
   it("shows the agent is on what you just wrote, with its current step", async () => {
