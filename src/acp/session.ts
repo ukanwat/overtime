@@ -90,6 +90,11 @@ export const CLAUDE_BUILTINS_OFF = [
   "Agent", "Task", "SendMessage", "ListAgents", "ScheduleWakeup", "CronCreate", "CronDelete", "CronList",
   "Skill", "RemoteTrigger", "PushNotification", "AskUserQuestion", "EnterPlanMode", "ExitPlanMode", "EnterWorktree", "ExitWorktree",
   "Workflow", "Artifact", "SendFeedback", "ClaudeDesign", "Projects", "ProposeGoal", "ProposeSkills", "ShowOnboardingRolePicker", "ReadNotifications",
+  // Anything that publishes, uploads or reaches a service or UI outside Overtime: sharing links, design
+  // sync, review findings, messaging and files for Claude's own apps, connector and MCP-registry lookups.
+  // An agent must never publish unasked, and reaches the person only through Overtime.
+  "ShareOnboardingGuide", "ReportFindings", "DesignSync", "SendUserMessage", "SendUserFile", "SendFile", "Brief",
+  "SuggestConnectors", "ListConnectors", "SearchMcpRegistry", "FetchInboxMessage", "EndConversation", "Poll",
 ];
 
 /**
