@@ -37,11 +37,17 @@ const BACKOFF_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000];
 const SIGNIN_RETRY_MS = 5 * 60_000;
 const HELPER_RETRY_MS = process.env.OVERTIME_FAST_RETRY ? [200, 400] : [60_000, 5 * 60_000];
 
-/** Wait, unless the signal fires first. */
+/** Wait, unless the signal fires first. Leaves nothing on the signal, which may live as long as the daemon. */
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
-    const t = setTimeout(resolve, ms);
-    signal?.addEventListener("abort", () => (clearTimeout(t), resolve()), { once: true });
+    if (signal?.aborted) return resolve();
+    const done = () => {
+      clearTimeout(t);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const t = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
   });
 }
 
@@ -59,17 +65,19 @@ export type ChangeEvent = { agent: string; what: "messages" | "state" | "schedul
 /** Why an agent can't spend right now (usage limit or daily budget), or null if it can. */
 type Blocked = { kind: "limit"; until: Date; resetsAt: Date | null; backend: string } | { kind: "budget"; until: Date; text: string };
 
-/** An abort signal that fires when any of the given ones does. */
+/**
+ * An abort signal that fires when any of the given ones does. Node's own, which doesn't leave a listener
+ * on each of them: the daemon's and an agent's signals outlive every turn.
+ */
 function anySignal(signals: AbortSignal[]): AbortSignal {
+  return AbortSignal.any(signals);
+}
+
+/** A fired controller: what a stopped agent's runs get, so they end at once. */
+function stoppedSignal(): AbortController {
   const c = new AbortController();
-  for (const s of signals) {
-    if (s.aborted) {
-      c.abort();
-      break;
-    }
-    s.addEventListener("abort", () => c.abort(), { once: true });
-  }
-  return c.signal;
+  c.abort();
+  return c;
 }
 
 /** Everything that happens across all agents. Overtime's daemon. */
@@ -90,6 +98,8 @@ export class Runtime extends EventEmitter implements ToolHost {
   private helperNotes = new Map<string, string[]>();
   /** Each running helper's current turn, stopped when a note arrives. */
   private helperTurns = new Map<string, AbortController>();
+  /** Finished helpers a note is starting again right now (by "agent/id"); settles once started, or with why not. */
+  private helperStarting = new Map<string, Promise<string>>();
   /** Helpers past the point where a note reaches the running session; a note then carries them on afterwards. */
   private helperClosing = new Set<string>();
   /** Running helpers' records (the one their run saves), and the step each is on. */
@@ -174,6 +184,7 @@ export class Runtime extends EventEmitter implements ToolHost {
       await store.pushInbox({ type: "helper", text: helperInboxText(h), data: { helperId: h.id } });
     }
     if (a.state.status !== "stopped") await this.monitors.startAll(a.name);
+    else this.agentAborts.set(a.name, stoppedSignal());
     // A last message from the person that never reached the agent (an older version answered messages
     // in a separate session): hand it over now, so it's answered.
     if (a.state.status === "stopped") return;
@@ -199,10 +210,14 @@ export class Runtime extends EventEmitter implements ToolHost {
     this.log("runtime stopped");
   }
 
-  /** The signal for anything an agent runs: fires on shutdown or when the agent is stopped. */
+  /**
+   * The signal for anything an agent runs: fires on shutdown or when the agent is stopped. A stopped
+   * agent's stays fired until the person starts it again, so nothing it had waiting (a retry, a turn
+   * about to start) runs after the stop.
+   */
   private signalFor(agent: string, extra?: AbortSignal): AbortSignal {
     let c = this.agentAborts.get(agent);
-    if (!c || c.signal.aborted) this.agentAborts.set(agent, (c = new AbortController()));
+    if (!c) this.agentAborts.set(agent, (c = new AbortController()));
     return anySignal([this.abort.signal, c.signal, ...(extra ? [extra] : [])]);
   }
 
@@ -1135,6 +1150,10 @@ export class Runtime extends EventEmitter implements ToolHost {
     const rec = (await store.helpers()).find((h) => h.id === id);
     if (!rec) throw new Error(`There's no helper ${id}.`);
     if (!text.trim()) throw new Error("Write what to tell it.");
+    // Being carried on by an earlier note right now: once it has started, this is a note to it (and if
+    // it couldn't start, this one can't either, for the same reason).
+    const starting = this.helperStarting.get(key);
+    if (starting) await starting;
     if (this.helperRuns.has(key) && !this.helperClosing.has(key)) {
       const notes = this.helperNotes.get(key) ?? [];
       notes.push(text);
@@ -1149,6 +1168,22 @@ export class Runtime extends EventEmitter implements ToolHost {
     }
     // Finishing just now: wait for it, then carry on from there.
     await this.helperRuns.get(key)?.catch(() => {});
+    // Another note may have got in first while this one waited: then it's a note to that run.
+    if (this.helperStarting.has(key) || this.helperRuns.has(key)) return this.tellHelper(agentName, id, text);
+    // Claimed at once (nothing awaited since the check above), so two notes at once can't both start it.
+    const started = this.carryOnHelper(agentName, id, text);
+    this.helperStarting.set(key, started);
+    try {
+      return await started;
+    } finally {
+      if (this.helperStarting.get(key) === started) this.helperStarting.delete(key);
+    }
+  }
+
+  /** Start a finished helper again from where it was, with a note as its next instruction. */
+  private async carryOnHelper(agentName: string, id: string, text: string): Promise<string> {
+    const key = `${agentName}/${id}`;
+    const store = this.store(agentName);
     const now = (await store.helpers()).find((h) => h.id === id)!;
     if (now.cleanedAt || !existsSync(now.workdir)) throw new Error(`${id}'s folder was removed (a week after it finished), so it can't carry on. Start a new helper.`);
     if (this.stopping) throw new Error("Overtime is shutting down; tell it next turn.");
@@ -1168,9 +1203,11 @@ export class Runtime extends EventEmitter implements ToolHost {
     this.helperAborts.set(key, ctl);
     // Its role, as it was given (the file may have changed since: it's read again).
     const instructions = now.role ? await readFile(isAbsolute(now.role) ? now.role : join(agent.dir, now.role), "utf8").then((t: string) => parseFrontMatter(t).body).catch(() => "") : "";
-    const run = this.runHelper(agentName, now, instructions, eff.workspace, "", ctl.signal, text)
+    const run: Promise<void> = this.runHelper(agentName, now, instructions, eff.workspace, "", ctl.signal, text)
       .catch((e) => this.log(`[${agentName}] helper ${now.id}: ${e?.stack ?? e}`))
       .finally(() => {
+        // Only its own: a later run of the same helper may already be registered.
+        if (this.helperRuns.get(key) !== run) return;
         this.helperRuns.delete(key);
         this.helperClosing.delete(key);
         this.helperAborts.delete(key);
@@ -1194,6 +1231,9 @@ export class Runtime extends EventEmitter implements ToolHost {
       (fresh ? `(This is a new session. ${task}\n\nWhat you already did is in your folder: check it, and carry on from there.)` : "Take it into account and carry on from where you were.") +
       (resumed ? " When you're finished, call done again with the whole result." : "");
     let next: (fresh: boolean) => string = continueWith ? noteText([continueWith], true) : firstText;
+    /** The notes the next turn's text is made of (none for its first task), and whether they carry it on. */
+    let told: string[] = continueWith ? [continueWith] : [];
+    let resumed = !!continueWith;
     this.liveHelpers.set(key, rec);
     let lastReply = "";
     this.helperClosing.delete(key);
@@ -1208,7 +1248,7 @@ export class Runtime extends EventEmitter implements ToolHost {
         // Each attempt starts with nothing in flight; a stop still waiting carries over.
         this.boundaries.set(key, new StepBoundary(this.boundaries.get(key)));
         try {
-          return await runTurn({
+          const r = await runTurn({
             agent: agentName,
             kind: "helper",
             reason: `${agentName} gave you a task`,
@@ -1236,35 +1276,44 @@ export class Runtime extends EventEmitter implements ToolHost {
             },
             log: this.log,
           });
+          // It got through: a later limit gets its own day of waiting.
+          limitedSince.t = 0;
+          return r;
         } catch (e: any) {
           const msg = String(e?.message ?? e);
           if (signal.aborted && !cancel.aborted) throw e; // a note arrived: handled by the caller
-          if (e instanceof UsageLimitError && !cancel.aborted && !this.stopping) {
+          // Nothing of the failed attempt is running any more: a note arriving while it waits stops the
+          // wait at once (a stop still pending from the attempt fires now).
+          this.boundaries.set(key, new StepBoundary(this.boundaries.get(key)));
+          /** Whether to give up waiting: cancelled, stopped, shutting down, or a note arrived (the caller reads it). */
+          const over = () => signal.aborted || this.stopping;
+          const waiting = this.signalFor(agentName, signal);
+          if (e instanceof UsageLimitError && !over()) {
             limitedSince.t ||= Date.now();
             if (Date.now() - limitedSince.t < 24 * 3600_000) {
               const until = e.resetsAt ?? (await blockedUntil(e.backend)) ?? new Date(Date.now() + 15 * 60_000);
               this.log(`[${agentName}] helper ${rec.id}: ${e.backend} usage limit, waiting until ${until.toISOString()}`);
-              await sleep(Math.max(60_000, until.getTime() - Date.now()), cancel);
-              if (cancel.aborted || this.stopping) throw e;
+              await sleep(Math.max(60_000, until.getTime() - Date.now()), waiting);
+              if (over() || waiting.aborted) throw e;
               attempt = Math.max(attempt, 1);
               return run(text, signal);
             }
           }
-          if (cancel.aborted || this.stopping || !isTransient(e)) throw e;
+          if (over() || !isTransient(e)) throw e;
           if (!this.helperTrouble.has(rec.id)) this.helperTrouble.set(rec.id, { agent: agentName, since: new Date().toISOString(), backend: rec.backend ?? (await effectiveSettings(await loadAgent(agentName))).backend });
           this.changed(agentName, "helpers");
           await this.checkNetwork(await listAgents(), true);
           if (this.offlineSince) {
             // This machine is offline: no attempt is used up; it carries on once the connection is back.
             this.log(`[${agentName}] helper ${rec.id}: no internet, waiting for it to come back`);
-            await this.untilOnline(cancel);
+            await this.untilOnline(waiting);
             attempt = Math.max(attempt, 1);
           } else {
             if (attempt >= HELPER_RETRY_MS.length) throw e;
             this.log(`[${agentName}] helper ${rec.id}: provider trouble, retrying (${msg.slice(0, 120)})`);
-            await sleep(HELPER_RETRY_MS[attempt++], cancel);
+            await sleep(HELPER_RETRY_MS[attempt++], waiting);
           }
-          if (cancel.aborted || this.stopping) throw e;
+          if (over() || waiting.aborted) throw e;
           return run(text, signal);
         }
       };
@@ -1272,12 +1321,15 @@ export class Runtime extends EventEmitter implements ToolHost {
         for (;;) {
           const turn = new AbortController();
           this.helperTurns.set(key, turn);
+          /** Stopped for a note before this turn's text went out: it still has to be told. */
+          let unsent = false;
           try {
             const r = await run(next, anySignal([cancel, turn.signal]));
             lastReply = r.reply || lastReply;
           } catch (e) {
             // Stopped to read a note: carry on below. Anything else ends the helper.
             if (!(turn.signal.aborted && !cancel.aborted && !this.stopping && this.helperNotes.get(key)?.length)) throw e;
+            unsent = !promptWasSent(e);
           } finally {
             if (this.helperTurns.get(key) === turn) {
               this.helperTurns.delete(key);
@@ -1292,7 +1344,17 @@ export class Runtime extends EventEmitter implements ToolHost {
             this.helperClosing.add(key);
             break;
           }
-          next = noteText(notes, false);
+          if (unsent && told.length) {
+            told = [...told, ...notes];
+            next = noteText(told, resumed);
+          } else if (unsent) {
+            const first = next;
+            next = (fresh) => `${first(fresh)}\n\n${noteText(notes, false)(false)}`;
+          } else {
+            told = notes;
+            resumed = false;
+            next = noteText(notes, false);
+          }
         }
       } finally {
         if (this.helperTrouble.delete(rec.id)) this.changed(agentName, "helpers");
@@ -1301,12 +1363,13 @@ export class Runtime extends EventEmitter implements ToolHost {
       rec.result = ctx.result ?? (lastReply || "(It finished without describing its result. Check its folder.)");
     } catch (e: any) {
       this.helperClosing.add(key);
-      if (cancel.aborted) {
-        rec.status = "cancelled";
-        rec.result = "Cancelled, as you asked.";
-      } else if ((await loadAgent(agentName)).state.status === "stopped") {
+      // Stopping the agent cancels its helpers too: that's the person's stop, not the agent's cancel.
+      if ((await loadAgent(agentName)).state.status === "stopped") {
         rec.status = "stopped";
         rec.result = "Cut off because the person stopped you.";
+      } else if (cancel.aborted) {
+        rec.status = "cancelled";
+        rec.result = "Cancelled, as you asked.";
       } else if (this.stopping) {
         rec.status = "failed";
         rec.result = "Overtime was shut down while this helper was running, so it was cut off.";
@@ -1377,6 +1440,7 @@ export class Runtime extends EventEmitter implements ToolHost {
 
   async create(name: string, settings: { backend?: string; model?: string | null } = {}): Promise<Agent> {
     const a = await createAgent(name, Object.fromEntries(Object.entries(settings).filter(([, v]) => v !== undefined && v !== null)) as any);
+    this.agentAborts.delete(name); // an archived agent of the same name was stopped; this one isn't
     // The greeting costs nothing: Overtime writes it, not the model.
     await this.store(name).addMessage({
       kind: "message",
@@ -1391,9 +1455,12 @@ export class Runtime extends EventEmitter implements ToolHost {
   async stopAgent(name: string): Promise<void> {
     await updateState(name, { status: "stopped", nextWake: null, activity: "stopped", activityByAgent: false });
     this.monitors.stopAgent(name);
-    // Cancel whatever it's running now: its main turn and helpers.
-    this.agentAborts.get(name)?.abort();
-    this.agentAborts.delete(name);
+    // Cancel whatever it's running now: its main turn and helpers, including helpers waiting to retry.
+    // Its signal stays fired until it's started again (see signalFor).
+    const c = this.agentAborts.get(name);
+    if (c) c.abort();
+    else this.agentAborts.set(name, stoppedSignal());
+    for (const [key, ctl] of this.helperAborts) if (key.startsWith(`${name}/`)) ctl.abort();
     this.pendingWake.delete(name);
     // And what it kept running in the background: a stopped agent leaves nothing behind.
     const { stopBackground } = await import("../runtime/leftovers.js");
@@ -1407,6 +1474,7 @@ export class Runtime extends EventEmitter implements ToolHost {
     if (a.state.status !== "stopped" && a.state.status !== "paused") return;
     const hadJob = hasIdentity(a);
     await updateState(name, { status: hadJob ? "asleep" : "new", pausedUntil: null, pauseReason: null, failures: 0, activity: hadJob ? "resuming" : "waiting for its job", activityByAgent: false }, { allowStopped: true });
+    this.agentAborts.delete(name);
     await this.monitors.startAll(name);
     if (hadJob) this.wakeMain(name, "the person started you again");
     else if ((await this.store(name).inbox()).length) this.wakeMain(name, "the person sent you your first message");
