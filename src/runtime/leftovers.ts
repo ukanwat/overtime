@@ -46,6 +46,11 @@ export interface BackgroundProcess {
 /** When each agent's sessions ran and in which folders, so a folder two agents worked in at once isn't taken as proof of either. */
 const spans: { agent: string; roots: string[]; from: number; to: number | null }[] = [];
 const SPAN_KEEP_MS = 24 * 3600_000;
+/**
+ * How early a process's ps start time can read. lstart is cut to the second, and on Linux it's counted
+ * from the boot time, which is cut to the second too: a process can show as started up to 2s before it was.
+ */
+const START_SLACK_MS = 2000;
 
 /** A session of the agent's started, working in these folders. Returns what to call when it ends. */
 export function sessionSpan(agent: string, roots: string[]): () => void {
@@ -62,7 +67,7 @@ const inside = (p: string, root: string) => p === root || p.startsWith(root.ends
 
 /** Whether another agent's session was working in the folder `cwd` is in at time `t`. */
 function shared(agent: string | undefined, cwd: string, t: number): boolean {
-  return spans.some((s) => s.agent !== agent && s.from - 1000 <= t && t <= (s.to ?? Date.now()) + 1000 && s.roots.some((r) => inside(cwd, r)));
+  return spans.some((s) => s.agent !== agent && s.from - START_SLACK_MS <= t && t <= (s.to ?? Date.now()) + 1000 && s.roots.some((r) => inside(cwd, r)));
 }
 
 /** What other agents have recorded as theirs ("pid started" keys). */
@@ -143,7 +148,7 @@ export async function findLeftovers(since: number, roots: string[], agent?: stri
   for (const r of rows) {
     if (r.pid === process.pid || taken.has(`${r.pid} ${r.started}`)) continue;
     const t = new Date(r.started).getTime();
-    if (!Number.isFinite(t) || t < since - 1000) continue; // lstart has one-second resolution
+    if (!Number.isFinite(t) || t < since - START_SLACK_MS) continue;
     // Marked as this agent's: it is, wherever it runs. Marked as another agent's: it isn't. Unmarked
     // (or where environments can't be read): the parent, start time and folder tell.
     const marker = agent ? await markerOf(r.pid) : undefined;
