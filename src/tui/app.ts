@@ -1854,10 +1854,12 @@ export async function runApp(o: AppOptions = {}): Promise<{ app: App; tui: TuiAl
   const c = o.client ?? (await connectFn());
   const term = o.terminal ?? new ProcessTerminal();
   const opener = o.opener ?? openTarget;
-  // The screen library pages its own viewport on PgUp/PgDn, but this app draws one screen and scrolls
-  // the conversation itself: hand those keys to the app.
+  // The screen library pages, jumps and searches its own viewport (PgUp/PgDn, Home/End, Ctrl+↑↓,
+  // Ctrl+Shift+F), but this app draws one screen and scrolls the conversation itself: hand those keys to
+  // the app, so Home and End move the cursor in the message box.
   const kb = getKeybindings();
-  kb.setUserBindings({ ...kb.getUserBindings(), "tui.altScreen.pageUp": [], "tui.altScreen.pageDown": [] } as any);
+  const off = ["pageUp", "pageDown", "top", "bottom", "previousPrompt", "nextPrompt", "search"].map((k) => [`tui.altScreen.${k}`, []]);
+  kb.setUserBindings({ ...kb.getUserBindings(), ...Object.fromEntries(off) } as any);
   const tui = new TuiAltScreen(term, false, undefined, { openUrl: (url) => app.openLink(url), copyOnSelect: true, copySelection: (text) => copyText(text, (seq) => term.write(seq)), mouse: o.mouse ?? !o.terminal });
   const timers: NodeJS.Timeout[] = [];
   let quitting = false;

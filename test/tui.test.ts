@@ -403,6 +403,18 @@ describe("terminal app, with a scripted daemon", () => {
     await seen("delete the old branches");
   });
 
+  it("moves the cursor with Home and End in the message box", async () => {
+    const { t, app, seen } = await open();
+    await seen("Merge the dependency fix?");
+    t.type("abc");
+    t.press("\x1b[H");
+    t.type("X");
+    t.press("\x1b[F");
+    t.type("Y");
+    await sleep(100);
+    expect(app.input.getValue()).toBe("XabcY");
+  });
+
   it("never puts a panel's clicks on the message box or footer in a short terminal", async () => {
     const { t, app } = await open(100, 9);
     await sleep(300);
