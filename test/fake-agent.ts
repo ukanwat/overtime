@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 /**
  * A scripted ACP backend for tests: speaks real ACP on stdio and calls Overtime's real tools over MCP,
  * so the daemon can be tested end to end without a model. Behaviour is driven by words in the prompt.
@@ -61,6 +62,11 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
   if (/LIMIT_WORDS/.test(text)) throw new acp.RequestError(-32603, "Internal error", { message: "Quota exceeded for this model; try again later" });
   if (/OVERLOADED_TURN/.test(text)) throw new acp.RequestError(-32603, "Internal error", { errorKind: "overloaded", message: "API Error: 529" }); // Claude's shape
   if (/FAIL_TURN/.test(text) && !/RECOVERED/.test(text)) throw new acp.RequestError(-32603, "Internal error", { message: "scripted failure" });
+  if (/SAVE_ON_EXIT/.test(text)) {
+    // Like a CLI the backend runs underneath (Claude Code), which saves the session as it shuts down,
+    // after the backend itself has exited. Same process group, not detached.
+    spawn("/bin/sh", ["-c", `trap '' HUP; sleep 1; echo saved > "${join(s.cwd, "saved.txt")}"`], { stdio: "ignore" }).unref();
+  }
   if (!s.tools) {
     await say("no overtime tools");
     return { stopReason: "end_turn" };
@@ -202,3 +208,5 @@ acp
     cancelled = true;
   })
   .connect(stream);
+// Like real adapters: input closed means the client is done with it, so it exits.
+process.stdin.on("end", () => process.exit(0));
