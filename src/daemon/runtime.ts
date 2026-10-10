@@ -18,7 +18,7 @@ import { receiveAttachments } from "../store/attachments.js";
 import type { ToolContext, ToolHost } from "../tools/host.js";
 import { ToolServer } from "../tools/server.js";
 import { AcpSession } from "../acp/session.js";
-import { runTurn, sessionPreamble, TurnIncompleteError, UsageLimitError, type TurnResult } from "../runtime/turn.js";
+import { promptWasSent, runTurn, sessionPreamble, TurnIncompleteError, UsageLimitError, type TurnResult } from "../runtime/turn.js";
 import { blockedUntil, limitInfo, LIMIT_RECHECK_MS, usageToday, type TurnUsage } from "../runtime/usage.js";
 import { workingInstructions } from "../runtime/instructions.js";
 import { StepBoundary } from "../runtime/boundary.js";
@@ -81,6 +81,8 @@ export class Runtime extends EventEmitter implements ToolHost {
   private mainRunning = new Map<string, Promise<boolean>>();
   /** Wake reasons that arrived while a main turn was running. */
   private pendingWake = new Map<string, string[]>();
+  /** When each agent's latest main turn began taking its inbox (for the back-off: see checkAgent). */
+  private lastAttempt = new Map<string, number>();
   /** Agents the person asked to run (a message, wake) while a usage limit was recorded: tried anyway. */
   private tryDespiteLimit = new Set<string>();
   private helperRuns = new Map<string, Promise<void>>();
@@ -177,8 +179,11 @@ export class Runtime extends EventEmitter implements ToolHost {
     if (a.state.status === "stopped") return;
     const all = await store.messages();
     const last = all.at(-1);
+    // Already handed to the agent (it may have answered by doing the work, not in words), or waiting to be
+    // (items in flight went back to the inbox above): not again.
     const queued = new Set((await store.inbox()).map((i) => i.messageId).filter(Boolean));
-    if (last?.from === "you" && !last.replyTo && !last.closes && !queued.has(last.id)) await store.pushInbox({ type: "message", text: withFiles(last.text, last.attachments), messageId: last.id, attachments: last.attachments });
+    const delivered = await store.deliveredMessageIds();
+    if (last?.from === "you" && !last.replyTo && !last.closes && !queued.has(last.id) && !delivered.has(last.id)) await store.pushInbox({ type: "message", text: withFiles(last.text, last.attachments), messageId: last.id, attachments: last.attachments });
   }
 
   async stop(): Promise<void> {
@@ -390,8 +395,13 @@ export class Runtime extends EventEmitter implements ToolHost {
       a = await loadAgent(a.name);
     }
     const sched = await store.schedule();
-    // After a failed turn, wait out the back-off even if there's work waiting.
-    if (((a.state.failures ?? 0) > 0 || (a.state.transientFailures ?? 0) > 0) && sched.wakeAt && new Date(sched.wakeAt) > now) return;
+    // After a failed turn, wait out the back-off even if there's work waiting. Not with something new from
+    // the person (it came after the last try): that's tried at once, once. If it fails too, the back-off goes on.
+    if (((a.state.failures ?? 0) > 0 || (a.state.transientFailures ?? 0) > 0) && sched.wakeAt && new Date(sched.wakeAt) > now) {
+      const since = this.lastAttempt.get(a.name) ?? 0;
+      const fromPerson = (await store.inbox()).some((i) => (i.type === "answer" || (i.type === "message" && !(i.data as any)?.fromChat)) && new Date(i.t).getTime() > since);
+      if (!fromPerson) return;
+    }
     if (a.state.status === "new") {
       // A new agent does nothing until it has been told what it's for.
       if ((await store.inbox()).length) this.wakeMain(a.name, "the person sent you your first message");
@@ -470,6 +480,7 @@ export class Runtime extends EventEmitter implements ToolHost {
 
     const firstJob = !hasIdentity(agent);
     const runId = newId("main");
+    this.lastAttempt.set(agentName, Date.now());
     const items = await store.takeInbox(runId);
     const turnCtl = new AbortController();
     this.mainAborts.set(agentName, turnCtl);
@@ -478,6 +489,8 @@ export class Runtime extends EventEmitter implements ToolHost {
     this.interrupted.delete(agentName);
     const { ctx, mcp } = this.tools.open({ agent: agentName, kind: "main", depth: 0 });
     let result: TurnResult | null = null;
+    /** The session this turn ran in, once known. */
+    let sessionId: string | undefined;
     try {
       // The agent's own status line stays while it works; Overtime's placeholder becomes "working".
       await updateState(agentName, firstJob ? { status: "working", activity: "learning its job", activityByAgent: false } : agent.state.activityByAgent && agent.state.activity ? { status: "working" } : { status: "working", activity: "working", activityByAgent: false });
@@ -505,7 +518,8 @@ export class Runtime extends EventEmitter implements ToolHost {
         reason,
         // If resuming fails, the backend starts fresh, and the agent is told so.
         // A fresh session also gets the recent conversation with the person: it's the one voice they talk to.
-        text: (fresh) => (fresh ? recentConversation(convo) : newInstructions + edits) + mainTurnText(items, firstJob, fresh && !!agent.state.mainSessionId),
+        // Items an unfinished turn already showed this same session are marked as such; a fresh one gets them as new.
+        text: (fresh) => (fresh ? recentConversation(convo) : newInstructions + edits) + mainTurnText(items, firstJob, fresh && !!agent.state.mainSessionId, fresh ? null : resume),
         switchModel: !sameModel,
         header: await this.turnHeader(agentName),
         resumeSessionId: resume,
@@ -513,7 +527,10 @@ export class Runtime extends EventEmitter implements ToolHost {
         timeoutMs: settings.turnTimeoutMinutes * 60_000,
         signal: this.signalFor(agentName, turnCtl.signal),
         // Recorded as soon as the session exists, so a turn interrupted to answer you resumes this session.
-        onSession: (id) => void updateState(agentName, { mainSessionId: id, mainSessionBackend: eff.backend, mainSessionModel: eff.model ?? null, mainSessionPrompt: promptVersion("main") }).catch(() => {}),
+        onSession: (id) => {
+          sessionId = id;
+          void updateState(agentName, { mainSessionId: id, mainSessionBackend: eff.backend, mainSessionModel: eff.model ?? null, mainSessionPrompt: promptVersion("main") }).catch(() => {});
+        },
         onUpdate: (u) => {
           boundary.update(u);
           this.emit("update", { agent: agentName, kind: "main", update: u });
@@ -557,7 +574,9 @@ export class Runtime extends EventEmitter implements ToolHost {
         this.log(`[${agentName}] paused its work to answer you`);
         return true;
       }
-      await store.returnInbox(runId);
+      // Kept until a turn finishes. If the agent was already shown them, they're marked: the same session,
+      // continued, is reminded of them rather than handed them as new (and answering them twice).
+      await store.returnInbox(runId, promptWasSent(e) ? sessionId : undefined);
       if (agent.state.status === "stopped") {
         this.log(`[${agentName}] main turn ended because the agent was stopped`);
         return true;
@@ -1514,12 +1533,19 @@ function withFiles(text: string, files?: Attachment[]): string {
 
 function describeInbox(items: InboxItem[]): string {
   const kinds = new Set(items.map((i) => i.type));
-  const words: Record<string, string> = { message: "a message from the person", answer: "an answer to your question", monitor: "a monitor fired", helper: "a helper finished", loop: "a recurring task came due", system: "a note from Overtime" };
+  const words: Record<string, string> = { message: "a message from the person", answer: "an answer to your question", monitor: "a monitor fired", helper: "a helper finished", "helper-update": "an update from a helper", loop: "a recurring task came due", system: "a note from Overtime" };
   return [...kinds].map((k) => words[k] ?? k).join(", ");
 }
 
-function inboxBlock(items: InboxItem[]): string {
-  if (!items.length) return "Your inbox is empty.";
+/** The inbox for a turn. Items already shown to `session` (a turn there didn't finish) are set apart. */
+function inboxBlock(all: InboxItem[], session: string | null = null): string {
+  if (!all.length) return "Your inbox is empty.";
+  const shown = session ? all.filter((i) => i.shownIn === session) : [];
+  const items = all.filter((i) => !shown.includes(i));
+  const again = shown.length
+    ? `Already handed to you earlier in this session, in a turn that was cut off (an error or a usage limit). If you already dealt with one (answered it, did it), don't do it again; otherwise deal with it now:\n\n${shown.map((i) => `- ${i.type} — ${i.t}\n${i.text}`).join("\n\n")}`
+    : "";
+  if (!items.length) return again;
   return (
     `Your inbox (${items.length}):\n\n` +
     items
@@ -1542,7 +1568,8 @@ function inboxBlock(items: InboxItem[]): string {
                     : "From Overtime";
         return `${n + 1}. ${head} — ${i.t}\n${i.text}`;
       })
-      .join("\n\n")
+      .join("\n\n") +
+    (again ? `\n\n${again}` : "")
   );
 }
 
@@ -1618,7 +1645,7 @@ function recentConversation(all: Message[]): string {
   return `Your recent conversation with the person (most recent last):\n\n${text}\n\n---\n\n`;
 }
 
-function mainTurnText(items: InboxItem[], firstJob: boolean, contextReset: boolean): string {
+function mainTurnText(items: InboxItem[], firstJob: boolean, contextReset: boolean, session: string | null = null): string {
   const parts: string[] = [];
   if (firstJob) {
     parts.push(
@@ -1626,7 +1653,7 @@ function mainTurnText(items: InboxItem[], firstJob: boolean, contextReset: boole
     );
   }
   if (contextReset) parts.push("Note: this is a fresh session. Your earlier work session isn't carried over (your recent conversation with the person is above); your folder is. Check INDEX.md and your notes for where things stand.");
-  parts.push(inboxBlock(items));
+  parts.push(inboxBlock(items, session));
   parts.push("Reply with send to new messages from the person (not to ones passed on from your conversation: those were already answered, so never acknowledge them twice). Do the work, as part of your goals. Before this turn ends, bring your notes and INDEX.md up to date, decide the next useful step toward your goals, and choose when to wake.");
   return parts.join("\n\n");
 }

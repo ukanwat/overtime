@@ -72,6 +72,8 @@ export interface InboxItem {
   messageId?: string;
   attachments?: Attachment[];
   data?: unknown;
+  /** The session it was already shown to, in a turn that didn't finish (so that session isn't handed it as new). */
+  shownIn?: string;
 }
 
 export interface Loop {

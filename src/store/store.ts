@@ -235,10 +235,17 @@ export class Store {
     });
   }
 
-  /** The turn didn't finish: put its items back at the front of the inbox. */
-  async returnInbox(runId: string): Promise<void> {
+  /** The messages (yours, or your answers) whose inbox items reached the agent in a turn that finished. */
+  async deliveredMessageIds(): Promise<Set<string>> {
+    const rows = await readJsonl<InboxItem>(this.p("inbox-delivered.jsonl"));
+    return new Set(rows.map((r) => r.messageId).filter((id): id is string => !!id));
+  }
+
+  /** The turn didn't finish: put its items back at the front of the inbox, marked if `shownIn` that session. */
+  async returnInbox(runId: string, shownIn?: string): Promise<void> {
     await this.lock(async () => {
-      const items = await readJson<InboxItem[]>(this.p("inflight", `${runId}.json`), []);
+      let items = await readJson<InboxItem[]>(this.p("inflight", `${runId}.json`), []);
+      if (shownIn) items = items.map((i) => ({ ...i, shownIn }));
       if (items.length) await writeJson(this.p("inbox.json"), [...items, ...(await this.inbox())]);
       await rm(this.p("inflight", `${runId}.json`), { force: true });
     });
