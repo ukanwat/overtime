@@ -415,6 +415,39 @@ describe("terminal app, with a scripted daemon", () => {
     expect(app.input.getValue()).toBe("XabcY");
   });
 
+  it("loads older messages once, keeps your place, and keeps them through a refresh", async () => {
+    const c = new FakeClient();
+    const older = Array.from({ length: 5 }, (_, i) => ({ id: `o${i}`, t: new Date(Date.now() - 9e8 + i * 1000).toISOString(), from: "agent", kind: "message", text: `older message ${i}` }));
+    const newer = Array.from({ length: 60 }, (_, i) => ({ id: `n${i}`, t: new Date(Date.now() - 6e5 + i * 1000).toISOString(), from: "agent", kind: "message", text: `newer message ${i}` }));
+    const call = c.call.bind(c);
+    c.call = async (m: string, p: any) => {
+      if (m === "messages" && p.name === "game-builder") {
+        c.calls.push({ method: m, params: p });
+        if (p.before) return await sleep(150), { messages: older, hasMore: false };
+        return { messages: newer, hasMore: true };
+      }
+      return call(m, p);
+    };
+    const { t, app, seen } = await open(120, 36, c);
+    await seen("Merge the dependency fix?");
+    t.press(KEY.down);
+    await seen("newer message 59");
+    await sleep(100);
+    for (let i = 0; i < 40; i++) t.press("\x1b[<64;80;10M"); // the wheel, up, to the top and on
+    await until(async () => app.messages[0]?.id === "o0", 5_000, "older loaded");
+    await sleep(200);
+    expect(c.calls.filter((k) => k.method === "messages" && k.params.before).length).toBe(1);
+    expect(app.messages.map((m) => m.id)).toEqual([...older, ...newer].map((m) => m.id));
+    // Still reading where you were: the oldest of the newer ones, with the older ones above it.
+    const shown = await t.screen();
+    expect(shown).toContain("newer message 0");
+    expect(shown).toContain("lines above");
+    await app.refresh();
+    await sleep(100);
+    expect(app.messages.map((m) => m.id)).toEqual([...older, ...newer].map((m) => m.id));
+    expect(await t.screen()).toBe(shown);
+  });
+
   it("never puts a panel's clicks on the message box or footer in a short terminal", async () => {
     const { t, app } = await open(100, 9);
     await sleep(300);
