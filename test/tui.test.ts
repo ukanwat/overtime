@@ -475,6 +475,28 @@ describe("terminal app, with a scripted daemon", () => {
     expect(await t.screen()).not.toContain("Archive repo-keeper?");
   });
 
+  it("shows when a long message in the box has lines hidden above or below", async () => {
+    // Bordered, on a tint, and short (no border): each says how much is out of view.
+    for (const [rows, tint, shown] of [[36, false, 10], [36, true, 10], [14, false, 5]] as const) {
+      style.resetPalette();
+      if (tint) style.applyTerminalColors({ background: { r: 12, g: 12, b: 12 }, foreground: { r: 224, g: 224, b: 224 } }, true);
+      const { t, seen } = await open(120, rows);
+      await seen("▌ repo-keeper");
+      for (let i = 1; i <= 15; i++) {
+        if (i > 1) t.press("\n");
+        t.type(`line ${i}`);
+      }
+      await seen("line 15");
+      await seen(`↑ ${15 - shown} more`);
+      for (let i = 0; i < 14; i++) t.press(KEY.up);
+      await seen(`↓ ${15 - shown} more`);
+      const s = await t.screen();
+      expect(s).toContain("line 1 ");
+      expect(s).not.toContain(`↑ ${15 - shown} more`);
+      expect(s.split("\n").every((l) => l.length <= 120)).toBe(true);
+    }
+  });
+
   it("never puts a panel's clicks on the message box or footer in a short terminal", async () => {
     const { t, app } = await open(100, 9);
     await sleep(300);

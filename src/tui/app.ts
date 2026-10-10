@@ -188,10 +188,15 @@ export function markdownLines(text: string, width: number): string[] {
  * It draws no border of its own: the app frames it.
  */
 class Composer extends Editor {
-  protected renderTopBorder(): string {
+  /** Lines scrolled out of the box above and below, as last drawn (the editor shows them on its borders). */
+  above = 0;
+  below = 0;
+  protected renderTopBorder(_width: number, hidden: number): string {
+    this.above = hidden;
     return "";
   }
-  protected renderBottomBorder(): string {
+  protected renderBottomBorder(_width: number, hidden: number): string {
+    this.below = hidden;
     return "";
   }
   /** The full text, with pasted blocks expanded. */
@@ -201,11 +206,11 @@ class Composer extends Editor {
   setValue(v: string): void {
     this.setText(v);
   }
-  /** Its text lines at this width, cursor included, without the (empty) borders, and the open menu's lines. */
-  body(width: number): { text: string[]; menu: string[] } {
+  /** Its text lines at this width, cursor included, without the (empty) borders, the open menu's lines, and how many lines are out of view. */
+  body(width: number): { text: string[]; menu: string[]; above: number; below: number } {
     const lines = this.render(width);
     const menu = (this as any).renderedAutocompleteHeight ?? 0;
-    return { text: lines.slice(1, Math.max(2, lines.length - 1 - menu)), menu: menu ? lines.slice(lines.length - menu) : [] };
+    return { text: lines.slice(1, Math.max(2, lines.length - 1 - menu)), menu: menu ? lines.slice(lines.length - menu) : [], above: this.above, below: this.below };
   }
 }
 
@@ -1803,11 +1808,15 @@ export class App implements Component {
     const prompt = active ? accent("›") : muted("›");
     // The / menu sits under what you're typing, inside the box.
     const lines = [...body.map((l, n) => `${n === 0 ? prompt : " "} ${l}`), ...(typed?.menu.length ? ["", ...typed.menu.map((l) => `  ${l}`)] : [])];
-    if (!roomy) return lines.map((l) => fit(" " + l, w));
+    // A long message scrolls inside the box: say how much of it is out of view, above and below.
+    const up = typed?.above ? muted(`↑ ${typed.above} more`) : "";
+    const down = typed?.below ? muted(`↓ ${typed.below} more`) : "";
+    if (!roomy) return [...(up ? [`  ${up}`] : []), ...lines, ...(down ? [`  ${down}`] : [])].map((l) => fit(" " + l, w));
     // Like Grok CLI: a filled block on a tint, no border. Without tints, a quiet rounded border.
-    if (hasTints()) return [element("", w), ...lines.map((l) => element(`  ${l}`, w)), element("", w)];
+    if (hasTints()) return [element(up && `    ${up}`, w), ...lines.map((l) => element(`  ${l}`, w)), element(down && `    ${down}`, w)];
     const c = active && this.typing() ? accent : faint;
-    return [c("╭" + "─".repeat(Math.max(0, w - 2)) + "╮"), ...lines.map((l) => c("│") + " " + fit(l, w - 4) + " " + c("│")), c("╰" + "─".repeat(Math.max(0, w - 2)) + "╯")];
+    const edge = (l: string, r: string, note: string) => (note ? c(l + "───") + ` ${note} ` + c("─".repeat(Math.max(0, w - 7 - visibleWidth(note))) + r) : c(l + "─".repeat(Math.max(0, w - 2)) + r));
+    return [edge("╭", "╮", up), ...lines.map((l) => c("│") + " " + fit(l, w - 4) + " " + c("│")), edge("╰", "╯", down)];
   }
 
   private renderFooter(w: number): string {
