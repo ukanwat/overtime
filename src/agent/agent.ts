@@ -49,8 +49,8 @@ export interface AgentState {
   mainSessionBackend: string | null;
   /** The model the main session was started on; a different model means a fresh session. */
   mainSessionModel?: string | null;
-  /** Fingerprints of AGENT.md and INDEX.md when the main session last ended. */
-  mainSessionFiles?: { agent: string; index: string };
+  /** Fingerprints of AGENT.md, INDEX.md and memory/MEMORY.md when the main session last ended. */
+  mainSessionFiles?: { agent: string; index: string; memory?: string };
   /** The version of Overtime's instructions the main session started with (see promptVersion). */
   mainSessionPrompt?: string;
   /** The backend a "doesn't report cost" alert was already raised for. */
@@ -72,6 +72,16 @@ export interface AgentState {
   transientFailures?: number;
   /** When the current run of provider problems began. */
   troubleSince?: string | null;
+  /** When Claude's own memories for its folder were copied into memory/ (done once). */
+  memoryImportedAt?: string;
+  /** Main turns finished since its last reflect pass. */
+  turnsSinceReflect?: number;
+  /** When its last reflect pass ran. */
+  lastReflectAt?: string | null;
+  /** Its backend compacted the main session since the last reflect pass: one is due once it's idle. */
+  compactedSinceReflect?: boolean;
+  /** Why Overtime doesn't commit its folder's history, noted once (the folder is a git repository of its own). */
+  historyOff?: string;
 }
 
 export interface Agent {
@@ -82,6 +92,8 @@ export interface Agent {
   identity: string;
   /** Contents of INDEX.md, or "" if the agent hasn't written one yet. */
   index: string;
+  /** Contents of memory/MEMORY.md, its index of what it has learned, or "" if there's none yet. */
+  memory: string;
   state: AgentState;
 }
 
@@ -148,6 +160,7 @@ export async function loadAgent(name: string): Promise<Agent> {
   try {
     index = await readFile(join(dir, "INDEX.md"), "utf8");
   } catch {}
+  const memory = await readFile(join(dir, "memory", "MEMORY.md"), "utf8").catch(() => "");
   const state = await readJson<AgentState>(join(paths.meta(name), "state.json"), {
     formatVersion: FORMAT_VERSION,
     status: "new",
@@ -159,7 +172,7 @@ export async function loadAgent(name: string): Promise<Agent> {
     lastRunAt: null,
     lastError: null,
   });
-  return { name, dir, settings: snapshot ?? (data as AgentSettings), identity: body, index, state };
+  return { name, dir, settings: snapshot ?? (data as AgentSettings), identity: body, index, memory, state };
 }
 
 export async function listAgents(): Promise<Agent[]> {

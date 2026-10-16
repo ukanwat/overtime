@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { copyFile, lstat, mkdir, rm, stat, symlink } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadSettings } from "../settings.js";
@@ -78,15 +78,62 @@ export async function backendMissing(name: string): Promise<string | null> {
  * instructions, skills and settings. Claude gets this through its session options (see AcpSession).
  * Codex reads everything from its home folder, so each agent gets its own (CODEX_HOME), sharing only
  * the person's sign-in. Gemini and OpenCode have no such switch: they also read the person's own setup.
+ *
+ * And no memory system of the backend's own: an agent keeps what it learns in its folder (memory/),
+ * the same on every backend. Claude's auto-memory is off here and in its session options; Codex's
+ * memories feature is off in the agent's own config (see codexMemoriesOff); Gemini's in a project
+ * settings file in the agent's folder (see geminiMemoryOff). OpenCode has no memory of its own: only
+ * plugins in the person's own config add one.
  */
 export async function isolationEnv(backend: string, agentMeta: string): Promise<Record<string, string>> {
+  if (backend === "claude") return { CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" };
   if (backend !== "codex") return {};
   const own = join(agentMeta, "codex-home");
   await mkdir(own, { recursive: true });
   const theirs = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "auth.json");
   const link = join(own, "auth.json");
   await shareSignIn(theirs, link);
+  await codexMemoriesOff(join(own, "config.toml"));
   return { CODEX_HOME: own };
+}
+
+/**
+ * Gemini CLI's memory off for sessions in this folder, through its project settings
+ * (<cwd>/.gemini/settings.json): its save_memory tool excluded (older versions have one) and Auto Memory
+ * off. Anything else in the file is kept. Gemini reads project settings only in a folder it trusts.
+ */
+export async function geminiMemoryOff(cwd: string): Promise<void> {
+  const file = join(cwd, ".gemini", "settings.json");
+  let cur: any = {};
+  try {
+    cur = JSON.parse(await readFile(file, "utf8"));
+  } catch (e: any) {
+    if (e?.code !== "ENOENT") return; // a file that isn't JSON is the person's to fix, not ours to replace
+  }
+  if (!cur || typeof cur !== "object") return;
+  const exclude: string[] = Array.isArray(cur.tools?.exclude) ? cur.tools.exclude : [];
+  if (exclude.includes("save_memory") && cur.experimental?.autoMemory === false) return;
+  const next = { ...cur, tools: { ...(cur.tools ?? {}), exclude: [...new Set([...exclude, "save_memory"])] }, experimental: { ...(cur.experimental ?? {}), autoMemory: false } };
+  await mkdir(join(cwd, ".gemini"), { recursive: true });
+  await writeFile(file, JSON.stringify(next, null, 2) + "\n");
+}
+
+/**
+ * Codex's memories off in the agent's own config.toml: the feature itself, and its [memories] settings
+ * (neither generating new memories nor using old ones). It's off by default today; this keeps it off if
+ * that changes. What the file already says about memories is left as it is.
+ */
+export async function codexMemoriesOff(file: string): Promise<void> {
+  let cur = await readFile(file, "utf8").catch(() => "");
+  const before = cur;
+  const end = () => (cur && !cur.endsWith("\n") ? "\n" : "") + (cur ? "\n" : "");
+  if (!/^\s*\[memories\]/m.test(cur)) cur += `${end()}[memories]\ngenerate_memories = false\nuse_memories = false\n`;
+  const features = /^\s*\[features\]\s*$/m.exec(cur);
+  const featureSet = features && /^\s*memories\s*=/m.test(cur.slice(features.index).split(/^\s*\[(?!features\])/m)[0]);
+  if (!featureSet) {
+    cur = features ? `${cur.slice(0, features.index + features[0].length)}\nmemories = false${cur.slice(features.index + features[0].length)}` : `${cur}${end()}[features]\nmemories = false\n`;
+  }
+  if (cur !== before) await writeFile(file, cur);
 }
 
 /**

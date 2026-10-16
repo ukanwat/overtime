@@ -87,8 +87,24 @@ the agent decides to keep:
   an edit by hand), Overtime puts it back, so no agent can raise its own budget or unprotect a path.
 - `INDEX.md`: the agent's own map of its folder. It's shown to the agent at the start of every
   session, so it always knows where to look.
+- `memory/`: what it has learned, one small file per memory (a fact about you, a correction, a
+  decision), with `memory/MEMORY.md` as the index: one line per memory that states the rule itself.
+  The index is shown at the start of every session, and again when it changes. How-tos go in
+  `skills/` instead. Overtime's own memory replaces the backends' (Claude's auto-memory and Codex's
+  memories are turned off for agents; Claude's existing memories for the folder are copied in once,
+  and the originals are kept).
 - Everything else (notes, data, decisions, scripts, archives) is organised by the agent, the way
   a senior keeps their own desk.
+
+**It learns, and you can see what it learned.** Besides what the agent saves itself, Overtime now
+and then runs a short *reflect pass* for it: after its backend compacts the session, or after 8 turns
+and at most once a day, while it's idle. The pass reads what the agent did since the last one and
+makes small edits to `memory/` and `skills/` (what it was corrected on, what it worked out, what's
+gone stale), each citing the run it came from. It counts toward the budget and says nothing to you.
+The agent's folder is a git repository: after every turn and reflect pass Overtime commits `memory/`,
+`skills/`, `AGENT.md` and `INDEX.md` as "Overtime", so `git log -p memory/` in the folder shows what
+changed and `git revert` undoes it. A folder that is already a git repository of the agent's own is
+left alone.
 
 **It manages its own time.** When a stretch of work is done, it decides when to wake next, between
 one minute and three days ahead. It can wake on a schedule ("every day at 9") or on events: a

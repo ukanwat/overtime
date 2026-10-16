@@ -32,6 +32,8 @@ export interface OpenOptions {
   protect?: string[];
   /** Paths the backend and everything it starts may not read (macOS only; see runtime/sandbox.ts). */
   hide?: string[];
+  /** Claude Code tools this session doesn't get, on top of CLAUDE_BUILTINS_OFF. */
+  disallowedTools?: string[];
 }
 
 /** Protected paths are set but this machine can't enforce them; the turn doesn't run unprotected. */
@@ -101,10 +103,11 @@ export const CLAUDE_BUILTINS_OFF = [
 
 /**
  * Backend-specific session options. Overtime agents get only what Overtime gives them:
- * no personal settings, instructions or MCP servers from the person's own CLI setup.
+ * no personal settings, instructions or MCP servers from the person's own CLI setup, and no memory of
+ * Claude's own: an agent keeps what it learns in its folder (memory/), the same on every backend.
  */
-function isolationMeta(backend: string): Record<string, unknown> | undefined {
-  if (backend === "claude") return { claudeCode: { options: { settingSources: [], strictMcpConfig: true, disallowedTools: CLAUDE_BUILTINS_OFF } } };
+export function isolationMeta(backend: string, disallowed: string[] = []): Record<string, unknown> | undefined {
+  if (backend === "claude") return { claudeCode: { options: { settingSources: [], strictMcpConfig: true, disallowedTools: [...CLAUDE_BUILTINS_OFF, ...disallowed], settings: { autoMemoryEnabled: false, autoDreamEnabled: false } } } };
   return undefined;
 }
 
@@ -278,7 +281,7 @@ export class AcpSession {
         this.conn.agent.request<acp.NewSessionResponse>(acp.methods.agent.session.new, {
           cwd: this.opts.cwd,
           mcpServers: toAcpMcp(this.opts.mcpServers, this.httpMcp),
-          _meta: isolationMeta(this.backend),
+          _meta: isolationMeta(this.backend, this.opts.disallowedTools),
         } as any),
         INIT_TIMEOUT_MS,
         "Creating a session",
@@ -301,7 +304,7 @@ export class AcpSession {
           sessionId,
           cwd: this.opts.cwd,
           mcpServers: toAcpMcp(this.opts.mcpServers, this.httpMcp),
-          _meta: isolationMeta(this.backend),
+          _meta: isolationMeta(this.backend, this.opts.disallowedTools),
         } as any),
         INIT_TIMEOUT_MS,
         "Loading the session",
