@@ -400,6 +400,40 @@ describe("terminal app, with a scripted daemon", () => {
     expect(c.calls.some((x: any) => x.method === "new")).toBe(false);
   });
 
+  it("keeps the new agent's settings step and its choices when a backend that isn't installed is picked", async () => {
+    const { t, c, seen } = await open(110, 34);
+    await seen("Merge the dependency fix?");
+    t.press(KEY.ctrlN);
+    await seen("Name the new agent");
+    t.type("tui3");
+    t.press(KEY.enter);
+    await seen("New agent · tui3");
+    await seen("the default");
+    // Other agents: public → private.
+    for (let i = 0; i < 10 && !(await t.screen()).includes("› Other agents"); i++) {
+      t.press(KEY.up);
+      await sleep(20);
+    }
+    t.press(KEY.enter);
+    await sleep(50);
+    expect(await t.screen()).toMatch(/Other agents\s+private/);
+    for (let i = 0; i < 10 && !(await t.screen()).includes("› Backend"); i++) {
+      t.press(KEY.up);
+      await sleep(20);
+    }
+    t.press(KEY.enter);
+    await seen("tui3 runs on");
+    t.press(KEY.down); // claude → codex
+    t.press(KEY.down); // → gemini, not installed
+    t.press(KEY.enter);
+    await seen("gemini isn't installed");
+    const s = await t.screen();
+    expect(s).toContain("New agent · tui3");
+    expect(s).toMatch(/Other agents\s+private/);
+    expect(s).toMatch(/Backend\s+claude/);
+    expect(c.calls.some((x) => x.method === "new")).toBe(false);
+  });
+
   it("shows answered questions with the chosen answer", async () => {
     const { t, seen } = await open();
     t.press(KEY.down);

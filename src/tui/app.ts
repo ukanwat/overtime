@@ -1594,9 +1594,16 @@ export class App implements Component {
       label: b.name,
       current: b.name === a.backend,
       note: b.missing ? "not installed" : undefined,
-      run: b.missing ? () => this.say(b.missing!, "err") : () => this.showModelPicker(a, b.name, fromSettings, draft),
+      run: b.missing ? () => this.missingBackend(b.missing!, draft) : () => this.showModelPicker(a, b.name, fromSettings, draft),
     }));
     this.show({ kind: "pick", title: `${a.name} runs on`, items, idx: Math.max(0, backends.indexOf(a.backend)), back: draft ?? fromSettings });
+  }
+
+  /** A backend that isn't installed was chosen: the new agent's settings step comes back as it was, saying why. */
+  private missingBackend(missing: string, draft?: SettingsOverlay): void {
+    if (!draft) return this.say(missing, "err");
+    draft.error = missing;
+    this.show(draft);
   }
 
   private async showModelPicker(a: { name: string; backend: string; model: string | null }, backend: string, fromSettings: boolean, draft?: SettingsOverlay): Promise<void> {
