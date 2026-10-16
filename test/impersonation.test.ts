@@ -53,10 +53,15 @@ describe("an agent can't act as the person", () => {
   it("says the person does it, and points to the message tool, without naming the caller as if it were the target", async () => {
     for (const args of [["send", "b", "hi"], ["daemon", "stop"]]) {
       const r = await cli(args, "a");
-      expect(r.out).toContain("can only be done by the person. To reach another agent, use your message tool.");
+      expect(r.out).toContain("can only be done by the person.");
       expect(r.out).not.toContain("not supported");
       expect(r.out).not.toContain("(here, a)");
     }
+    expect((await cli(["send", "b", "hi"], "a")).out).toContain("To reach another agent, use your message tool.");
+    // Nothing to do with reaching an agent: no message tool, the person is asked.
+    const d = await cli(["daemon", "stop"], "a");
+    expect(d.out).toContain("overtime daemon can only be done by the person. If it needs doing, ask them with your send tool.");
+    expect(d.out).not.toContain("message tool");
   }, 60_000);
 
   it("refuses sending to itself, answering and control commands", async () => {
@@ -103,6 +108,18 @@ describe("an agent can't act as the person", () => {
     }
     expect((await rt.store("b").messages()).filter((m) => m.from === "you" && ["0", "-1", "1.5"].includes(m.text))).toEqual([]);
   }, 60_000);
+
+  it("refuses an option past the question's last one, with the same usage line", async () => {
+    await rt.send("b", "ASK which way");
+    await until(async () => (await rt.store("b").openQuestions()).length > 0 && (await loadAgent("b")).state.status === "asleep", 30_000, "a question");
+    const r = await cli(["answer", "b", "4"]);
+    expect(r.code).not.toBe(0);
+    expect(r.out).toContain("There is no option 4. b's question has 2.");
+    expect(r.out).toContain('Usage: overtime answer <name> <option-number> ["note"]');
+    expect((await rt.store("b").openQuestions()).length).toBe(1);
+    expect((await cli(["answer", "b", "2"])).code).toBe(0);
+    expect((await rt.store("b").openQuestions()).length).toBe(0);
+  }, 90_000);
 
   it("the person's own terminal sends as before", async () => {
     const r = await cli(["send", "b", "hi from you"]);
