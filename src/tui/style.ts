@@ -209,7 +209,7 @@ export function ago(iso: string | null | undefined): string {
   return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
-/** When something happens next, the way a person would say it: "in 20m", "at 14:05", "Tue 09:00". */
+/** When something happens next, the way a person would say it: "in 20m", "at 14:05", "Tue 09:00", "23 Oct 09:00". */
 export function when(iso: string | null | undefined): string {
   if (!iso) return "";
   const d = new Date(iso);
@@ -221,7 +221,10 @@ export function when(iso: string | null | undefined): string {
   if (d.toDateString() === today.toDateString()) return `at ${time}`;
   const tomorrow = new Date(today.getTime() + 86400000);
   if (d.toDateString() === tomorrow.toDateString()) return `tomorrow ${time}`;
-  return `${d.toLocaleDateString([], { weekday: "short" })} ${time}`;
+  // A weekday only names a day in the coming week: a week or more out (today's weekday, say), the date does.
+  const days = Math.round((new Date(d).setHours(0, 0, 0, 0) - new Date(today).setHours(0, 0, 0, 0)) / 86400000);
+  if (days < 7) return `${d.toLocaleDateString([], { weekday: "short" })} ${time}`;
+  return `${d.toLocaleDateString([], { day: "numeric", month: "short" })} ${time}`;
 }
 
 export function stamp(iso: string): string {
