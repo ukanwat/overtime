@@ -1377,6 +1377,7 @@ export class App implements Component {
       { label: "Budget", heading: true },
       { label: "Daily budget", field: "budget", value: `$${fmtMoney(d?.dailyBudgetUsd ?? a.budgetUsd)} a day`, note: cost ? `$${(d?.spentUsd ?? a.spentUsd).toFixed(2)} spent today` : "this backend doesn't report cost" },
       { label: "Token budget", field: "tokens", value: d?.dailyTokenBudget ? `${fmtTokens(d.dailyTokenBudget)} a day` : "none", note: `${fmtTokens(d?.tokensToday ?? a.tokensToday)} used today`.replace(" tokens", "") },
+      { label: "Visibility", heading: true },
       {
         label: "Other agents",
         key: "visibility",
@@ -1446,6 +1447,7 @@ export class App implements Component {
       { label: "Model", field: "model", value: run.model ?? "default", note: run.model ? "" : "the backend's choice" },
       { label: "Budget", heading: true },
       { label: "Daily budget", field: "budget", value: budget === undefined ? "default" : `$${fmtMoney(budget)} a day`, note: p.dailyBudgetUsd === undefined ? "the default" : "" },
+      { label: "Visibility", heading: true },
       {
         label: "Other agents",
         key: "visibility",

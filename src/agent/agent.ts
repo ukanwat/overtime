@@ -2,6 +2,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { Lexer, type Token } from "marked";
 import { paths } from "../paths.js";
 import { readJson, writeAtomic, writeJson } from "../fsutil.js";
 import { withLock } from "../store/mutex.js";
@@ -205,11 +206,23 @@ export function publicAgents(): { name: string; job: string }[] {
       const { data, body } = parseFrontMatter(readFileSync(join(paths.agent(name), "AGENT.md"), "utf8"));
       const settings = readJsonSync<AgentSettings | null>(settingsFile(name), null) ?? (data as AgentSettings);
       if (settings.visibility === "private" || !hasIdentity({ identity: body } as Agent)) continue;
-      const job = body.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("#")) ?? "";
+      const job = firstLine(body);
       out.push({ name, job: job.length > 140 ? job.slice(0, 139) + "…" : job });
     } catch {}
   }
   return out;
+}
+
+/** The first line of text under the title, as plain text: markdown like **Role:** reads as noise in a list. */
+function firstLine(body: string): string {
+  const text = (t: Token): string =>
+    "tokens" in t && t.tokens ? t.tokens.map(text).join("") : "items" in t ? (t.items as Token[]).map(text).join("\n") : t.type === "br" ? "\n" : "text" in t ? String(t.text) : "";
+  for (const t of new Lexer().lex(body)) {
+    if (t.type === "heading" || t.type === "html" || t.type === "code") continue;
+    const line = text(t).split("\n").map((l) => l.trim()).find(Boolean);
+    if (line) return line;
+  }
+  return "";
 }
 
 function readJsonSync<T>(file: string, fallback: T): T {

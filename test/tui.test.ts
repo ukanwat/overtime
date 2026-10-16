@@ -442,6 +442,10 @@ describe("terminal app, with a scripted daemon", () => {
     expect(s).toContain("The harbour assets are in the release branch now.");
     t.press("\x1b[C"); // → settings
     await seen("Other agents");
+    // Under its own heading, not the budget's.
+    const rows = (await t.screen()).split("\n");
+    const row = rows.findIndex((l) => l.includes("Other agents"));
+    expect(rows.slice(0, row).reverse().find((l) => /│ [A-Z][A-Z ]+\s+│/.test(l))).toMatch(/│ VISIBILITY\s+│/);
     for (let i = 0; i < 30 && !(await t.screen()).match(/› Other agents/); i++) {
       t.press(KEY.down);
       await sleep(20);
