@@ -130,8 +130,11 @@ export async function importClaudeMemory(agentDir: string, cwds: string[]): Prom
 
 // ---------- history: the agent folder as a git repository ----------
 
-/** What Overtime commits after each turn and reflect pass: what the agent has learned and who it is. */
-export const TRACKED = [MEMORY_DIR, "skills", "AGENT.md", "INDEX.md"];
+/**
+ * What Overtime commits after each turn and reflect pass: what the agent has learned and who it is, and
+ * the folder's own .gitignore, so the history says what it leaves out and git status doesn't list it.
+ */
+export const TRACKED = [MEMORY_DIR, "skills", "AGENT.md", "INDEX.md", ".gitignore"];
 const AUTHOR = { name: "Overtime", email: "overtime@localhost" };
 /** Marks a repository Overtime made and commits to (in the repository's own config). */
 const MARK = "overtime.autocommit";
@@ -191,8 +194,8 @@ async function realDir(dir: string): Promise<string> {
 }
 
 /**
- * Commit what changed in memory/, skills/, AGENT.md and INDEX.md (or fewer of them; nothing else in the
- * folder), with the message given. Returns the commit's short id, or null when nothing changed or
+ * Commit what changed in memory/, skills/, AGENT.md, INDEX.md and .gitignore (or fewer of them; nothing
+ * else in the folder), with the message given. Returns the commit's short id, or null when nothing changed or
  * Overtime doesn't commit here.
  */
 export async function commitHistory(agentDir: string, message: string, only: string[] = TRACKED): Promise<string | null> {
