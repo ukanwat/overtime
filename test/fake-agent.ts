@@ -95,6 +95,23 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
     if (/You are running a reflect pass/.test(text)) {
       const home = process.env.OVERTIME_HOME ?? s.cwd;
       writeFileSync(join(home, `reflect-seen-${(/reflect pass for (\S+),/.exec(text)?.[1] ?? "x")}.txt`), `${names.join(",")}\n${text}`);
+      // A reflect-slow file in Overtime's home (once): a pass still running when the agent gets work, so it
+      // is cancelled. Its content "cost" reports a cost first, as a backend that has already spent does.
+      const slowMark = join(home, "reflect-slow");
+      if (existsSync(slowMark)) {
+        const costly = readFileSync(slowMark, "utf8").trim() === "cost";
+        rmSync(slowMark);
+        if (costly) {
+          s.cost += 0.02;
+          await cx.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "usage_update", used: 1000, size: 100000, cost: { amount: s.cost, currency: "USD" } } as any });
+        }
+        if (await slow()) {
+          // Still writing for a moment after the cancel, as a real backend finishing a tool call does.
+          await new Promise((r) => setTimeout(r, 1500));
+          writeFileSync(join(home, "reflect-stopped-at"), String(Date.now()));
+          return { stopReason: "cancelled" };
+        }
+      }
       mkdirSync(join(s.cwd, "memory"), { recursive: true });
       const run = /\(run (main_[^)]+)\)/.exec(text)?.[1] ?? "unknown";
       writeFileSync(join(s.cwd, "memory", "reflected.md"), `---\ntype: feedback\nsource: observed\ndate: 2026-10-17\nlast-verified: 2026-10-17\nruns: [${run}]\n---\n\nCheck the render before sending.\n`);

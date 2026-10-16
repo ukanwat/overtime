@@ -280,6 +280,8 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
     }
     await record("end", { stopReason: res.stopReason, usage: res.usage ?? null, sessionCost, context });
     const u = res.usage;
+    // A cancelled turn the backend reported nothing for has nothing to count: no row, rather than an empty one.
+    if ((stopped || res.stopReason === "cancelled") && sessionCost == null && !u) throw new TurnIncompleteError(stopped ?? "the backend cancelled the turn", true);
     const usage2 = await recordTurnUsage(agent.name, {
       runId,
       kind: o.kind,

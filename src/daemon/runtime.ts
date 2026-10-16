@@ -154,8 +154,8 @@ export class Runtime extends EventEmitter implements ToolHost {
   private boundaries = new Map<string, StepBoundary>();
   /** Agents whose running main turn was interrupted by the person: not a failure, it carries on next turn. */
   private interrupted = new Set<string>();
-  /** Each agent's running reflect pass: cancelled when its main session has work to do. */
-  private reflecting = new Map<string, AbortController>();
+  /** Each agent's running reflect pass: cancelled when its main session has work to do, and done once its session has stopped. */
+  private reflecting = new Map<string, { ctl: AbortController; done: Promise<void> }>();
   /** Cancels a single helper. */
   private helperAborts = new Map<string, AbortController>();
   /** Cancels everything one agent is running (stopping it). */
@@ -318,14 +318,19 @@ export class Runtime extends EventEmitter implements ToolHost {
   wakeMain(agent: string, reason: string): void {
     if (this.stopping) return;
     // Real work comes first: a reflect pass running now stops, and runs again another time.
-    this.reflecting.get(agent)?.abort();
+    const reflecting = this.reflecting.get(agent);
+    reflecting?.ctl.abort();
     if (this.mainRunning.has(agent)) {
       const q = this.pendingWake.get(agent) ?? [];
       q.push(reason);
       this.pendingWake.set(agent, q);
       return;
     }
-    const run = this.runMain(agent, reason)
+    // The main turn starts once the pass has actually stopped (a few seconds at most): until then its
+    // session can still write memory/, and on the way out it puts back AGENT.md and INDEX.md as they were
+    // before it, which would undo what the main turn changed there.
+    const run = (reflecting?.done ?? Promise.resolve())
+      .then(() => this.runMain(agent, reason))
       .catch((e) => {
         this.log(`[${agent}] main: ${e?.stack ?? e}`);
         return false;
@@ -486,12 +491,12 @@ export class Runtime extends EventEmitter implements ToolHost {
     const trigger = a.state.status === "asleep" && hasIdentity(a) ? reflectDue(a.state, now.getTime()) : null;
     if (trigger && !this.reflecting.has(a.name) && !(await store.helpers()).some((h) => h.status === "running")) {
       const ctl = new AbortController();
-      this.reflecting.set(a.name, ctl);
-      void this.reflect(a.name, trigger, ctl)
+      const done = this.reflect(a.name, trigger, ctl)
         .catch((e) => this.log(`[${a.name}] reflect: ${e?.stack ?? e}`))
         .finally(() => {
-          if (this.reflecting.get(a.name) === ctl) this.reflecting.delete(a.name);
+          if (this.reflecting.get(a.name)?.ctl === ctl) this.reflecting.delete(a.name);
         });
+      this.reflecting.set(a.name, { ctl, done });
     }
   }
 
