@@ -28,6 +28,12 @@ const liftModel = (model: string) => {
   rmSync(join(home, `limit-model-${model}.told`), { force: true });
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/**
+ * A turn ran and finished after `runsBefore`, with nothing left waiting. Asleep with an empty inbox alone
+ * isn't enough: a lifted pause shows asleep, and the turn takes the inbox before it shows working.
+ */
+const ranAndSettled = async (name: string, runsBefore: number) =>
+  mainRuns(name) > runsBefore && (await state(name)).status === "asleep" && !(await rt.store(name).inbox()).length ? true : null;
 
 async function employ(name: string, model: string) {
   await rt.create(name);
@@ -88,11 +94,12 @@ describe("a usage limit on one model, while other models of the same backend get
   });
 
   it("carries on as soon as a turn on its own model gets through", async () => {
+    const before = mainRuns("director");
     liftModel("opus");
     // You write to another agent on opus: it tries despite the recorded limit, and gets through.
     await rt.send("critic", "are you there?");
     await until(async () => (await rt.store("critic").messages()).some((m) => m.from === "agent" && m.text.includes("are you there?")), 30_000, "critic answered");
-    await until(async () => ((await state("director")).status === "asleep" && !(await rt.store("director").inbox()).length ? true : null), 30_000, "director resumed and handled its message");
+    await until(() => ranAndSettled("director", before), 30_000, "director resumed and handled its message");
     expect(limits()["fake/opus"].windows.seven_day.status).toBe("allowed");
     expect((await state("director")).limitHits).toEqual([]);
   });
@@ -104,8 +111,9 @@ describe("a usage limit on one model, while other models of the same backend get
     await rt.send("quick", "go on");
     await until(async () => ((await state("quick")).status === "paused" ? true : null), 30_000, "quick paused");
     expect(new Date((await state("quick")).pausedUntil!).getTime()).toBeLessThanOrEqual(soon * 1000);
+    const before = mainRuns("quick");
     liftModel("haiku");
-    await until(async () => ((await state("quick")).status === "asleep" && !(await rt.store("quick").inbox()).length ? true : null), 40_000, "quick resumed after its reset");
+    await until(() => ranAndSettled("quick", before), 40_000, "quick resumed after its reset");
     expect(new Date((await state("quick")).lastRunAt!).getTime()).toBeGreaterThanOrEqual(soon * 1000);
   });
 });

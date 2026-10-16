@@ -137,7 +137,8 @@ describe("an agent's life", () => {
   it("keeps the message and retries after a failed turn", async () => {
     await rt.create("flaky");
     await rt.send("flaky", "FAIL_TURN");
-    await until(async () => ((await loadAgent("flaky")).state.failures ?? 0) >= 1, 30_000, "failure recorded");
+    // The failure is recorded in its state before the retry is scheduled and logged: wait for all of it.
+    await until(async () => ((await loadAgent("flaky")).state.failures ?? 0) >= 1 && logs.some((l) => l.includes("main turn failed")), 30_000, "failure handled");
     const a = await loadAgent("flaky");
     expect(a.state.status).toBe("new");
     expect(a.state.lastError).toContain("scripted failure");
