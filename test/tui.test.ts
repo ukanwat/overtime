@@ -64,8 +64,12 @@ describe("terminal app, against a real daemon", () => {
     for (let i = 0; i < 3; i++) t.press(KEY.bs);
     t.type("alpha");
     await seen("Press Enter to create alpha");
+    // Enter shows its settings first, with Create selected: Enter twice makes it with the defaults.
+    t.press(KEY.enter);
     t.press(KEY.enter);
     await seen("What should I be looking after");
+    const { loadAgent } = await import("../src/agent/agent.js");
+    expect((await loadAgent("alpha")).settings).toEqual({}); // nothing chosen: it follows the defaults
     const s = await t.screen();
     expect(s).toContain("◇ new");
     expect(s).toContain("Tell alpha what it's for");
@@ -235,6 +239,77 @@ describe("terminal app, with a scripted daemon", () => {
     expect(await t.screen()).toContain("▌ game-builder");
     for (let i = 0; i < 4; i++) t.press(KEY.down);
     await seen("Name the new agent");
+  });
+
+  it("shows a new agent's settings before making it, and makes it with the backend, model and budget chosen there", async () => {
+    const { t, c, app, seen } = await open();
+    await seen("Merge the dependency fix?");
+    t.press(KEY.ctrlN);
+    await seen("Name the new agent");
+    t.type("coder");
+    t.press(KEY.enter);
+    await seen("New agent · coder");
+    await seen("the default");
+    await (app as any).refresh(); // other agents carrying on meanwhile don't close it
+    await sleep(100);
+    let s = await t.screen();
+    for (const x of ["Backend", "claude", "Model", "Daily budget", "$10 a day", "Workspace", "its own folder", "Other agents", "› Create coder"]) expect(s).toContain(x);
+    expect(c.calls.some((x) => x.method === "new")).toBe(false);
+    // Up to the backend; its picker marks what isn't installed.
+    for (let i = 0; i < 10 && !(await t.screen()).includes("› Backend"); i++) {
+      t.press(KEY.up);
+      await sleep(20);
+    }
+    t.press(KEY.enter);
+    await seen("coder runs on");
+    expect(await t.screen()).toMatch(/gemini\s+not installed/);
+    t.press(KEY.down); // claude → codex
+    t.press(KEY.enter);
+    await seen("codex models for coder");
+    await seen("Opus");
+    t.press(KEY.down);
+    t.press(KEY.enter);
+    await seen("New agent · coder");
+    s = await t.screen();
+    expect(s).toMatch(/Backend\s+codex/);
+    expect(s).toMatch(/Model\s+opus/);
+    // The budget, typed in place.
+    for (let i = 0; i < 10 && !(await t.screen()).includes("› Daily budget"); i++) {
+      t.press(KEY.down);
+      await sleep(20);
+    }
+    t.press(KEY.enter);
+    for (let i = 0; i < 4; i++) t.press(KEY.bs);
+    t.type("25");
+    t.press(KEY.enter);
+    await seen("$25 a day");
+    for (let i = 0; i < 10 && !(await t.screen()).includes("› Create coder"); i++) {
+      t.press(KEY.down);
+      await sleep(20);
+    }
+    t.press(KEY.enter);
+    await seen("Created coder");
+    expect(c.calls.find((x) => x.method === "new")?.params).toEqual({ name: "coder", backend: "codex", model: "opus", dailyBudgetUsd: 25 });
+    expect(await t.screen()).toContain("codex · opus");
+  });
+
+  it("won't make a new agent on a backend that isn't installed, and Esc goes back to its name", async () => {
+    const c: any = new FakeClient();
+    const call = c.call.bind(c);
+    c.call = async (m: string, p: any) => (m === "defaults" ? { backend: "gemini", model: null, dailyBudgetUsd: 10 } : call(m, p));
+    const { t, seen } = await open(120, 36, c);
+    await seen("Merge the dependency fix?");
+    t.press(KEY.ctrlN);
+    await seen("Name the new agent");
+    t.type("gem");
+    t.press(KEY.enter);
+    t.press(KEY.enter);
+    await seen("gem can't run here: gemini isn't installed");
+    expect(await t.screen()).toMatch(/Backend\s+gemini\s+not installed/);
+    expect(c.calls.some((x: any) => x.method === "new")).toBe(false);
+    t.press(KEY.esc);
+    await seen("Press Enter to create gem");
+    expect(c.calls.some((x: any) => x.method === "new")).toBe(false);
   });
 
   it("shows answered questions with the chosen answer", async () => {
