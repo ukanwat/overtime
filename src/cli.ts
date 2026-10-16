@@ -184,6 +184,43 @@ function attachmentLine(a: NonNullable<Message["attachments"]>[number]): string 
   return `${icon} ${a.name}${a.bytes != null ? gray(`  ${humanBytes(a.bytes)}`) : ""}  ${gray(a.path)}`;
 }
 
+/** How each setting's value is read, by its friendly name. The error hint lists these keys, so it can't leave one out. */
+const SETTINGS: Record<string, (v: string) => [string, unknown]> = {
+  backend: (v) => ["backend", v],
+  model: (v) => ["model", v === "" || v === "default" ? null : v],
+  budget: (v) => {
+    const n = Number(v.replace(/^\$/, ""));
+    if (!Number.isFinite(n) || n < 0) fail(`"${v}" isn't a budget.`, "Give dollars per day, e.g. budget=20");
+    return ["dailyBudgetUsd", n];
+  },
+  tokens: (v) => {
+    if (v === "" || /^(none|off)$/i.test(v)) return ["dailyTokenBudget", null];
+    const m = /^([\d.]+)([km])?$/i.exec(v.replace(/[,_]/g, ""));
+    const n = m ? Number(m[1]) * (m[2]?.toLowerCase() === "m" ? 1e6 : m[2]?.toLowerCase() === "k" ? 1e3 : 1) : NaN;
+    if (!Number.isFinite(n) || n <= 0) fail(`"${v}" isn't a token budget.`, "e.g. tokens=500k, or tokens=none");
+    return ["dailyTokenBudget", Math.round(n)];
+  },
+  workspace: (v) => {
+    if (v === "" || v === "default") return ["workspace", null];
+    const p = v === "~" || v.startsWith("~/") ? homedir() + v.slice(1) : v;
+    if (!p.startsWith("/")) fail(`"${v}" isn't a full path.`, "e.g. workspace=~/code/my-repo");
+    return ["workspace", p];
+  },
+  visibility: (v) => {
+    if (!/^(public|private)$/.test(v)) fail(`"${v}" isn't a visibility.`, "visibility=public (other agents see it and can message it) or visibility=private");
+    return ["visibility", v];
+  },
+  protect: (v) => {
+    if (v === "" || /^(none|nothing)$/i.test(v)) return ["protect", null];
+    const list = v.split(",").map((x) => x.trim()).filter(Boolean).map((x) => (x === "~" || x.startsWith("~/") ? homedir() + x.slice(1) : x));
+    const rel = list.find((x) => !x.startsWith("/"));
+    if (rel) fail(`"${rel}" isn't a full path.`, "e.g. protect=~/Documents,~/.ssh");
+    return ["protect", list];
+  },
+};
+/** The stored names work too. */
+const SETTING_ALIASES: Record<string, string> = { dailyBudgetUsd: "budget", dailyTokenBudget: "tokens" };
+
 /** key=value arguments, with friendly names for the settings people change most. */
 function parseSettings(args: string[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -191,39 +228,13 @@ function parseSettings(args: string[]): Record<string, unknown> {
     const m = /^([a-zA-Z]+)=(.*)$/.exec(a);
     if (!m) fail(`Couldn't read "${a}".`, "Use key=value, e.g. overtime set scout model=opus budget=20");
     const [, k, v] = m;
-    if (k === "backend") out.backend = v;
-    else if (k === "model") out.model = v === "" || v === "default" ? null : v;
-    else if (k === "budget" || k === "dailyBudgetUsd") {
-      const n = Number(v.replace(/^\$/, ""));
-      if (!Number.isFinite(n) || n < 0) fail(`"${v}" isn't a budget.`, "Give dollars per day, e.g. budget=20");
-      out.dailyBudgetUsd = n;
-    } else if (k === "tokens" || k === "dailyTokenBudget") {
-      if (v === "" || /^(none|off)$/i.test(v)) out.dailyTokenBudget = null;
-      else {
-        const m = /^([\d.]+)([km])?$/i.exec(v.replace(/[,_]/g, ""));
-        const n = m ? Number(m[1]) * (m[2]?.toLowerCase() === "m" ? 1e6 : m[2]?.toLowerCase() === "k" ? 1e3 : 1) : NaN;
-        if (!Number.isFinite(n) || n <= 0) fail(`"${v}" isn't a token budget.`, "e.g. tokens=500k, or tokens=none");
-        out.dailyTokenBudget = Math.round(n);
-      }
-    } else if (k === "workspace") {
-      if (v === "" || v === "default") out.workspace = null;
-      else {
-        const p = v === "~" || v.startsWith("~/") ? homedir() + v.slice(1) : v;
-        if (!p.startsWith("/")) fail(`"${v}" isn't a full path.`, "e.g. workspace=~/code/my-repo");
-        out.workspace = p;
-      }
-    } else if (k === "visibility") {
-      if (!/^(public|private)$/.test(v)) fail(`"${v}" isn't a visibility.`, "visibility=public (other agents see it and can message it) or visibility=private");
-      out.visibility = v;
-    } else if (k === "protect") {
-      if (v === "" || /^(none|nothing)$/i.test(v)) out.protect = null;
-      else {
-        const list = v.split(",").map((x) => x.trim()).filter(Boolean).map((x) => (x === "~" || x.startsWith("~/") ? homedir() + x.slice(1) : x));
-        const rel = list.find((x) => !x.startsWith("/"));
-        if (rel) fail(`"${rel}" isn't a full path.`, "e.g. protect=~/Documents,~/.ssh");
-        out.protect = list;
-      }
-    } else fail(`There's no setting "${k}".`, "You can set backend, model, budget, tokens, workspace and protect.");
+    const read = Object.hasOwn(SETTINGS, SETTING_ALIASES[k] ?? k) ? SETTINGS[SETTING_ALIASES[k] ?? k] : undefined;
+    if (!read) {
+      const keys = Object.keys(SETTINGS);
+      fail(`There's no setting "${k}".`, `You can set ${keys.slice(0, -1).join(", ")} and ${keys.at(-1)}.`);
+    }
+    const [key, value] = read(v);
+    out[key] = value;
   }
   if (!Object.keys(out).length) fail("Nothing to change.", "e.g. overtime set scout backend=codex model=default budget=20");
   return out;
@@ -340,6 +351,9 @@ async function main() {
         const r = await call<{ messages: Message[]; hasMore: boolean }>("messages", { name, markRead: true, limit: Number(rest[1]) || 50 });
         const ms = r?.messages ?? [];
         if (!ms.length) {
+          // An empty list could also mean there's no such agent: say so, as send and stop do.
+          const agents: AgentSummary[] = await call("agents");
+          if (!agents.some((x) => x.name === name)) fail(`No agent called "${name}".`, "See your agents with: overtime ls");
           print(gray(`No messages with ${name} yet. Send one with: `) + cmdText(`overtime send ${name} "…"`));
           break;
         }
@@ -353,6 +367,8 @@ async function main() {
         const [name, choice, ...words] = rest;
         if (!name || (!choice && !words.length)) fail("Missing an argument.", 'Usage: overtime answer <name> <option-number> ["note"]');
         const n = Number(choice);
+        // A number that can't be an option (0, -1, 1.5) is a typo, not an answer the agent should act on.
+        if (/^[-+]?(\d+\.?\d*|\.\d+)$/.test(choice ?? "") && !(Number.isInteger(n) && n > 0)) fail(`There is no option ${choice}.`, 'Usage: overtime answer <name> <option-number> ["note"]');
         const params = Number.isInteger(n) && n > 0 ? { name, choice: n, text: words.join(" ") || undefined } : { name, text: [choice, ...words].join(" ") };
         await call("answer", params);
         ok("Answered.");

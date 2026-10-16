@@ -50,6 +50,15 @@ describe("an agent can't act as the person", () => {
     expect((await rt.store("b").inbox()).filter((i: any) => JSON.stringify(i).includes("hi from a"))).toEqual([]);
   }, 60_000);
 
+  it("says the person does it, and points to the message tool, without naming the caller as if it were the target", async () => {
+    for (const args of [["send", "b", "hi"], ["daemon", "stop"]]) {
+      const r = await cli(args, "a");
+      expect(r.out).toContain("can only be done by the person. To reach another agent, use your message tool.");
+      expect(r.out).not.toContain("not supported");
+      expect(r.out).not.toContain("(here, a)");
+    }
+  }, 60_000);
+
   it("refuses sending to itself, answering and control commands", async () => {
     expect((await cli(["send", "a", "hi me"], "a")).out).toContain("its own send tool");
     expect(await fromYou("a", "hi me")).toEqual([]);
@@ -84,6 +93,15 @@ describe("an agent can't act as the person", () => {
     expect(ms.code).toBe(0);
     expect(ms.out).toContain("Your job is being b.");
     expect(await rt.store("b").unread()).toBe(unreadBefore);
+  }, 60_000);
+
+  it("refuses an answer that looks like an option number but can't be one, instead of sending it as text", async () => {
+    for (const n of ["0", "-1", "1.5"]) {
+      const r = await cli(["answer", "b", n]);
+      expect(r.code, n).not.toBe(0);
+      expect(r.out).toContain(`There is no option ${n}.`);
+    }
+    expect((await rt.store("b").messages()).filter((m) => m.from === "you" && ["0", "-1", "1.5"].includes(m.text))).toEqual([]);
   }, 60_000);
 
   it("the person's own terminal sends as before", async () => {
