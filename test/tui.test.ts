@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fakeHome, until } from "./helpers.js";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { FakeClient, TestTerminal } from "./tui-fake.js";
 
 fakeHome();
@@ -100,7 +101,7 @@ describe("terminal app, against a real daemon", () => {
     await seen("Enter to answer, Esc to cancel"); // one key alone never answers
     t.press(KEY.enter);
     await seen("Answered: Bridge");
-    await seen("You chose Bridge");
+    await seen("✓ 1  Bridge  · your answer");
   });
 
   it("opens links with the keyboard", async () => {
@@ -241,8 +242,49 @@ describe("terminal app, with a scripted daemon", () => {
     t.press(KEY.down);
     await seen("Night or dusk");
     const s = await t.screen();
-    expect(s).toContain("✓ You chose Dusk");
+    // Every option keeps its number and label; the chosen one is marked.
+    expect(s).toContain("  1  Night");
+    expect(s).toContain("✓ 2  Dusk  · your answer");
     expect(s).not.toContain("Press 1–2");
+    expect(s).not.toContain("Dismiss this question");
+  });
+
+  it("shows an answered question's note under its options, and dismissed ones with their options muted", async () => {
+    const c = new FakeClient();
+    const iso = (m: number) => new Date(Date.now() - m * 60000).toISOString();
+    const long = "Bake the lighting at dusk and keep a second pass for night so both screenshots come from the same scene setup";
+    c.data.messages["game-builder"] = [
+      { id: "a", t: iso(90), from: "agent", kind: "question", title: "Which light?", text: "Which light?", options: ["Night", long], answer: { choice: 2, text: long, note: "Warmer if you can.", t: iso(89) } },
+      { id: "b", t: iso(80), from: "agent", kind: "question", title: "Which camera?", text: "Which camera?", options: ["Wide", "Close"], answer: { closed: "dismissed", t: iso(79) } },
+      { id: "c", t: iso(70), from: "agent", kind: "question", title: "Which sky?", text: "Which sky?", options: ["Clear", "Clouds"], answer: { text: "Fog, please", t: iso(69) } },
+    ];
+    const { t, app, seen } = await open(70, 40, c);
+    await seen("Merge the dependency fix?");
+    t.press(KEY.down);
+    await seen("Which sky?");
+    const s = await t.screen();
+    expect(s).toContain("  1  Night");
+    expect(s).toMatch(/✓ 2 {2}Bake the lighting/);
+    expect(s).toContain("· your answer");
+    expect(s).toContain("Warmer if you can.");
+    expect(s.indexOf("Warmer if you can.")).toBeGreaterThan(s.indexOf("· your answer"));
+    expect(s).toContain("  1  Wide");
+    expect(s).toContain("  2  Close");
+    expect(s).toContain("✕ You dismissed this question");
+    expect(s).toContain("  1  Clear");
+    expect(s).toContain("✓ You answered: Fog, please");
+    expect(s).not.toContain("Enter to answer");
+    // Answered cards take no clicks and no number keys.
+    const lines = s.split("\n");
+    const y = lines.findIndex((l) => l.includes("1  Night"));
+    click(t, lines[y].indexOf("1  Night"), y);
+    t.press("1");
+    await sleep(300);
+    expect(await t.screen()).not.toContain("Enter to answer");
+    expect(c.calls.some((k) => k.method === "answer")).toBe(false);
+    // No line is wider than the terminal, however long an option is.
+    const a = (app as any).agents.find((x: any) => x.name === "game-builder");
+    for (const l of (app as any).renderMessages(a, 50, 40, 20, 0)) expect(visibleWidth(l)).toBeLessThanOrEqual(50);
   });
 
   it("scrolls the messages with Shift+↑↓ while plain ↑↓ still move between agents", async () => {

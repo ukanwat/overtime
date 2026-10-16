@@ -1820,13 +1820,37 @@ export class App implements Component {
         const hq = headed(m, "A question for you");
         const rec = recommendedOption(m.options, m.recommendation);
         if (!open && m.answer) {
-          // Answered: folded to the question and what you chose, so it never looks like it's still open.
+          // Answered: the question and all its options, the one you chose marked and the rest muted, so you
+          // can see what you picked from. Read-only: no clicks or number keys, so it never looks still open.
           for (const l of paras(`${muted("?")} ${muted(hq.title)}  ${muted(stamp(m.t))}`, inner - 4)) body.push(line(l));
-          const chosen = m.answer.choice && m.options?.[m.answer.choice - 1];
+          const choice = !m.answer.closed && m.answer.choice && m.options?.[m.answer.choice - 1] ? m.answer.choice : 0;
           const said = m.answer.note ?? m.answer.text ?? "";
-          if (m.answer.closed) body.push(line(muted(m.answer.closed === "dismissed" ? "✕ You dismissed this question" : `✕ ${a.name} withdrew this question`)));
-          else body.push(line(`${accent("✓")} ${chosen ? `You chose ${bold(optionLabel(chosen))}` : `You answered: ${said}`}`));
-          if (!m.answer.closed && chosen && m.answer.note) for (const l of paras(muted(m.answer.note), inner - 4)) body.push(line(l));
+          if (m.options?.length) {
+            body.push(line(""));
+            m.options.forEach((o, i) => {
+              const n = i + 1;
+              // The same "n  label" as an unanswered option, behind a two-column gutter for the ✓; long labels
+              // wrap under themselves so no line runs past the edge.
+              const lead = `${n}  `;
+              const tag = "  · your answer";
+              const parts = wrap(optionLabel(o), inner - 6 - lead.length - (n === choice ? tag.length : 0));
+              parts.forEach((p, j) => {
+                const text = (j ? " ".repeat(lead.length) : lead) + p;
+                if (n !== choice) body.push(line(`  ${muted(text)}`));
+                else body.push(line(`${j ? "  " : `${accent("✓")} `}${accent(bold(text))}${j === parts.length - 1 ? muted(tag) : ""}`));
+              });
+            });
+          }
+          if (m.answer.closed) {
+            if (m.options?.length) body.push(line(""));
+            body.push(line(muted(m.answer.closed === "dismissed" ? "✕ You dismissed this question" : `✕ ${a.name} withdrew this question`)));
+          } else if (!choice) {
+            if (m.options?.length) body.push(line(""));
+            for (const l of paras(`${accent("✓")} You answered: ${said}`, inner - 4)) body.push(line(l));
+          } else if (m.answer.note) {
+            body.push(line(""));
+            for (const l of paras(muted(m.answer.note), inner - 4)) body.push(line(l));
+          }
           t = this.pushExtras(m, body, bodyHits, w, t, line);
           body.push("");
           prev = m;
