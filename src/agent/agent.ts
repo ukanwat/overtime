@@ -196,16 +196,30 @@ export async function listAgents(): Promise<Agent[]> {
  * are listed synchronously; it's a few small files.
  */
 export function publicAgents(): { name: string; job: string }[] {
+  return rosterOf().filter((a) => a.job !== null) as { name: string; job: string }[];
+}
+
+/** Whether there's a public agent of this name that hasn't been given its job yet (so isn't in the roster). */
+export function publicButNew(name: string): boolean {
+  return rosterOf().some((a) => a.name === name && a.job === null);
+}
+
+/** Every public agent; job is null for one that hasn't been given its job yet. */
+function rosterOf(): { name: string; job: string | null }[] {
   let names: string[] = [];
   try {
     names = readdirSync(paths.agentsDir(), { withFileTypes: true }).filter((d) => d.isDirectory() && !d.name.startsWith(".")).map((d) => d.name).sort();
   } catch {}
-  const out: { name: string; job: string }[] = [];
+  const out: { name: string; job: string | null }[] = [];
   for (const name of names) {
     try {
       const { data, body } = parseFrontMatter(readFileSync(join(paths.agent(name), "AGENT.md"), "utf8"));
       const settings = readJsonSync<AgentSettings | null>(settingsFile(name), null) ?? (data as AgentSettings);
-      if (settings.visibility === "private" || !hasIdentity({ identity: body } as Agent)) continue;
+      if (settings.visibility === "private") continue;
+      if (!hasIdentity({ identity: body } as Agent)) {
+        out.push({ name, job: null });
+        continue;
+      }
       const job = firstLine(body);
       out.push({ name, job: job.length > 140 ? job.slice(0, 139) + "…" : job });
     } catch {}
