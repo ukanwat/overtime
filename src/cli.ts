@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { DaemonClient, ensureDaemon } from "./daemon/client.js";
-import type { AgentSummary } from "./daemon/control.js";
+import { personOnly, type AgentSummary } from "./daemon/control.js";
+import { AGENT_MARKER } from "./runtime/leftovers.js";
 import { validateName } from "./agent/agent.js";
 import { accent, ago, bold, clean, cleanDeep, fit, friendly, gray, green, money, red, stamp, statusParts, yellow } from "./tui/style.js";
 import { headed, humanBytes, openQuestion, type AgentSettingsView, type Message } from "./tui/types.js";
@@ -223,7 +224,15 @@ function parseSettings(args: string[]): Record<string, unknown> {
 
 const KNOWN = ["new", "ls", "list", "send", "messages", "answer", "settings", "stop", "start", "wake", "set", "models", "archive"];
 
+/** What may be run from inside an agent (its shell carries OVERTIME_AGENT): reading only. */
+const AGENT_OK = ["help", "--help", "-h", "version", "--version", "-v", "ls", "list", "messages", "settings", "models"];
+
 async function main() {
+  const caller = process.env[AGENT_MARKER];
+  if (caller && !AGENT_OK.includes(cmd ?? "")) {
+    // Anything else would act as the person: a message sent this way would arrive as theirs.
+    fail(personOnly(`overtime ${cmd ?? ""}`.trim(), caller, rest[0]), "From inside an agent you can only read: overtime ls, messages, settings, models.");
+  }
   if (!cmd) {
     await maybeAskAutostart();
     const { runApp } = await import("./tui/app.js");

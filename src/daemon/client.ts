@@ -85,6 +85,10 @@ export class DaemonClient {
   call<T = any>(method: string, params: Record<string, unknown> = {}, timeoutMs = 30_000): Promise<T> {
     if (this.isClosed) return Promise.reject(new DaemonGoneError());
     const id = this.nextId++;
+    // Asked from inside an agent (its shell, a tool it started): say so, so the daemon never takes
+    // the request for the person's own (see AGENT_CALLS in control.ts).
+    const caller = process.env[AGENT_MARKER];
+    if (caller) params = { ...params, caller };
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
