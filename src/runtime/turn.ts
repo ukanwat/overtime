@@ -154,6 +154,7 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
       backend: eff.backend,
       cwd: eff.workspace,
       protect: base.protect,
+      hide: base.hidden,
       // Marks the backend and everything it starts as this agent's (see runtime/leftovers.ts).
       env: { [AGENT_MARKER]: agent.name, ...(await isolationEnv(eff.backend, paths.meta(agent.name))) },
       mcpServers: [...eff.mcpServers, ...(o.extraMcp ?? [])],

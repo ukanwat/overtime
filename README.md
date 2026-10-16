@@ -109,6 +109,11 @@ agent's settings (`overtime set <name> protect=…`), for example `~/Documents` 
 backend and everything it starts, scripts and programs it wrote included, enforced by the operating
 system (Seatbelt on macOS, bubblewrap on Linux). Nothing is protected unless you list it.
 
+**Agents are public unless you make them private.** Public agents see each other (their job, `AGENT.md`
+and conversation) and can message each other. `overtime set <name> visibility=private` (or the toggle in
+its settings) takes one out: it gets no `message` tool, nobody can message it, and on macOS other agents
+can't read its folder at all (on Linux they still can).
+
 **Trust grows.** Overtime notices when you keep giving the same answer to the same kind of
 question and tells the agent, which can then propose deciding those itself. If you agree, the rule
 goes into its `AGENT.md`, where you can see every freedom it has been given.
@@ -150,6 +155,7 @@ Deliberately few, because every tool costs context on every turn:
 | `ask` | a question for you, without stopping work |
 | `send` | message you (a reply, a report, files to share), or set the one-line status next to its name |
 | `spawn` | start a helper |
+| `message` | message another agent, when you asked it to or its AGENT.md says when (public agents only; at most 20 a day between any two, then you're alerted) |
 | `done` | (helpers only) hand the result back |
 | `skill` | load a skill (or list them) |
 
@@ -196,7 +202,7 @@ overtime send <name> "…"            message an agent (--attach <file>, repeata
 overtime messages <name>            read your conversation with it
 overtime answer <name> <n> [note]   answer its open question with option n
 overtime settings <name>            show its backend, model, budgets and workspace
-overtime set <name> key=value…      backend=  model=  budget=  tokens=  workspace=
+overtime set <name> key=value…      backend=  model=  budget=  tokens=  workspace=  visibility=
 overtime models [backend]           the models a backend offers
 overtime stop|start|wake <name>
 overtime archive <name>             stop an agent and move its folder away

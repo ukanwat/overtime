@@ -32,6 +32,8 @@ export interface ToolHost {
   tellHelper(agent: string, helperId: string, text: string): Promise<string>;
   /** A helper reports how it's going (urgent: wake the agent for it now). */
   helperUpdate(ctx: ToolContext, text: string, urgent: boolean): Promise<void>;
+  /** One agent messages another: into its inbox, and both conversations. Throws (with the reason) when refused. */
+  messageAgent(from: string, to: string, text: string): Promise<void>;
   /** The agent's helpers, as a few plain lines each: running ones first, then recent ones. */
   helpersReport(agent: string): Promise<string>;
   startMonitor(agent: string, monitorId: string): void;

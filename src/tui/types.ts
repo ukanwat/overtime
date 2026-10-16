@@ -21,7 +21,7 @@ export interface Message {
   id: string;
   t: string;
   from: "you" | "agent" | "overtime";
-  kind: "message" | "question" | "report" | "alert";
+  kind: "message" | "question" | "report" | "alert" | "agent-message";
   text: string;
   title?: string;
   why?: string;
@@ -35,6 +35,9 @@ export interface Message {
   closes?: "withdrawn" | "dismissed";
   /** On your answer: the question it answers. */
   replyTo?: string;
+  /** On a message between agents: who sent it and who it was for. */
+  fromAgent?: string;
+  toAgent?: string;
 }
 
 export interface AgentSettingsView {
@@ -48,6 +51,8 @@ export interface AgentSettingsView {
   protect: string[];
   /** Just this agent's own protected paths. */
   protectOwn: string[];
+  /** Whether other agents see it and can message it. */
+  visibility: "public" | "private";
   spentUsd: number;
   costReported: boolean;
   tokensToday: number;

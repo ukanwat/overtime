@@ -38,6 +38,7 @@ async function tools(where: string | { command: string; args: string[] }) {
   await c.connect(typeof where === "string" ? new StreamableHTTPClientTransport(new URL(where)) : new StdioClientTransport({ command: where.command, args: where.args }));
   return {
     list: async () => (await c.listTools()).tools.map((t) => t.name),
+    describe: async (name: string) => (await c.listTools()).tools.find((t) => t.name === name)?.description,
     call: async (name: string, args: Record<string, unknown>) => {
       const r: any = await c.callTool({ name, arguments: args });
       const text = (r.content ?? []).map((x: any) => x.text).join("");
@@ -151,6 +152,29 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
       }
       // FAIL_AFTER_REPLY: answers the person, then the provider fails (the turn doesn't finish).
       if (/FAIL_AFTER_REPLY/.test(text) && !/RECOVERED/.test(text)) throw new acp.RequestError(-32603, "Internal error", { message: "scripted failure after replying" });
+      // Agents messaging each other: note what this session's tools were and what it was told.
+      if (/MSG_TO|another agent, not the person/.test(text)) writeFileSync(join(s.cwd, ".message-desc"), `${names.join(",")}\n${(await t.describe("message")) ?? ""}`);
+      if (/another agent, not the person/.test(text)) writeFileSync(join(s.cwd, ".agent-inbox"), text);
+      const msgTo = /MSG_TO (\S+): ([^\n]*)/.exec(text);
+      if (msgTo) {
+        let r: string;
+        try {
+          r = await t.call("message", { to: msgTo[1], text: msgTo[2] });
+        } catch (e: any) {
+          r = `ERROR ${e?.message ?? e}`;
+        }
+        writeFileSync(join(s.cwd, ".message-result"), r);
+      }
+      // READ_FILE <path>: whether this session (and what it runs) can read a file.
+      const readFile = /READ_FILE (\S+)/.exec(text);
+      if (readFile) {
+        let r = "denied";
+        try {
+          readFileSync(readFile[1], "utf8");
+          r = "read";
+        } catch {}
+        writeFileSync(join(s.cwd, ".read-result"), r);
+      }
       if (/SKILLCHECK/.test(text)) writeFileSync(join(s.cwd, "skill-result.txt"), await t.call("skill", { name: "overtime-docs" }));
       if (/ESCAPE/.test(text)) {
         // Try to write into a protected path, as a script or program it wrote would.

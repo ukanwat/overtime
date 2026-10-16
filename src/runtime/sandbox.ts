@@ -8,6 +8,10 @@ import { join, resolve } from "node:path";
  * can. The paths you list as protected (in settings, for all agents or one) are made read-only for the
  * whole backend process and everything it starts (shells, scripts, programs it wrote, its watches),
  * by the operating system: Seatbelt on macOS, bubblewrap on Linux. Nothing is protected unless you list it.
+ *
+ * Hidden paths (private agents' folders, for every other agent) can't be read at all. Only on macOS:
+ * bubblewrap can only cover a folder with an empty one, where writes would quietly vanish, so on Linux
+ * they stay readable.
  */
 
 export interface Launch {
@@ -36,10 +40,11 @@ function unique(paths: string[]): string[] {
   return [...new Set(paths.filter(Boolean).map(realPath))];
 }
 
-/** Seatbelt profile: everything allowed, except writing to the protected paths. */
-export function seatbeltProfile(protect: string[]): string {
+/** Seatbelt profile: everything allowed, except writing to the protected paths and reading the hidden ones. */
+export function seatbeltProfile(protect: string[], hide: string[] = []): string {
   const q = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-  return ["(version 1)", "(allow default)", "(deny file-write*", ...unique(protect).map((p) => `  (subpath ${q(p)})`), ")"].join("\n");
+  const rule = (what: string, list: string[]) => (list.length ? [`(deny ${what}`, ...unique(list).map((p) => `  (subpath ${q(p)})`), ")"] : []);
+  return ["(version 1)", "(allow default)", ...rule("file-write*", protect), ...rule("file-read*", hide)].join("\n");
 }
 
 let bwrapPath: string | null | undefined;
@@ -60,12 +65,13 @@ export function sandboxAvailable(): { ok: boolean; why?: string } {
   return { ok: false, why: `protected paths aren't supported on ${process.platform}` };
 }
 
-/** How to launch a command with the given paths read-only. No paths: launched as is. */
-export function sandboxLaunch(command: string, args: string[], protect: string[]): Launch {
-  if (!protect.length) return { command, args, sandboxed: false };
+/** How to launch a command with the given paths read-only (and, on macOS, the hidden ones unreadable). No paths: launched as is. */
+export function sandboxLaunch(command: string, args: string[], protect: string[], hide: string[] = []): Launch {
+  if (process.platform !== "darwin") hide = [];
+  if (!protect.length && !hide.length) return { command, args, sandboxed: false };
   const avail = sandboxAvailable();
   if (!avail.ok) return { command, args, sandboxed: false, why: avail.why };
-  if (process.platform === "darwin") return { command: "/usr/bin/sandbox-exec", args: ["-p", seatbeltProfile(protect), command, ...args], sandboxed: true };
+  if (process.platform === "darwin") return { command: "/usr/bin/sandbox-exec", args: ["-p", seatbeltProfile(protect, hide), command, ...args], sandboxed: true };
   const ro: string[] = [];
   for (const p of unique(protect)) if (existsSync(p)) ro.push("--ro-bind", p, p);
   return { command: findBwrap()!, args: ["--bind", "/", "/", "--dev-bind", "/dev", "/dev", "--proc", "/proc", ...ro, "--die-with-parent", "--", command, ...args], sandboxed: true };

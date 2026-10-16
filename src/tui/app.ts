@@ -1137,6 +1137,14 @@ export class App implements Component {
     await this.refresh();
   }
 
+  private async toggleVisibility(now: "public" | "private"): Promise<void> {
+    const a = this.needAgent();
+    if (!a) return;
+    const next = now === "public" ? "private" : "public";
+    await this.c.call("set", { name: a.name, visibility: next });
+    this.say(next === "private" ? `${a.name} is private now: other agents can't see it or message it.` : `${a.name} is public now: other agents can see it and message it.`, "ok");
+  }
+
   private async toggleStop(): Promise<void> {
     const a = this.needAgent();
     if (!a) return;
@@ -1317,6 +1325,15 @@ export class App implements Component {
       { label: "Budget", heading: true },
       { label: "Daily budget", field: "budget", value: `$${fmtMoney(d?.dailyBudgetUsd ?? a.budgetUsd)} a day`, note: cost ? `$${(d?.spentUsd ?? a.spentUsd).toFixed(2)} spent today` : "this backend doesn't report cost" },
       { label: "Token budget", field: "tokens", value: d?.dailyTokenBudget ? `${fmtTokens(d.dailyTokenBudget)} a day` : "none", note: `${fmtTokens(d?.tokensToday ?? a.tokensToday)} used today`.replace(" tokens", "") },
+      {
+        label: "Other agents",
+        key: "visibility",
+        // An older background process doesn't say: shown as the default.
+        value: (d?.visibility ?? "public") === "public" ? "public" : "private",
+        note: (d?.visibility ?? "public") === "public" ? "they see it and can message it (Enter: make private)" : "hidden from them (Enter: make public)",
+        stay: true,
+        run: () => this.toggleVisibility(d?.visibility ?? "public"),
+      },
       { label: "Work", heading: true },
       { label: "Workspace", field: "workspace", value: tilde(d?.workspace ?? a.dir), note: d && !d.workspaceIsDefault ? "where its work lives" : "its own folder" },
       {
@@ -1849,6 +1866,12 @@ export class App implements Component {
         }
         t = this.pushExtras(m, body, bodyHits, w, t, line);
         body.push("");
+      } else if (m.kind === "agent-message") {
+        // Between this agent and another: quiet, labelled with both names, never in the agent's own voice.
+        if (body.length && body.at(-1) !== "") body.push("");
+        body.push(`  ${muted(bold(`${m.fromAgent} → ${m.toAgent}`))}  ${muted(stamp(m.t))}${muted("  · between agents")}`);
+        const ind = (s: string) => "  " + faint("│") + " " + s;
+        for (const l of paras(linkify(muted(m.text), m.links), inner)) body.push(ind(l));
       } else if (m.kind === "alert") {
         const line = (s: string) => `  ${red("┃")} ${s}`;
         if (body.length && body.at(-1) !== "") body.push("");
@@ -1880,7 +1903,7 @@ export class App implements Component {
 
     // While the agent works on what you just said, show that it's on it (and what it's doing right now).
     const live = this.chatLive(a.name) ?? this.mainLive(a.name);
-    const waitingOnIt = [...this.messages].reverse().find((m) => !m.closes)?.from === "you";
+    const waitingOnIt = [...this.messages].reverse().find((m) => !m.closes && m.kind !== "agent-message")?.from === "you";
     if (live && waitingOnIt) {
       if (body.length && body.at(-1) !== "") body.push("");
       body.push(`  ${accent(bold(a.name))}  ${muted(`${spinner()} ${live.step ?? "thinking…"}`)}`);

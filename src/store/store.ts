@@ -176,12 +176,12 @@ export class Store {
     });
   }
 
-  /** How many messages from the agent (or Overtime) the person hasn't seen. */
+  /** How many messages from the agent (or Overtime) the person hasn't seen. Messages between agents don't count. */
   async unread(): Promise<number> {
     const all = await this.messages();
     const { lastReadId } = await this.conversation();
     const from = lastReadId ? all.findIndex((m) => m.id === lastReadId) + 1 : 0;
-    return all.slice(from).filter((m) => m.from !== "you").length;
+    return all.slice(from).filter((m) => m.from !== "you" && m.kind !== "agent-message").length;
   }
 
   /** Mark everything up to `upTo` (default: the newest message) as seen. Never moves backwards. */

@@ -49,17 +49,18 @@ Per agent (only keys that differ from the global ones), shown for reference in t
 of its `AGENT.md`; the copy that counts is in its `.overtime/settings.json`:
 `backend`, `model`, `dailyBudgetUsd`, `dailyTokenBudget`, `workspace` (where its work lives; default
 its own folder), `mcpServers` (extra servers), `disableMcp` (names of shared servers to leave out),
-`protect` (extra protected paths).
+`protect` (extra protected paths), `visibility` (`public`, the default, or `private`: no `message` tool,
+not listed or messageable, and on macOS its folder is unreadable to other agents).
 
 The person changes an agent's settings in the app (select the agent, press →) or with:
 
 ```
-overtime set <name> backend=codex model=<id> budget=20 tokens=500k workspace=~/code/app protect=~/Documents,~/.ssh
+overtime set <name> backend=codex model=<id> budget=20 tokens=500k workspace=~/code/app protect=~/Documents,~/.ssh visibility=private
 overtime settings <name>      # show them
 overtime models [backend]     # the models a backend offers
 ```
 
-`overtime set` accepts exactly these keys: `backend`, `model`, `budget`, `tokens`, `workspace`, `protect`.
+`overtime set` accepts exactly these keys: `backend`, `model`, `budget`, `tokens`, `workspace`, `protect`, `visibility`.
 Global defaults are edited in `~/overtime/settings.json`; an agent's MCP servers are switched on and off,
 or removed, in the app, and the person adds one for a single agent in its `.overtime/settings.json` (see
 MCP servers). An agent's settings change only these ways: the block in `AGENT.md` is for
@@ -127,6 +128,10 @@ then `overtime set <name> backend=goose`. Cost is read when the backend reports 
 - `helpers` - your helpers right now: what each running one is doing and last reported, and the ones
   that finished recently (ids, results, folders). `spawn` with `with_context` starts a helper that
   knows what you know: what you were told, did and said in your recent sessions is given to it.
+- `message` - message another public agent (listed in the tool, with its job and where its `AGENT.md`
+  and conversation are: read them, never write them). Only when the person asked or your `AGENT.md` says
+  when; when they tell you, write that rule into `AGENT.md`. It wakes them, shows quietly in both
+  conversations, and a pair can exchange 20 a day.
 - `done` - helpers only: hand back the result.
 - `update` - helpers only: tell the agent how it's going while you keep working (`urgent` wakes it now).
 - `skill` - load a skill by name (or list them).

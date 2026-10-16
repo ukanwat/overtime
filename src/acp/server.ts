@@ -156,7 +156,7 @@ export async function runAcpServer(): Promise<void> {
 }
 
 function render(m: Message): string {
-  const parts = [m.title && m.title !== m.text.split("\n")[0] ? `${m.title}\n\n${m.text}` : m.text];
+  const parts = [m.kind === "agent-message" ? `${m.fromAgent} → ${m.toAgent} (between agents): ${m.text}` : m.title && m.title !== m.text.split("\n")[0] ? `${m.title}\n\n${m.text}` : m.text];
   if (m.why) parts.push(`Why it matters: ${m.why}`);
   if (m.recommendation) parts.push(`I'd recommend: ${m.recommendation}`);
   if (m.options?.length) parts.push(m.options.map((o, i) => `${i + 1}. ${o}`).join("\n") + (m.answer ? `\n(Answered: ${m.answer.text})` : "\n(Reply with your choice.)"));

@@ -99,7 +99,7 @@ export function fakeData() {
     "old-bot": [],
   };
   const settings: Record<string, any> = {};
-  for (const a of agents) settings[a.name] = { backend: a.backend, model: a.model, dailyBudgetUsd: a.budgetUsd, dailyTokenBudget: null, workspace: a.dir, workspaceIsDefault: true, spentUsd: a.spentUsd, costReported: a.costReported, tokensToday: 120000 };
+  for (const a of agents) settings[a.name] = { backend: a.backend, model: a.model, dailyBudgetUsd: a.budgetUsd, dailyTokenBudget: null, workspace: a.dir, workspaceIsDefault: true, visibility: "public", spentUsd: a.spentUsd, costReported: a.costReported, tokensToday: 120000 };
   const mcp: any[] = [
     { name: "github", source: "shared", enabled: true, describe: "npx -y @modelcontextprotocol/server-github (GITHUB_TOKEN set)" },
     { name: "broken", source: "agent", enabled: true, describe: "uvx mcp-server-broken" },

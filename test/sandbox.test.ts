@@ -51,5 +51,12 @@ describe.runIf(mac)("protected paths on this machine", () => {
     expect(run(`echo x > ${kept}/y 2>/dev/null && echo LEAK; echo done`, [rel])).not.toContain("LEAK");
   });
 
+  it("hidden ones can't be read or listed, by the command or anything it starts; the rest can", () => {
+    const l = sandboxLaunch("/bin/sh", ["-c", `cat ${kept}/file 2>/dev/null && echo LEAK-cat; ls ${kept} 2>/dev/null && echo LEAK-ls; node -e "require('fs').readFileSync('${kept}/file')" 2>/dev/null && echo LEAK-node; echo a > ${free}/r && cat ${free}/r`], [], [kept]);
+    const out = execFileSync(l.command, l.args, { encoding: "utf8" });
+    expect(out).not.toContain("LEAK");
+    expect(out.trim()).toBe("a");
+  });
+
   it("cleans up", () => rmSync(base, { recursive: true, force: true }));
 });
