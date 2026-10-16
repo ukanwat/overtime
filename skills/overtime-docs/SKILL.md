@@ -61,6 +61,7 @@ overtime models [backend]     # the models a backend offers
 ```
 
 `overtime set` accepts exactly these keys: `backend`, `model`, `budget`, `tokens`, `workspace`, `protect`, `visibility`.
+`overtime new <name> key=value…` takes the same keys to choose them up front; in the app, + New agent shows them after the name, before anything is made (Enter twice keeps the defaults).
 Global defaults are edited in `~/overtime/settings.json`; an agent's MCP servers are switched on and off,
 or removed, in the app, and the person adds one for a single agent in its `.overtime/settings.json` (see
 MCP servers). An agent's settings change only these ways: the block in `AGENT.md` is for

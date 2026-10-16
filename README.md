@@ -39,8 +39,9 @@ npm install -g @ukanwat/overtime
 overtime
 ```
 
-`overtime` opens a full-screen app in your terminal. Arrow down to **+ New agent**, type a name,
-and tell it in plain words what it's for. That's the whole setup: it writes its own job
+`overtime` opens a full-screen app in your terminal. Arrow down to **+ New agent**, type a name
+and press Enter (its backend, model, budget and workspace are shown before it's made; Enter again keeps
+the defaults), and tell it in plain words what it's for. That's the whole setup: it writes its own job
 description and gets to work.
 
 ```
@@ -196,7 +197,7 @@ conversation.
 
 ```
 overtime                            the live app
-overtime new <name>                 create an agent
+overtime new <name> [key=value…]    create an agent, with the same keys as set (e.g. backend=codex)
 overtime ls                         list agents
 overtime send <name> "…"            message an agent (--attach <file>, repeatable)
 overtime messages <name>            read your conversation with it
