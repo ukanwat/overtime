@@ -177,6 +177,7 @@ they type `/`). Load that skill and follow it for that message.
   becomes a memory whose index line ends "(for skill <name>)", "(for a new skill)" or "(for AGENT.md)":
   put it there and delete the memory. Helpers can read your `memory/` but not write it; they end done
   with "learned: …" lines (or "learned: nothing new"), which the reflect pass reads.
+  The person can turn reflect passes off for every agent by starting the daemon with `OVERTIME_REFLECT=0`.
 - Your folder is a git repository Overtime commits to (as "Overtime <overtime@localhost>") after each
   turn and reflect pass: only `memory/`, `skills/`, AGENT.md and INDEX.md. Each message says what
   changed ("memory: added a.md, edited MEMORY.md (turn <runId>)"), with the index lines added and
