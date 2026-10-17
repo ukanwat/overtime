@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { listSkills, skillsBlock } from "../skills.js";
 import { existsSync } from "node:fs";
-import { cp, lstat, mkdir, readdir, readFile, rm } from "node:fs/promises";
+import { cp, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { parseFrontMatter } from "../agent/frontmatter.js";
 import { execFile } from "node:child_process";
 import { isAbsolute, join, sep } from "node:path";
@@ -20,7 +20,8 @@ import { ToolServer } from "../tools/server.js";
 import { AcpSession } from "../acp/session.js";
 import { promptWasSent, runTurn, sessionPreamble, TurnIncompleteError, UsageLimitError, type TurnResult } from "../runtime/turn.js";
 import { blockedUntil, gotThroughAt, limitInfo, LIMIT_RECHECK_MS, rejectedLimits, usageToday, type TurnUsage } from "../runtime/usage.js";
-import { workingInstructions } from "../runtime/instructions.js";
+import { reflectInstructions, workingInstructions } from "../runtime/instructions.js";
+import { commitHistory, ensureHistory, importClaudeMemory, inHistoryRepo, memoryText } from "../agent/memory.js";
 import { StepBoundary } from "../runtime/boundary.js";
 import { MonitorRunner, reapStaleMonitors } from "./monitors.js";
 import { classify, isTransient, needsPerson } from "../runtime/errors.js";
@@ -65,6 +66,27 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     const t = setTimeout(done, ms);
     signal?.addEventListener("abort", done, { once: true });
   });
+}
+
+/**
+ * The reflect pass: a short session that keeps an agent's memory/ and skills/ current from what it did.
+ * Due once its backend compacted the main session (Claude says so), or after this many main turns, and
+ * only while the agent is idle; the turn-count one at most once a day.
+ */
+export const REFLECT_TURNS = 8;
+const REFLECT_GAP_MS = 24 * 3600_000;
+const REFLECT_AFTER_COMPACTION_GAP_MS = 3600_000;
+const REFLECT_TIMEOUT_MS = 15 * 60_000;
+/** Claude Code tools a reflect pass doesn't get: it works with file tools only. */
+const REFLECT_TOOLS_OFF = ["Bash", "BashOutput", "KillShell", "WebFetch", "WebSearch", "NotebookEdit", "Monitor"];
+
+/** Why a reflect pass is due for this agent now, or null. */
+export function reflectDue(s: AgentState, now = Date.now()): string | null {
+  const turns = s.turnsSinceReflect ?? 0;
+  const since = s.lastReflectAt ? now - new Date(s.lastReflectAt).getTime() : Infinity;
+  if (s.compactedSinceReflect && turns >= 1 && since >= REFLECT_AFTER_COMPACTION_GAP_MS) return "its session was compacted";
+  if (turns >= REFLECT_TURNS && since >= REFLECT_GAP_MS) return `${turns} turns since the last pass`;
+  return null;
 }
 
 const MAX_HELPERS = 6;
@@ -129,6 +151,8 @@ export class Runtime extends EventEmitter implements ToolHost {
   private boundaries = new Map<string, StepBoundary>();
   /** Agents whose running main turn was interrupted by the person: not a failure, it carries on next turn. */
   private interrupted = new Set<string>();
+  /** Each agent's running reflect pass: cancelled when its main session has work to do. */
+  private reflecting = new Map<string, AbortController>();
   /** Cancels a single helper. */
   private helperAborts = new Map<string, AbortController>();
   /** Cancels everything one agent is running (stopping it). */
@@ -290,6 +314,8 @@ export class Runtime extends EventEmitter implements ToolHost {
 
   wakeMain(agent: string, reason: string): void {
     if (this.stopping) return;
+    // Real work comes first: a reflect pass running now stops, and runs again another time.
+    this.reflecting.get(agent)?.abort();
     if (this.mainRunning.has(agent)) {
       const q = this.pendingWake.get(agent) ?? [];
       q.push(reason);
@@ -453,6 +479,17 @@ export class Runtime extends EventEmitter implements ToolHost {
       await this.refreshNextWake(a.name);
       this.changed(a.name, "state");
     }
+    // Idle (asleep, no main turn, no helpers): time to reflect, if one is due.
+    const trigger = a.state.status === "asleep" && hasIdentity(a) ? reflectDue(a.state, now.getTime()) : null;
+    if (trigger && !this.reflecting.has(a.name) && !(await store.helpers()).some((h) => h.status === "running")) {
+      const ctl = new AbortController();
+      this.reflecting.set(a.name, ctl);
+      void this.reflect(a.name, trigger, ctl)
+        .catch((e) => this.log(`[${a.name}] reflect: ${e?.stack ?? e}`))
+        .finally(() => {
+          if (this.reflecting.get(a.name) === ctl) this.reflecting.delete(a.name);
+        });
+    }
   }
 
   /** Whether a limit pause can end before its next try: a turn on its backend and model got through since it began. */
@@ -529,6 +566,16 @@ export class Runtime extends EventEmitter implements ToolHost {
       return true;
     }
 
+    // Once: what Claude's own memory kept for this agent's folders comes over into memory/ (originals stay).
+    if (!agent.state.memoryImportedAt) {
+      const r = await importClaudeMemory(agent.dir, [agent.dir, eff.workspace]).catch((e) => (this.log(`[${agentName}] importing Claude's memories: ${e?.message ?? e}`), null));
+      if (r) {
+        await updateState(agentName, { memoryImportedAt: new Date().toISOString() });
+        if (r.files) this.log(`[${agentName}] copied ${r.files} of Claude's memories into memory/ (from ${r.from.join(", ")}; the originals are kept)`);
+        agent = await loadAgent(agentName);
+      }
+    }
+
     const firstJob = !hasIdentity(agent);
     const runId = newId("main");
     this.lastAttempt.set(agentName, Date.now());
@@ -599,7 +646,7 @@ export class Runtime extends EventEmitter implements ToolHost {
       agent = await loadAgent(agentName);
       if (result.modelIssue) await this.modelIssue(agentName, result.modelIssue);
       if (result.usage2 && result.usage2.turnCostUsd == null) await this.noCostNotice(agentName, result.backend);
-      const patch: Partial<AgentState> = { status: hasIdentity(agent) ? "asleep" : "new", failures: 0, transientFailures: 0, troubleSince: null, lastError: null, limitHits: [], mainSessionFiles: fileHashes(agent), mainSessionPrompt: promptVersion("main") };
+      const patch: Partial<AgentState> = { status: hasIdentity(agent) ? "asleep" : "new", failures: 0, transientFailures: 0, troubleSince: null, lastError: null, limitHits: [], mainSessionFiles: fileHashes(agent), mainSessionPrompt: promptVersion("main"), turnsSinceReflect: (agent.state.turnsSinceReflect ?? 0) + 1, ...(result.compacted ? { compactedSinceReflect: true } : {}) };
       // Keep whatever status line the agent set itself; only replace Overtime's own placeholder.
       if (!agent.state.activityByAgent) patch.activity = hasIdentity(agent) ? "resting" : "waiting for its job";
       await updateState(agentName, patch);
@@ -689,10 +736,110 @@ export class Runtime extends EventEmitter implements ToolHost {
       if (this.mainAborts.get(agentName) === turnCtl) this.mainAborts.delete(agentName);
       if (this.boundaries.get(agentName) === boundary) this.boundaries.delete(agentName);
       this.tools.close(ctx.token);
+      // Whatever the turn changed in memory/, skills/, AGENT.md and INDEX.md goes into the folder's history.
+      await this.commit(agentName, `turn ${runId}: ${reason.split("\n")[0].slice(0, 120)}`);
       this.emit("turnEnd", { agent: agentName, kind: "main" });
       await this.refreshNextWake(agentName).catch(() => {});
       this.changed(agentName, "state");
     }
+  }
+
+  /**
+   * Commit the agent's memory/, skills/, AGENT.md and INDEX.md to its folder's history. A folder that is a
+   * git repository of the agent's own isn't committed to: noted once.
+   */
+  private async commit(agentName: string, message: string, only?: string[]): Promise<void> {
+    try {
+      const dir = paths.agent(agentName);
+      const h = await ensureHistory(dir);
+      if (!h.ok) {
+        const a = await loadAgent(agentName);
+        if (a.state.historyOff !== h.why) {
+          await updateState(agentName, { historyOff: h.why });
+          this.log(`[${agentName}] its folder's history isn't kept by Overtime: ${h.why}`);
+        }
+        return;
+      }
+      const id = await commitHistory(dir, message, only);
+      if (id) this.log(`[${agentName}] committed ${id}: ${message.slice(0, 80)}`);
+    } catch (e: any) {
+      this.log(`[${agentName}] history commit failed: ${String(e?.message ?? e).split("\n")[0]}`);
+    }
+  }
+
+  /**
+   * A reflect pass: a short session, in the agent's folder, that reads its main turns since the last pass
+   * and makes small edits to memory/ and skills/ (each citing the run it comes from). It counts toward the
+   * agent's budget, waits while it's paused or over a limit, and posts nothing to the person: one quiet
+   * line in its activity, and a commit in its folder's history.
+   */
+  private async reflect(agentName: string, trigger: string, ctl: AbortController): Promise<void> {
+    const agent = await loadAgent(agentName);
+    if (agent.state.status !== "asleep" || (await this.blocked(agentName)) || limitHold(agent.state.limitHits)) return;
+    const since = agent.state.lastReflectAt ? new Date(agent.state.lastReflectAt) : null;
+    const digest = await agentContext(agentName, 60_000, { since, ids: true });
+    const done = { lastReflectAt: new Date().toISOString(), turnsSinceReflect: 0, compactedSinceReflect: false };
+    if (!digest) {
+      await updateState(agentName, done);
+      return;
+    }
+    const files = await readdir(join(agent.dir, "memory")).catch(() => [] as string[]);
+    const text = [
+      `# What ${agentName} did since the last pass${since ? ` (${since.toISOString()})` : ""}\n\n${digest}`,
+      `# memory/MEMORY.md now\n\n${agent.memory.trim() ? memoryText(agent.memory) : "(empty)"}`,
+      `# Files in memory/\n\n${files.filter((f) => f.endsWith(".md")).join("\n") || "(none)"}`,
+    ].join("\n\n---\n\n");
+    // AGENT.md and INDEX.md are the agent's own to change: whatever happens to them in this pass is undone.
+    const keep = new Map<string, string | null>();
+    for (const f of ["AGENT.md", "INDEX.md", "mcp.json"]) keep.set(f, await readFile(join(agent.dir, f), "utf8").catch(() => null));
+    const { ctx, mcp } = this.tools.open({ agent: agentName, kind: "reflect", depth: 0 });
+    const runId = newId("reflect");
+    let ok = false;
+    try {
+      await runTurn({
+        runId,
+        agent: agentName,
+        kind: "reflect",
+        reason: `a reflect pass (${trigger})`,
+        text,
+        preamble: reflectInstructions(agentName, agent.dir),
+        cwd: agent.dir,
+        extraMcp: [mcp],
+        protect: [...keep.keys()].map((f) => join(agent.dir, f)),
+        disallowedTools: REFLECT_TOOLS_OFF,
+        timeoutMs: REFLECT_TIMEOUT_MS,
+        signal: this.signalFor(agentName, ctl.signal),
+        // Quiet: not shown live in the app, only counted as proof the connection works.
+        onUpdate: () => {
+          this.lastProgress = Date.now();
+        },
+        log: this.log,
+      });
+      ok = true;
+    } catch (e: any) {
+      // Stopped for real work: tried again later. Anything else waits a day, like a pass that ran.
+      if (ctl.signal.aborted && !this.stopping) return void this.log(`[${agentName}] reflect pass stopped: its main session has work`);
+      this.log(`[${agentName}] reflect pass failed: ${String(e?.message ?? e).split("\n")[0]}`);
+    } finally {
+      this.tools.close(ctx.token);
+      for (const [f, was] of keep) {
+        const now = await readFile(join(agent.dir, f), "utf8").catch(() => null);
+        if (now === was) continue;
+        if (was === null) await rm(join(agent.dir, f), { force: true });
+        else await writeFile(join(agent.dir, f), was);
+        this.log(`[${agentName}] reflect pass changed ${f}; put it back`);
+      }
+    }
+    if (ctl.signal.aborted && !this.stopping) return;
+    await updateState(agentName, ok ? done : { lastReflectAt: done.lastReflectAt });
+    if (!ok) return;
+    const day = new Date().toISOString().slice(0, 10);
+    const before = await exec("git", ["-C", agent.dir, "rev-parse", "--short", "HEAD"]).then((r) => r.stdout.trim(), () => "");
+    // Only what a reflect pass may change: anything else waits for the agent's own next turn.
+    await this.commit(agentName, `reflect ${day} (${trigger}), ${runId}`, ["memory", "skills"]);
+    const after = await exec("git", ["-C", agent.dir, "rev-parse", "--short", "HEAD"]).then((r) => r.stdout.trim(), () => "");
+    await this.store(agentName).addReport(`Reflect pass: ${after && after !== before ? `updated its memory (commit ${after}; see git log in its folder)` : "nothing to change"}.`);
+    this.changed(agentName, "state");
   }
 
   /** The backend wouldn't use the chosen model. Say so once per model, in the agent's list of threads. */
@@ -1094,7 +1241,8 @@ export class Runtime extends EventEmitter implements ToolHost {
   /** A folder of its own for each helper: a git worktree of the workspace, or a copy of a small workspace. */
   private async prepareWorkdir(agentName: string, rec: HelperRecord, workspace: string): Promise<{ branch?: string; note: string }> {
     await mkdir(join(rec.workdir, ".."), { recursive: true });
-    if (await isGitRepo(workspace)) {
+    // The agent's own folder is a git repository for its history only: a helper gets a copy of it, not a worktree.
+    if ((await isGitRepo(workspace)) && !(await inHistoryRepo(workspace))) {
       const branch = `overtime/${agentName}/${rec.id}`;
       try {
         await exec("git", ["-C", workspace, "worktree", "add", "-b", branch, rec.workdir], { timeout: 120_000 });
@@ -1104,7 +1252,7 @@ export class Runtime extends EventEmitter implements ToolHost {
       }
     }
     if (existsSync(workspace)) {
-      const exclude = [paths.meta(agentName)];
+      const exclude = [paths.meta(agentName), ...((await inHistoryRepo(workspace)) ? [join(workspace, ".git")] : [])];
       const size = await measure(workspace, exclude, COPY_MAX_FILES, COPY_MAX_BYTES);
       if (size.ok) {
         // Entry by entry: the workspace may be the agent's own folder, which holds the helper's folder too.
@@ -1341,6 +1489,8 @@ export class Runtime extends EventEmitter implements ToolHost {
             backend: rec.backend,
             model: rec.model ?? undefined,
             extraMcp: [mcp],
+            // The agent's memory is its own: a helper reads it, and reports what it learned in done.
+            protect: [join(paths.agent(agentName), "memory")],
             // The same session throughout: notes and carrying on keep what it knew.
             resumeSessionId: rec.sessionId ?? null,
             onSession: (id) => {
@@ -1752,7 +1902,7 @@ function inboxBlock(all: InboxItem[], session: string | null = null): string {
  * for each recent turn, what it was told, the steps it took and what it said. Newest turns are kept
  * when it's long. Empty if there's nothing recorded yet.
  */
-async function agentContext(agentName: string, maxChars = 40_000): Promise<string> {
+async function agentContext(agentName: string, maxChars = 40_000, opts: { since?: Date | null; ids?: boolean } = {}): Promise<string> {
   const dir = join(paths.meta(agentName), "runs");
   let files: string[] = [];
   try {
@@ -1763,6 +1913,7 @@ async function agentContext(agentName: string, maxChars = 40_000): Promise<strin
   const turns: string[] = [];
   let size = 0;
   for (const f of files.slice(0, 30)) {
+    if (opts.since && (await lstat(join(dir, f)).catch(() => null))?.mtime! <= opts.since) continue;
     let told = "";
     let said = "";
     const steps: string[] = [];
@@ -1787,7 +1938,7 @@ async function agentContext(agentName: string, maxChars = 40_000): Promise<strin
     if (!told && !said && !steps.length) continue;
     const when = /main_(\d{8})(\d{6})/.exec(f);
     const turn = [
-      `## Turn${when ? ` at ${when[1].slice(0, 4)}-${when[1].slice(4, 6)}-${when[1].slice(6)} ${when[2].slice(0, 2)}:${when[2].slice(2, 4)}` : ""}`,
+      `## Turn${when ? ` at ${when[1].slice(0, 4)}-${when[1].slice(4, 6)}-${when[1].slice(6)} ${when[2].slice(0, 2)}:${when[2].slice(2, 4)}` : ""}${opts.ids ? ` (run ${f.replace(/\.jsonl$/, "")})` : ""}`,
       told ? `It was told:\n${told.slice(0, 4000)}` : "",
       steps.length ? `It did:\n${steps.slice(0, 40).map((s) => `- ${s}`).join("\n")}` : "",
       said.trim() ? `It said:\n${said.trim().slice(0, 4000)}` : "",
@@ -1824,7 +1975,7 @@ function mainTurnText(items: InboxItem[], firstJob: boolean, contextReset: boole
   }
   if (contextReset) parts.push("Note: this is a fresh session. Your earlier work session isn't carried over (your recent conversation with the person is above); your folder is. Check INDEX.md and your notes for where things stand.");
   parts.push(inboxBlock(items, session));
-  parts.push("Reply with send to new messages from the person (not to ones passed on from your conversation: those were already answered, so never acknowledge them twice). Do the work, as part of your goals. Before this turn ends, bring your notes and INDEX.md up to date, decide the next useful step toward your goals, and choose when to wake.");
+  parts.push("Reply with send to new messages from the person (not to ones passed on from your conversation: those were already answered, so never acknowledge them twice). Do the work, as part of your goals. Before this turn ends, bring your notes and INDEX.md up to date; if you were corrected or worked out how to do something, save it as a memory (memory/) or a skill. Decide the next useful step toward your goals, and choose when to wake.");
   return parts.join("\n\n");
 }
 
@@ -1880,6 +2031,8 @@ You are a helper started by ${agentName} for one task. You start clean: everythi
 Work in: ${rec.workdir}${rec.branch ? ` (a git worktree of ${workspace}, on branch ${rec.branch}; commit your work there)` : ` (${note})`}
 The main workspace is ${workspace}; don't change it directly.
 
+${agentName}'s memory is in ${join(paths.agent(agentName), "memory")}/ (MEMORY.md is its index): read it when it helps, but don't change it. If you learned something ${agentName} should remember (a fact about the person or their setup, a correction, how to do something), say so in done, as lines starting "learned: ".
+
 When you're finished, call done with what you did, where the output is, what you checked, and anything left open. Then end your turn. On long work, tell ${agentName} how it's going with update (urgent only when you're blocked).
 
 ${agentName} may send you a note while you work, or after you're done (to correct something or ask for more): it arrives as your next message. Take it into account, carry on from where you were, and call done again with the whole result.
@@ -1888,22 +2041,26 @@ ${instructions ? `\n# Your role\n\n${instructions}\n` : ""}${skillsBlock(paths.a
 
 /** Whether a session's context is full enough that a fresh one (rebuilt from the agent's files) is better. */
 
-/** Fingerprints of AGENT.md and INDEX.md as a session last saw them. */
-function fileHashes(agent: Agent): { agent: string; index: string } {
+/** Fingerprints of AGENT.md, INDEX.md and memory/MEMORY.md as a session last saw them. */
+function fileHashes(agent: Agent): { agent: string; index: string; memory: string } {
   const h = (t: string) => createHash("sha1").update(t).digest("hex");
-  return { agent: h(agent.identity), index: h(agent.index) };
+  return { agent: h(agent.identity), index: h(agent.index), memory: h(agent.memory) };
 }
 
 /**
  * A resumed session saw AGENT.md and INDEX.md only when it started. If they changed since (the person
  * edited them, or another of the agent's sessions did), the next turn starts with the current text.
  */
-async function editedSince(agent: Agent, seen: { agent: string; index: string } | undefined): Promise<string> {
+async function editedSince(agent: Agent, seen: { agent: string; index: string; memory?: string } | undefined): Promise<string> {
   if (!seen) return "";
   const now = fileHashes(agent);
   const parts: string[] = [];
   if (now.agent !== seen.agent) parts.push(`AGENT.md changed since your last turn. It now reads:\n\n${agent.identity.trim()}`);
   if (now.index !== seen.index) parts.push(`INDEX.md changed since your last turn. It now reads:\n\n${agent.index.trim()}`);
+  // A session from before memory/ existed never saw MEMORY.md: it gets it now, once there is one.
+  if (seen.memory === undefined ? !!agent.memory.trim() : now.memory !== seen.memory) {
+    parts.push(agent.memory.trim() ? `memory/MEMORY.md (your memory index; the files are in ${join(agent.dir, "memory")}/) changed since your last turn. It now reads:\n\n${memoryText(agent.memory)}` : "memory/MEMORY.md was emptied since your last turn.");
+  }
   return parts.length ? parts.join("\n\n---\n\n") + "\n\n---\n\n" : "";
 }
 

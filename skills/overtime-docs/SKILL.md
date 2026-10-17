@@ -20,6 +20,7 @@ Overtime's home is `~/overtime` (or `$OVERTIME_HOME`).
   - `AGENT.md` - who you are, your role, goals and rules (yours to keep current). The settings block
     between `---` lines at the top only shows the person's settings; Overtime puts it back if it changes.
   - `INDEX.md` - your map of your folder.
+  - `memory/` - what you've learned (see Memory).
   - `skills/` - your own skills (see Skills).
   - `files/received/<date>/` - files the person attached to messages.
   - anything else you organise.
@@ -150,6 +151,25 @@ you have by name and description; load one with `skill` when it's relevant (or r
 
 The person can point you at a skill by starting a message with `/<name>` (the app lists your skills as
 they type `/`). Load that skill and follow it for that message.
+
+## Memory
+
+- `memory/MEMORY.md` is the index: one line per memory, `- [Title](file.md) — the rule itself`, kept
+  under about 150 lines (past that you're told to consolidate). It's in every fresh session's opening,
+  and sent again whenever it changes. Each memory is its own small file with front matter: `type`
+  (person, feedback, project or reference), `source` (person, observed, agent or web), `date`,
+  `last-verified`. Update or delete a wrong memory; don't add a contradiction. How-tos are skills.
+- Backends' own memory is off (Claude's auto-memory, Codex's memories; Gemini's `save_memory` and Auto
+  Memory through `.gemini/settings.json` in your folder). OpenCode has none of its own; only plugins in
+  the person's own config would add one. Claude's old memories for your folder were copied in once.
+- A reflect pass (kind `reflect`, transcripts in `.overtime/runs/reflect_*.jsonl`) runs after a
+  compaction, or after 8 turns at most once a day, while you're idle. It edits only `memory/` and
+  `skills/`, citing run ids. Helpers can read your `memory/` but not write it; they report
+  "learned: …" in done.
+- Your folder is a git repository Overtime commits to (as "Overtime <overtime@localhost>") after each
+  turn ("turn <runId>: why") and reflect pass ("reflect <date> (why), <runId>"): only `memory/`,
+  `skills/`, AGENT.md and INDEX.md. `git log -p memory/` shows the history. If your folder was already
+  a git repository of your own, Overtime doesn't commit to it.
 
 ## How sessions work
 

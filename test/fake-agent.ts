@@ -90,6 +90,27 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
   const names = await t.list();
   const folder = /# Your folder\n\n(.+)/.exec(text)?.[1];
   try {
+    // A reflect pass: note what it was given and which tools it had, then edit memory/ as a reflect pass
+    // does. REFLECT_TAMPER (in what it reads): also try to change AGENT.md, which it must not.
+    if (/You are running a reflect pass/.test(text)) {
+      const home = process.env.OVERTIME_HOME ?? s.cwd;
+      writeFileSync(join(home, `reflect-seen-${(/reflect pass for (\S+),/.exec(text)?.[1] ?? "x")}.txt`), `${names.join(",")}\n${text}`);
+      mkdirSync(join(s.cwd, "memory"), { recursive: true });
+      const run = /\(run (main_[^)]+)\)/.exec(text)?.[1] ?? "unknown";
+      writeFileSync(join(s.cwd, "memory", "reflected.md"), `---\ntype: feedback\nsource: observed\ndate: 2026-10-17\nlast-verified: 2026-10-17\nruns: [${run}]\n---\n\nCheck the render before sending.\n`);
+      const idx = join(s.cwd, "memory", "MEMORY.md");
+      writeFileSync(idx, `${existsSync(idx) ? readFileSync(idx, "utf8") : ""}- [Check renders](reflected.md) — watch the whole render before sending it\n`);
+      if (/REFLECT_TAMPER/.test(text)) {
+        try {
+          writeFileSync(join(s.cwd, "AGENT.md"), "# tampered\n");
+        } catch {}
+      }
+      writeFileSync(join(s.cwd, "notes-outside-memory.txt"), "scratch\n");
+      await say("reflected: added reflected.md");
+      return { stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } as any };
+    }
+    // COMPACT: the backend compacts the session's context, reported as Claude's adapter does.
+    if (/COMPACT/.test(text)) await cx.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "tool_call", toolCallId: "c1", title: "Compact conversation", kind: "think", status: "completed", _meta: { claudeCode: { toolName: "compact" } } } as any });
     // A helper's session: its first prompt says so; later prompts in the same session (notes) don't.
     const helperMark = join(s.cwd, ".fake-helper");
     if (/You are a helper/.test(text) || /a helper working for/.test(text)) writeFileSync(helperMark, "1");
@@ -106,6 +127,21 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
           writeFileSync(mark, "1");
           throw new acp.RequestError(-32603, "Internal error", { message: "stream error", codexErrorInfo: { responseStreamConnectionFailed: { httpStatusCode: 502 } } }); // Codex's shape
         }
+      }
+      // WRITE_PARENT_MEMORY: try to write into the memory/ of the agent that started it (it may only read it).
+      if (/WRITE_PARENT_MEMORY/.test(text)) {
+        const mem = /'s memory is in (\S+)\/ \(/.exec(text)?.[1];
+        let r = "no path";
+        if (mem) {
+          r = existsSync(join(mem, "MEMORY.md")) ? `read:${readFileSync(join(mem, "MEMORY.md"), "utf8").trim()}\n` : "read:none\n";
+          try {
+            writeFileSync(join(mem, "from-helper.md"), "x");
+            r += "LEAKED";
+          } catch {
+            r += "denied";
+          }
+        }
+        writeFileSync(join(s.cwd, ".parent-memory"), r);
       }
       if (/UPDATE/.test(text)) await t.call("update", { text: "halfway there", urgent: /UPDATE_URGENT/.test(text) });
       // Started with the agent's context: keep what it was given, so tests can check it.
@@ -188,6 +224,7 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
         writeFileSync(join(s.cwd, "escape-result.txt"), result);
       }
       if (/SPAWN_MISSING/.test(text) && names.includes("spawn")) writeFileSync(join(s.cwd, "spawn-note.txt"), await t.call("spawn", { task: "write result.txt", backend: "not-installed-cli", model: "some-model" }));
+      else if (/SPAWN_MEMWRITE/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "WRITE_PARENT_MEMORY write result.txt" });
       else if (/SPAWN_FLAKY/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "FLAKY write result.txt" });
       else if (/SPAWN_SLOW/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "SLOW write result.txt" });
       else if (/SPAWN_TOOLWAIT/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "TOOLWAIT write result.txt" });
