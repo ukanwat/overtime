@@ -1,7 +1,8 @@
-# The README's demos
+# The demos
 
-The README's GIFs are recorded from the real app and CLI by [VHS](https://github.com/charmbracelet/vhs).
-Two are scripted: the hero, `team` ([`team/team.ts`](team/team.ts)), and `life`
+The demo GIFs are recorded from the real app and CLI by [VHS](https://github.com/charmbracelet/vhs).
+The README shows one, `team`; the rest are linked from [How Overtime works](../how-it-works.md#recorded-runs).
+Two are scripted: `team` ([`team/team.ts`](team/team.ts)), and `life`
 ([`life/life.ts`](life/life.ts)). Each feeds the real app made-up agents and a timeline of their
 messages through the same fake daemon the tests use, so they run no model and cost nothing. The other
 five are real recordings: real agents on Claude, nothing mocked. Each of those has a scratch
@@ -11,7 +12,7 @@ recording never touches `~/overtime`, your agents or the daemon they run in.
 | Demo | Shows | Agent | Takes |
 |---|---|---|---|
 | [`team`](team) | Scripted: one message to pm, and a team plans, builds, reviews, tests, handles an incident on the canary, asks you one question and ships | pm, backend, frontend, qa, reviewer, on-call, release | ~2 min |
-| [`life`](life) | Scripted: one person's own agents; an evening check-in, an application approved, a night of work, a morning report | job-scout, interview-coach, visa-planner, grad-school, money, side-project, learning | ~2 min |
+| [`life`](life) | Scripted: one person's own agents; an evening check-in, a flight booking approved, a night of work, a morning brief | trip-planner, house-hunt, money, learning, side-project, daily-brief | ~2 min |
 | [`brief`](brief) | Make an agent in the app, brief it once: it fixes a failing test, commits, reports and schedules itself | keeper | ~3 min |
 | [`watch`](watch) | An agent watching a log sleeps for free; a checkout breaks and it wakes, fixes it and reports | on-call | ~4 min |
 | [`helpers`](helpers) | One brief becomes three helpers reviewing a repo in parallel, merged into one review | reviewer | ~6 min |
@@ -27,15 +28,16 @@ can't show are stood in for there, and only there:
   seconds), so each GIF reads the same whenever it's recorded. Animations keep their real pace.
 - **Opening a file** (Ctrl+L, then Enter) shows it in the terminal, where the recording can see it,
   instead of in its own app. Markdown is drawn as the app draws messages; a chart from a `.ansi` twin
-  in half-blocks; the CV PDF from the Markdown it was made from. Any key goes back.
+  in half-blocks. Any key goes back.
 - **Notifications.** Overtime notifies through `osascript` on a Mac, which a terminal recording can't
   see. The scene logs each one it would send (a question; a report) with its moment, and
   [`notify-overlay.sh`](notify-overlay.sh) draws them onto the video as macOS banners, true to life:
   Script Editor's icon, no app name, titled `<agent> has a question` or the agent's name over the
   report's title. `--app-name` and `--icon` change that if Overtime ever notifies as itself.
 
-The agents' files (`team/files`, `life/files`: charts, a postmortem, a CV) are real files, made by
-[`files.py`](files.py) (`python3 docs/demos/files.py`; matplotlib, Pillow, and Chrome for the PDF).
+The agents' files (`team/files`, `life/files`: a postmortem, an itinerary, a listing comparison and two
+charts) are real files. The charts are made by [`files.py`](files.py) (`python3 docs/demos/files.py`;
+matplotlib and Pillow).
 `record-all.sh team life` records both and runs the overlay; it needs Google Chrome for the banners.
 
 ## Recording
@@ -91,9 +93,9 @@ Real runs differ every time. Before committing a GIF, watch it once for:
   its report; on-call's incident report with the postmortem and the chart opened; release's question
   with `2` chosen; it ends on pm's report with every agent asleep. Banners for qa's, on-call's and pm's
   reports and release's question, each sliding in at the moment it arrives.
-- **life:** scripted too. Sam's question to job-scout; visa-planner's start-date warning; the CV opened;
-  `1` chosen; good night; interview-coach's prep plan opened (stamped before midnight, under
-  "Yesterday" by morning); money's chart opened; job-scout's morning summary at 7. Five banners.
+- **life:** scripted too. Alex's question to trip-planner; money confirming the fare fits the budget;
+  the itinerary opened; `1` chosen; good night; house-hunt checking the weekend with trip-planner and
+  its listing comparison opened; money's chart opened; daily-brief's morning brief at 7. Five banners.
 - **brief:** the card shows the workspace as `/tmp/ot-demo-brief/weather`; the agent says it fixed the
   Fahrenheit conversion (+23 → +32) and the tests pass; the header ends on `asleep · wakes …` with its
   next check; settings (Tab) show claude, the model, the $3 budget and the workspace.
