@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fakeHome, until } from "./helpers.js";
@@ -263,6 +263,33 @@ describe("memory in a running agent", () => {
     // The next turn is told its memory changed.
     await tell("refl", "Next.");
     expect(prompts("refl").at(-1)).toContain("- [Check renders](reflected.md) — watch the whole render before sending it");
+  });
+
+  it("stops a reflect pass for real work: the main turn waits for it to stop, and it records one row only if a cost was reported", async () => {
+    await rt.create("rcan");
+    await tell("rcan", "Your job is testing.");
+    const runs = (prefix: string) => readdirSync(join(paths.meta("rcan"), "runs")).filter((f) => f.startsWith(prefix));
+    const events = (f: string) => readFileSync(join(paths.meta("rcan"), "runs", f), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    const usage = (runId: string) =>
+      readFileSync(join(paths.meta("rcan"), "usage.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((r) => r.runId === runId);
+    for (const [mark, rows] of [["", 0], ["cost", 1]] as const) {
+      await until(async () => !(rt as any).reflecting.has("rcan"), 40_000, "no reflect pass running");
+      writeFileSync(join(home, "reflect-slow"), mark);
+      const before = new Set(runs("reflect_"));
+      await updateState("rcan", { turnsSinceReflect: REFLECT_TURNS, lastReflectAt: null });
+      const f = await until(async () => !existsSync(join(home, "reflect-slow")) && runs("reflect_").find((x) => !before.has(x) && events(x).some((e) => e.event === "prompt")), 40_000, "a reflect pass under way");
+      rmSync(join(home, "reflect-stopped-at"), { force: true });
+      await tell("rcan", "Real work.");
+      // The pass had stopped before the main turn began.
+      const stoppedAt = Number(readFileSync(join(home, "reflect-stopped-at"), "utf8"));
+      const main = runs("main_").map(events).sort((a, b) => a[0].t.localeCompare(b[0].t)).at(-1)!;
+      expect(new Date(main[0].t).getTime()).toBeGreaterThanOrEqual(stoppedAt);
+      expect(lines.some((l) => l.includes("[rcan] reflect pass stopped: its main session has work"))).toBe(true);
+      // No row when nothing was reported; one, with the cost, when it was.
+      const got = usage(f.replace(/\.jsonl$/, ""));
+      expect(got).toHaveLength(rows);
+      if (rows) expect(got[0].turnCostUsd).toBeCloseTo(0.02);
+    }
   });
 
   it("notes a compaction the backend reports, and reflects after it", async () => {
