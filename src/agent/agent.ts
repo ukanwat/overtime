@@ -75,12 +75,24 @@ export interface AgentState {
   troubleSince?: string | null;
   /** When Claude's own memories for its folder were copied into memory/ (done once). */
   memoryImportedAt?: string;
-  /** Main turns finished since its last reflect pass. */
+  /** When the memories Claude kept in its helpers' folders were copied into memory/ (done once). */
+  helperMemoryImportedAt?: string;
+  /** Main turns finished since its last reflect pass (no longer used to decide when one runs). */
   turnsSinceReflect?: number;
-  /** When its last reflect pass ran. */
+  /** When its last reflect pass finished. */
   lastReflectAt?: string | null;
   /** Its backend compacted the main session since the last reflect pass: one is due once it's idle. */
   compactedSinceReflect?: boolean;
+  /** The last run (turn or chat) a reflect pass has read: the next one reads on from there. Unset: none yet. */
+  reflectCursor?: string | null;
+  /** Reflect passes in a row that were stopped (for real work) or failed, for backing off. */
+  reflectStops?: number;
+  /** When the last of those stopped. */
+  reflectStoppedAt?: string | null;
+  /** Failed passes in a row at the current cursor: past a few, that part of its history is passed over. */
+  reflectFailures?: number;
+  /** Reflect passes started today (the person's local day), against the daily cap. */
+  reflectDay?: { day: string; passes: number };
   /** Why Overtime doesn't commit its folder's history, noted once (the folder is a git repository of its own). */
   historyOff?: string;
 }

@@ -40,11 +40,26 @@ function unique(paths: string[]): string[] {
   return [...new Set(paths.filter(Boolean).map(realPath))];
 }
 
+/**
+ * A layer of write rules on top of the protected paths, for a session that may write only in a few
+ * places (see runtime/write-scope.ts). Later layers win over earlier ones; the person's protected paths
+ * win over all of them. `prefixes`: files whose path starts with one of these (a file and its backups).
+ */
+export interface WriteLayer {
+  write: boolean;
+  paths: string[];
+  prefixes?: string[];
+}
+
 /** Seatbelt profile: everything allowed, except writing to the protected paths and reading the hidden ones. */
-export function seatbeltProfile(protect: string[], hide: string[] = []): string {
+export function seatbeltProfile(protect: string[], hide: string[] = [], layers: WriteLayer[] = []): string {
   const q = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-  const rule = (what: string, list: string[]) => (list.length ? [`(deny ${what}`, ...unique(list).map((p) => `  (subpath ${q(p)})`), ")"] : []);
-  return ["(version 1)", "(allow default)", ...rule("file-write*", protect), ...rule("file-read*", hide)].join("\n");
+  const rx = (s: string) => q(`^${s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`);
+  const rule = (what: string, list: string[], verb = "deny", prefixes: string[] = []) =>
+    list.length || prefixes.length ? [`(${verb} ${what}`, ...unique(list).map((p) => `  (subpath ${q(p)})`), ...unique(prefixes).map((p) => `  (regex ${rx(p)})`), ")"] : [];
+  // In a Seatbelt profile the last rule that matches decides: the layers in order, then the protected paths.
+  const scoped = layers.flatMap((l) => rule("file-write*", l.paths, l.write ? "allow" : "deny", l.prefixes));
+  return ["(version 1)", "(allow default)", ...scoped, ...rule("file-write*", protect), ...rule("file-read*", hide)].join("\n");
 }
 
 let bwrapPath: string | null | undefined;
@@ -66,13 +81,15 @@ export function sandboxAvailable(): { ok: boolean; why?: string } {
 }
 
 /** How to launch a command with the given paths read-only (and, on macOS, the hidden ones unreadable). No paths: launched as is. */
-export function sandboxLaunch(command: string, args: string[], protect: string[], hide: string[] = []): Launch {
+export function sandboxLaunch(command: string, args: string[], protect: string[], hide: string[] = [], layers: WriteLayer[] = []): Launch {
   if (process.platform !== "darwin") hide = [];
-  if (!protect.length && !hide.length) return { command, args, sandboxed: false };
+  if (!protect.length && !hide.length && !layers.length) return { command, args, sandboxed: false };
   const avail = sandboxAvailable();
   if (!avail.ok) return { command, args, sandboxed: false, why: avail.why };
-  if (process.platform === "darwin") return { command: "/usr/bin/sandbox-exec", args: ["-p", seatbeltProfile(protect, hide), command, ...args], sandboxed: true };
-  const ro: string[] = [];
-  for (const p of unique(protect)) if (existsSync(p)) ro.push("--ro-bind", p, p);
-  return { command: findBwrap()!, args: ["--bind", "/", "/", "--dev-bind", "/dev", "/dev", "--proc", "/proc", ...ro, "--die-with-parent", "--", command, ...args], sandboxed: true };
+  if (process.platform === "darwin") return { command: "/usr/bin/sandbox-exec", args: ["-p", seatbeltProfile(protect, hide, layers), command, ...args], sandboxed: true };
+  // bubblewrap applies its mounts in order, so a later one over a folder wins, as the layers do.
+  const mounts: string[] = [];
+  for (const l of layers) for (const p of unique(l.paths)) if (existsSync(p)) mounts.push(l.write ? "--bind" : "--ro-bind", p, p);
+  for (const p of unique(protect)) if (existsSync(p)) mounts.push("--ro-bind", p, p);
+  return { command: findBwrap()!, args: ["--bind", "/", "/", "--dev-bind", "/dev", "/dev", "--proc", "/proc", ...mounts, "--die-with-parent", "--", command, ...args], sandboxed: true };
 }

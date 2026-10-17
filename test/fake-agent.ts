@@ -23,6 +23,8 @@ interface S {
   cost: number;
   /** The model Overtime chose for the session ("default" until it chooses one). */
   model: string;
+  /** The MCP servers Overtime gave the session, by name. */
+  servers?: string[];
 }
 const sessions = new Map<string, S>();
 let cancelled = false;
@@ -91,10 +93,14 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
   const folder = /# Your folder\n\n(.+)/.exec(text)?.[1];
   try {
     // A reflect pass: note what it was given and which tools it had, then edit memory/ as a reflect pass
-    // does. REFLECT_TAMPER (in what it reads): also try to change AGENT.md, which it must not.
+    // does. REFLECT_TAMPER (in what it reads): also try to change AGENT.md and write outside memory/,
+    // which it must not. Its notes go to the test's own folder: everything of Overtime's is read-only to it.
     if (/You are running a reflect pass/.test(text)) {
-      const home = process.env.OVERTIME_HOME ?? s.cwd;
-      writeFileSync(join(home, `reflect-seen-${(/reflect pass for (\S+),/.exec(text)?.[1] ?? "x")}.txt`), `${names.join(",")}\n${text}`);
+      const home = process.env.OVERTIME_FAKE_NOTES ?? process.env.OVERTIME_HOME ?? s.cwd;
+      const who = /reflect pass for (\S+),/.exec(text)?.[1] ?? "x";
+      writeFileSync(join(home, `reflect-seen-${who}.txt`), `${names.join(",")}\nservers: ${(s.servers ?? []).join(",")}\n${text}`);
+      // REFLECT_HOLD: a pass that runs until it's stopped.
+      if (/REFLECT_HOLD/.test(text) && (await slow())) return { stopReason: "cancelled" };
       // A reflect-slow file in Overtime's home (once): a pass still running when the agent gets work, so it
       // is cancelled. Its content "cost" reports a cost first, as a backend that has already spent does.
       const slowMark = join(home, "reflect-slow");
@@ -118,11 +124,20 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
       const idx = join(s.cwd, "memory", "MEMORY.md");
       writeFileSync(idx, `${existsSync(idx) ? readFileSync(idx, "utf8") : ""}- [Check renders](reflected.md) — watch the whole render before sending it\n`);
       if (/REFLECT_TAMPER/.test(text)) {
+        // Reported as its file tools report a write, the way a backend that doesn't ask first would.
+        const edit = (status: string) => cx.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: status === "pending" ? "tool_call" : "tool_call_update", toolCallId: "t1", title: "Write AGENT.md", kind: "edit", status, locations: [{ path: join(s.cwd, "AGENT.md") }] } as any });
+        await edit("pending");
+        let r = "denied";
         try {
           writeFileSync(join(s.cwd, "AGENT.md"), "# tampered\n");
+          r = "written";
         } catch {}
+        await edit("completed");
+        writeFileSync(join(home, `reflect-tamper-${who}.txt`), r);
       }
-      writeFileSync(join(s.cwd, "notes-outside-memory.txt"), "scratch\n");
+      try {
+        writeFileSync(join(s.cwd, "notes-outside-memory.txt"), "scratch\n");
+      } catch {}
       await say("reflected: added reflected.md");
       return { stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } as any };
     }
@@ -290,7 +305,7 @@ acp
   .onRequest("session/new", (ctx: any) => {
     const id = randomUUID();
     const http = toolsServer(ctx.params.mcpServers);
-    sessions.set(id, { cwd: ctx.params.cwd, tools: http, cost: 0, model: "default" });
+    sessions.set(id, { cwd: ctx.params.cwd, tools: http, cost: 0, model: "default", servers: (ctx.params.mcpServers ?? []).map((m: any) => m.name) });
     // Record which MCP servers this session was given, so tests can check what reached the backend.
     try {
       writeFileSync(join(ctx.params.cwd, ".mcp-seen"), (ctx.params.mcpServers ?? []).map((m: any) => m.name).join(",") + "\n");
