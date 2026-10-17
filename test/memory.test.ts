@@ -266,13 +266,18 @@ describe("memory in a running agent", () => {
     expect(digest).not.toContain("Reply with send to new messages");
     expect(digest).not.toMatch(/^Time now: /m);
     expect(digest).toMatch(/It was told:\nWhy you are awake: the person sent you a message\n\nYour inbox/);
-    // Its edit is in memory/. Its tries at AGENT.md and a file beside it didn't stay, and the commit has only memory/.
+    // Its edit is in memory/. Its try at AGENT.md didn't stay: denied by the sandbox, or, without one (Linux
+    // without bubblewrap), written before Overtime heard of the tool and put back from the copy kept at the start.
     expect(readFileSync(join(dir, "memory", "reflected.md"), "utf8")).toMatch(/runs: \[main_\S+\]/);
     expect(readFileSync(join(dir, "AGENT.md"), "utf8")).toBe(agentMd);
     if (sandboxAvailable().ok) {
       expect(readFileSync(join(notes, "reflect-tamper-refl.txt"), "utf8")).toBe("denied");
+      // A file it writes beside memory/ without any tool call: only the sandbox can stop that.
       expect(existsSync(join(dir, "notes-outside-memory.txt"))).toBe(false);
-    } else expect(lines.some((l) => l.includes("[refl/reflect] changed") && l.includes("AGENT.md") && l.includes("put it back"))).toBe(true);
+    } else {
+      expect(readFileSync(join(notes, "reflect-tamper-refl.txt"), "utf8")).toBe("written");
+      expect(lines.some((l) => l.includes("[refl/reflect] changed") && l.includes("AGENT.md") && l.includes("put it back"))).toBe(true);
+    }
     expect(readFileSync(join(dir, "skills", "render", "SKILL.md"), "utf8")).toContain("1. Render.");
     expect(readdirSync(join(dir, "memory")).sort()).toEqual(["MEMORY.md", "reflected.md"]);
     expect(lines.some((l) => /\[refl\] reflect pass over its turns .* UTC \(its session was compacted; 2 turns not reflected yet\): reflected: added reflected\.md/.test(l))).toBe(true);

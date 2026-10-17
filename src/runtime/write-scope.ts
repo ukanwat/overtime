@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
@@ -16,7 +16,8 @@ import { realPath, type WriteLayer } from "./sandbox.js";
  *    anything outside those folders, and every command.
  * 3. Afterwards (OwnWrites): a file outside them that the session's own file tools changed is put back,
  *    but only while it is still exactly as the session left it, so an edit someone else made meanwhile
- *    (the person, the agent's next turn) is never undone.
+ *    (the person, the agent's next turn) is never undone. A backend can run a tool before Overtime has
+ *    read its announcement, so the files that matter most are copied before the session starts.
  */
 
 /** Folders under the person's home where backends keep their own state, caches and sign-in: they stay writable. */
@@ -92,6 +93,14 @@ const content = (p: string): Buffer | null => {
   }
 };
 
+const modifiedMs = (p: string): number | null => {
+  try {
+    return statSync(p).mtimeMs;
+  } catch {
+    return null;
+  }
+};
+
 /**
  * The files outside `writable` that a session's own file tools touched: each as it was just before
  * the session first touched it, and as the session's last write to it left it.
@@ -102,10 +111,21 @@ export class OwnWrites {
   private open = new Map<string, string[]>();
   /** Files someone else changed between two of the session's writes to them: never put back. */
   private others = new Set<string>();
+  /** The `keep` files as they were when the session started (by real path). */
+  private start = new Map<string, Buffer | null>();
+  /** Files already changed during the session when Overtime first heard of the tool: how they were before is unknown. */
+  private late = new Set<string>();
+  private readonly startedMs = Date.now();
   private readonly dirs: string[];
 
-  constructor(writable: string[], private readonly cwd: string) {
+  /**
+   * `keep`: files copied now, before the session starts. A tool's announcement is a message the backend
+   * sends and doesn't wait on, so its write can land before Overtime reads it, and a copy taken then
+   * would already be the changed file. Without a sandbox to stop the write, these are still put back.
+   */
+  constructor(writable: string[], private readonly cwd: string, keep: string[] = []) {
     this.dirs = writable.map(realPath);
+    for (const p of keep) if (!inside(p, this.dirs)) this.start.set(realPath(p), content(p));
   }
 
   /** Every streamed update of the session, in order. */
@@ -119,8 +139,14 @@ export class OwnWrites {
         // Before the tool runs (its first update announces it): how the file is now. A file it wrote
         // before that has changed since was edited by someone else too: theirs is kept, whatever happens.
         for (const p of targets) {
-          if (!this.before.has(p)) this.before.set(p, content(p));
-          else if (!known && this.left.has(p) && this.left.get(p) !== hash(p)) this.others.add(p);
+          const real = realPath(p);
+          if (!this.before.has(p) && this.start.has(real)) this.before.set(p, this.start.get(real)!);
+          else if (!this.before.has(p)) {
+            this.before.set(p, content(p));
+            // Changed since the session started: maybe by this very tool, before Overtime heard of it.
+            const m = modifiedMs(p);
+            if (m !== null && m >= this.startedMs) this.late.add(p);
+          } else if (!known && this.left.has(p) && this.left.get(p) !== hash(p)) this.others.add(p);
         }
         this.open.set(id, [...new Set([...(known ?? []), ...targets])]);
       }
@@ -134,18 +160,23 @@ export class OwnWrites {
 
   /**
    * Put back what the session changed outside `writable`, once it has ended. A file someone else
-   * changed after the session's last write to it is left as it is. Returns what was put back and what was left.
+   * changed after the session's last write to it is left as it is. Returns what was put back, what was
+   * left, and what it may have changed before Overtime could copy it (left as it is: there's nothing to put back).
    */
-  async undo(): Promise<{ restored: string[]; kept: string[] }> {
+  async undo(): Promise<{ restored: string[]; kept: string[]; uncopied: string[] }> {
     const restored: string[] = [];
     const kept: string[] = [];
+    const uncopied: string[] = [];
     // A tool cut off when the session stopped never said it finished: what it left is as it is now.
     for (const ps of this.open.values()) for (const p of ps) this.left.set(p, hash(p));
     this.open.clear();
     for (const [p, was] of this.before) {
       const now = hash(p);
       const wasHash = was === null ? null : createHash("sha1").update(was).digest("hex");
-      if (now === wasHash) continue;
+      if (now === wasHash) {
+        if (this.late.has(p) && this.left.get(p) === now) uncopied.push(p);
+        continue;
+      }
       // Changed by its own tool, and nothing since: the session's change, so it's undone.
       if (!this.others.has(p) && this.left.has(p) && this.left.get(p) === now) {
         if (was === null) await rm(p, { force: true });
@@ -153,6 +184,6 @@ export class OwnWrites {
         restored.push(p);
       } else kept.push(p);
     }
-    return { restored, kept };
+    return { restored, kept, uncopied };
   }
 }

@@ -203,6 +203,30 @@ describe("a session that may change only memory/", () => {
     expect(existsSync(cut)).toBe(false);
   });
 
+  it("puts back a file it keeps from the start even when the write lands before Overtime hears of it", async () => {
+    // A backend announces a tool and runs it at once: the announcement is a one-way message, so the file
+    // can already be written when Overtime reads it. Without a sandbox, nothing stopped the write.
+    const agentMd = join(agentDir, "AGENT3.md");
+    const other = join(agentDir, "other.txt");
+    writeFileSync(agentMd, "# agent\n");
+    writeFileSync(other, "other\n");
+    const own = new OwnWrites([memory], agentDir, [agentMd]);
+    writeFileSync(agentMd, "# tampered\n");
+    writeFileSync(other, "other, tampered\n");
+    const call = (id: string, path: string, status?: string) => own.see({ sessionUpdate: status ? "tool_call_update" : "tool_call", toolCallId: id, kind: "edit", status, locations: [{ path }] });
+    call("1", agentMd);
+    call("1", agentMd, "completed");
+    call("2", other);
+    call("2", other, "completed");
+    const r = await own.undo();
+    expect(r.restored).toEqual([agentMd]);
+    expect(readFileSync(agentMd, "utf8")).toBe("# agent\n");
+    // A file it didn't keep from the start: how it was before is gone, and that's said, not passed over.
+    expect(r.kept).toEqual([]);
+    expect(r.uncopied).toEqual([other]);
+    expect(readFileSync(other, "utf8")).toBe("other, tampered\n");
+  });
+
   it.runIf(process.platform === "darwin" && sandboxAvailable().ok)("can write only in memory/ (and the backend's own folders) under the sandbox", () => {
     const ws = join(root, "workspace");
     mkdirSync(ws, { recursive: true });

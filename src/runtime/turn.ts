@@ -146,7 +146,10 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
   const record = (event: string, data: unknown) => appendJsonl(runLog, { t: new Date().toISOString(), event, data }).catch(() => {});
   const scope = { roots: [agent.dir, base.workspace, eff.workspace] };
   // A session that may change only some folders: what its own tools change elsewhere is put back after.
-  const own = o.writable ? new OwnWrites(o.writable, eff.workspace) : null;
+  // The agent's own files and the skills it sees are copied first, so even a write the backend makes
+  // before Overtime hears of it is put back (with no sandbox to stop it, on Linux without bubblewrap).
+  const keep = [...["AGENT.md", "INDEX.md", "mcp.json"].map((f) => join(agent.dir, f)), ...listSkills(agent.dir).filter((k) => k.source !== "built-in").map((k) => k.file)];
+  const own = o.writable ? new OwnWrites(o.writable, eff.workspace, keep) : null;
 
   let reply = "";
   let sessionCost: number | null = null;
@@ -332,10 +335,11 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
     o.signal?.removeEventListener("abort", onAbort);
     if (session) await session.close();
     if (own) {
-      const { restored, kept } = await own.undo().catch(() => ({ restored: [] as string[], kept: [] as string[] }));
+      const { restored, kept, uncopied } = await own.undo().catch(() => ({ restored: [] as string[], kept: [] as string[], uncopied: [] as string[] }));
       for (const f of restored) o.log?.(`[${agent.name}/${o.kind}] changed ${f}, which it may not change; put it back`);
       for (const f of kept) o.log?.(`[${agent.name}/${o.kind}] changed ${f}, which it may not change, and it has been changed again since; left as it is`);
-      if (restored.length || kept.length) void record("outside", { restored, kept });
+      for (const f of uncopied) o.log?.(`[${agent.name}/${o.kind}] may have changed ${f}, which it may not change, before Overtime could keep a copy; left as it is`);
+      if (restored.length || kept.length || uncopied.length) void record("outside", { restored, kept, uncopied });
     }
     // A sign-in the backend refreshed during the session goes back to the person's own.
     await isolationEnv(eff.backend, paths.meta(agent.name)).catch(() => {});
