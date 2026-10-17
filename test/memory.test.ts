@@ -120,7 +120,7 @@ describe("the index and its cap", () => {
 });
 
 describe("history", () => {
-  it("makes the folder a repository and commits only memory/, skills/, AGENT.md and INDEX.md, as Overtime", async () => {
+  it("makes the folder a repository and commits only memory/, skills/, AGENT.md, INDEX.md and its .gitignore, as Overtime", async () => {
     const dir = scratch();
     writeFileSync(join(dir, "AGENT.md"), "# a\n");
     mkdirSync(join(dir, "memory"));
@@ -131,8 +131,10 @@ describe("history", () => {
     const id = await mem.commitHistory(dir, "turn main_1: a test");
     expect(id).toBeTruthy();
     expect(git(dir, "log", "--format=%an <%ae>|%s").trim()).toBe("Overtime <overtime@localhost>|turn main_1: a test");
-    expect(git(dir, "show", "--name-only", "--format=", "HEAD").trim().split("\n").sort()).toEqual(["AGENT.md", "memory/MEMORY.md"]);
+    expect(git(dir, "show", "--name-only", "--format=", "HEAD").trim().split("\n").sort()).toEqual([".gitignore", "AGENT.md", "memory/MEMORY.md"]);
     expect(readFileSync(join(dir, ".gitignore"), "utf8")).toContain(".overtime/");
+    // Only what isn't history shows as untracked: not its own .gitignore.
+    expect(git(dir, "status", "--porcelain").trim()).toBe("?? draft.txt");
     // Nothing changed: no commit. A deletion is committed too.
     expect(await mem.commitHistory(dir, "turn main_2")).toBeNull();
     execFileSync("rm", [join(dir, "memory", "MEMORY.md")]);
@@ -206,7 +208,7 @@ describe("memory in a running agent", () => {
     expect(third).toContain("if you were corrected or worked out how to do something, save it as a memory (memory/) or a skill");
   });
 
-  it("commits memory/, skills/, AGENT.md and INDEX.md after each turn, and nothing else", async () => {
+  it("commits memory/, skills/, AGENT.md, INDEX.md and .gitignore after each turn, and nothing else", async () => {
     const dir = paths.agent("rem");
     const log = git(dir, "log", "--format=%an|%s");
     expect(log).toMatch(/^Overtime\|turn main_\S+: the person sent you a message/m);
@@ -214,7 +216,7 @@ describe("memory in a running agent", () => {
     const files = git(dir, "ls-files").trim().split("\n");
     expect(files).toEqual(expect.arrayContaining(["AGENT.md", "INDEX.md", "memory/MEMORY.md", "memory/phone.md"]));
     // The fake wrote notes/ and its own files in the folder: none of that is history.
-    expect(files.every((f) => /^(AGENT\.md|INDEX\.md|memory\/|skills\/)/.test(f))).toBe(true);
+    expect(files.every((f) => /^(AGENT\.md|INDEX\.md|\.gitignore|memory\/|skills\/)/.test(f))).toBe(true);
     expect(git(dir, "status", "--porcelain", "--", "memory", "AGENT.md", "INDEX.md").trim()).toBe("");
   });
 
