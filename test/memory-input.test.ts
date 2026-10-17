@@ -227,6 +227,27 @@ describe("a session that may change only memory/", () => {
     expect(readFileSync(other, "utf8")).toBe("other, tampered\n");
   });
 
+  it("never puts back the person's edit to a file it keeps from the start: not one no tool of its named, not one made after its write", async () => {
+    const agentMd = join(agentDir, "AGENT4.md");
+    const index = join(agentDir, "INDEX4.md");
+    writeFileSync(agentMd, "# agent\n");
+    writeFileSync(index, "index\n");
+    const own = new OwnWrites([memory], agentDir, [agentMd, index]);
+    // The person edits AGENT.md while the pass runs; no tool of the pass names it.
+    writeFileSync(agentMd, "# agent\n- the person's rule\n");
+    // The pass writes INDEX.md before Overtime hears of it; then the person edits it too.
+    writeFileSync(index, "index, by the pass\n");
+    const call = (id: string, path: string, status?: string) => own.see({ sessionUpdate: status ? "tool_call_update" : "tool_call", toolCallId: id, kind: "edit", status, locations: [{ path }] });
+    call("1", index);
+    call("1", index, "completed");
+    writeFileSync(index, "index, by the pass\n- the person's line\n");
+    const r = await own.undo();
+    expect(r.restored).toEqual([]);
+    expect(r.kept).toEqual([index]);
+    expect(readFileSync(agentMd, "utf8")).toBe("# agent\n- the person's rule\n");
+    expect(readFileSync(index, "utf8")).toBe("index, by the pass\n- the person's line\n");
+  });
+
   it.runIf(process.platform === "darwin" && sandboxAvailable().ok)("can write only in memory/ (and the backend's own folders) under the sandbox", () => {
     const ws = join(root, "workspace");
     mkdirSync(ws, { recursive: true });
