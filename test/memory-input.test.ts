@@ -353,7 +353,7 @@ describe("ageing and patterns", () => {
 describe("what the instructions say about memory", () => {
   it("keeps the person's words, no snapshots, reads files before personalising, follows rules through imperfection, and keeps one current value per person fact", async () => {
     const { workingInstructions, reflectInstructions, INSTRUCTIONS_VERSION } = await import("../src/runtime/instructions.js");
-    expect(INSTRUCTIONS_VERSION).toBe(13);
+    expect(INSTRUCTIONS_VERSION).toBe(14);
     const main = workingInstructions("x", "main");
     const reflect = reflectInstructions("x", "/d");
     for (const t of [main, reflect]) {
