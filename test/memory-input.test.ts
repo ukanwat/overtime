@@ -301,3 +301,22 @@ describe("ageing and patterns", () => {
     );
   });
 });
+
+describe("what the instructions say about memory", () => {
+  it("keeps the person's words, no snapshots, reads files before personalising, follows rules through imperfection, and keeps one current value per person fact", async () => {
+    const { workingInstructions, reflectInstructions, INSTRUCTIONS_VERSION } = await import("../src/runtime/instructions.js");
+    expect(INSTRUCTIONS_VERSION).toBe(13);
+    const main = workingInstructions("x", "main");
+    const reflect = reflectInstructions("x", "/d");
+    for (const t of [main, reflect]) {
+      expect(t).toMatch(/quote/);
+      expect(t).toMatch(/general form/);
+      expect(t).toMatch(/applied there, it must give what they asked for/);
+      expect(t).toMatch(/[Ss]napshots? of .*(on disk|environment)/);
+    }
+    expect(main).toContain("read the memory files that bear on it, not just the index");
+    expect(main).toContain("follow it as far as you can and say what's missing rather than stop to ask");
+    expect(reflect).toContain("Facts about the person (their situation, plans, preferences, records): one current value per fact, in a person memory; a newer value replaces the old one.");
+    expect(workingInstructions("x", "chat")).toContain("quote (the person's exact words, if from them)");
+  });
+});

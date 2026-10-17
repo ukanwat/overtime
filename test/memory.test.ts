@@ -215,7 +215,7 @@ describe("memory in a running agent", () => {
     const third = prompts("rem")[2];
     expect(third).toContain("memory/MEMORY.md (your memory index");
     expect(third).toContain("changed since your last turn. It now reads:\n\n- [Phone first](phone.md) — every frame must read at phone size\n- [Short](short.md) — keep replies short");
-    expect(third).toContain("if you were corrected or worked out how to do something, save it: a how-to as a skill, anything else as a memory (memory/).");
+    expect(third).toContain("if you were corrected or worked out how to do something, save it: a how-to as a skill, anything else as a memory (memory/), with the person's words as its quote; not a snapshot of what's on disk or where things are now.");
   });
 
   it("keeps no history of its own in the agent's folder: no git repository, no .gitignore", async () => {
