@@ -8,6 +8,7 @@ const home = fakeHome();
 const { Runtime } = await import("../src/daemon/runtime.js");
 const { loadAgent, updateState } = await import("../src/agent/agent.js");
 const { paths } = await import("../src/paths.js");
+const { runIds } = await import("../src/agent/runlog.js");
 
 const logs: string[] = [];
 let rt = new Runtime((l) => logs.push(l));
@@ -25,13 +26,15 @@ async function employ(name: string) {
 const mainCtx = (agent: string) => ({ token: "t", agent, kind: "main" as const, depth: 0, wakeChosen: false });
 const helper = async (agent: string, id: string) => (await rt.store(agent).helpers()).find((x) => x.id === id)!;
 
-/** Every prompt this agent's main sessions (or its helpers') were sent, oldest first. */
-function prompts(agent: string, kind = "main_"): string[] {
+/** Every prompt this agent's main sessions were sent, oldest first (or its helpers', in no set order). */
+async function prompts(agent: string, kind = "main_"): Promise<string[]> {
   const dir = join(paths.meta(agent), "runs");
-  return readdirSync(dir)
-    .filter((f) => f.startsWith(kind))
-    .sort()
-    .flatMap((f) => readFileSync(join(dir, f), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)))
+  // Main turns in the order they began (run ids only go down to the second: two turns in the same second
+  // would sort by their random part). runIds lists only main turns and chats; helpers' are only read as a whole.
+  const ids = kind === "main_" ? await runIds(agent) : readdirSync(dir).map((f) => f.replace(/\.jsonl$/, ""));
+  return ids
+    .filter((id) => id.startsWith(kind))
+    .flatMap((id) => readFileSync(join(dir, `${id}.jsonl`), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)))
     .filter((e) => e.event === "prompt")
     .map((e) => e.data.text as string);
 }
@@ -53,7 +56,7 @@ describe("helpers", () => {
     }
     expect(runs).toBe(1);
     // Both notes reached it (in one turn or two, however the second one arrived).
-    const told = prompts("dbl", "helper_").join("\n");
+    const told = (await prompts("dbl", "helper_")).join("\n");
     expect(told).toContain("note A");
     expect(told).toContain("note B");
   });
@@ -135,7 +138,7 @@ describe("the main agent", () => {
     await until(async () => (await rt.store("once").messages()).some((x) => x.from === "agent" && x.text.includes("RECOVERED second")), 30_000, "second answered");
     const replies = (await rt.store("once").messages()).filter((x) => x.from === "agent" && x.text.includes("FAIL_AFTER_REPLY first"));
     expect(replies).toHaveLength(1);
-    const last = prompts("once").at(-1)!;
+    const last = (await prompts("once")).at(-1)!;
     expect(last).toMatch(/Already handed to you earlier in this session[\s\S]*FAIL_AFTER_REPLY first/);
     expect(await rt.store("once").inbox()).toEqual([]);
   });
@@ -147,7 +150,7 @@ describe("the main agent", () => {
     await updateState("anew", { failures: 2 }); // the old session keeps failing: the next turn starts a new one
     await rt.send("anew", "RECOVERED second");
     await until(async () => (await rt.store("anew").messages()).some((x) => x.from === "agent" && x.text.includes("RECOVERED second")), 30_000, "second answered");
-    const last = prompts("anew").at(-1)!;
+    const last = (await prompts("anew")).at(-1)!;
     expect(last).not.toContain("Already handed to you");
     expect(last).toMatch(/Message from the person[^\n]*\nFAIL_AFTER_REPLY first/);
   });
