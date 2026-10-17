@@ -62,15 +62,16 @@ const TYPES: Record<string, string> = { user: "person", person: "person", feedba
 
 /**
  * A Claude memory file with Overtime's header added (its own fields kept), so it reads like any other
- * memory. Its source: the person for what they said (Claude's user and feedback memories), otherwise
- * observed (what the agent's sessions saw for themselves).
+ * memory. Its source: the person for what they said (Claude's user and feedback memories in the agent's
+ * own sessions), otherwise observed. A helper's are all observed: its feedback memories are often its own
+ * conclusions, not the person's words.
  */
-function withHeader(text: string, modified: Date): string {
+function withHeader(text: string, modified: Date, helper = false): string {
   const { data, body } = parseFrontMatter(text);
   const meta = (data.metadata && typeof data.metadata === "object" ? data.metadata : {}) as Record<string, unknown>;
   const day = (String(meta.modified ?? "") || modified.toISOString()).slice(0, 10);
   const type = TYPES[String(data.type ?? meta.type ?? "")] ?? "project";
-  return stringifyFrontMatter({ ...data, type, source: data.source ?? (type === "person" || type === "feedback" ? "person" : "observed"), date: data.date ?? day, "last-verified": data["last-verified"] ?? day }, body);
+  return stringifyFrontMatter({ ...data, type, source: data.source ?? (!helper && (type === "person" || type === "feedback") ? "person" : "observed"), date: data.date ?? day, "last-verified": data["last-verified"] ?? day }, body);
 }
 
 /** The memory file an index line points to, if it is one: `- [Title](file.md) — hook`. */
@@ -128,7 +129,7 @@ async function importFrom(agentDir: string, sources: { dir: string; prefix: stri
     /** Claude's name for a file → the name it has here. */
     const renamed = new Map<string, string>();
     for (const n of names.filter((n) => n !== MEMORY_INDEX)) {
-      const text = withHeader(await readFile(join(src, n), "utf8"), (await stat(join(src, n))).mtime);
+      const text = withHeader(await readFile(join(src, n), "utf8"), (await stat(join(src, n))).mtime, !!prefix);
       if (prefix && have.has(parseFrontMatter(text).body.trim())) continue;
       let target = prefix + n;
       const existing = await readFile(join(dest, target), "utf8").catch(() => null);

@@ -53,6 +53,9 @@ export interface AgentSettingsView {
   protectOwn: string[];
   /** Whether other agents see it and can message it. */
   visibility: "public" | "private";
+  /** Whether reflect passes run for it, and the model they run on when it isn't its own (null). */
+  reflect: boolean;
+  reflectModel: string | null;
   spentUsd: number;
   costReported: boolean;
   tokensToday: number;

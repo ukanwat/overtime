@@ -15,7 +15,7 @@ import { answer } from "./permissions.js";
 import { clearLimit, confirmLimit, recordTurnUsage, rejectedLimits, writeLimit, type TurnUsage } from "./usage.js";
 import { classify } from "./errors.js";
 
-/** reflect: a short session Overtime runs now and then to keep an agent's memory/ and skills/ current. */
+/** reflect: a short session Overtime runs now and then to keep an agent's memory/ current. */
 export type SessionKind = "main" | "chat" | "helper" | "reflect";
 
 export interface TurnOptions {
@@ -56,6 +56,11 @@ export interface TurnOptions {
   writable?: string[];
   /** The agent's own MCP servers (mcp.json, shared and the person's). Off: only extraMcp. */
   agentServers?: boolean;
+  /**
+   * Whether a usage limit this turn runs into is recorded for its backend and model (pausing every agent
+   * on it). Off for background housekeeping (a reflect pass): its limit just ends the turn.
+   */
+  recordLimits?: boolean;
   /** Live view of everything the agent does in this turn. */
   onUpdate?: (u: SessionUpdate) => void;
   /** Called once the session id is known (fresh or resumed). */
@@ -213,7 +218,7 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
           }
           const rl = uu._meta?.["_claude/rateLimit"];
           if (rl && typeof rl.status === "string") {
-            void writeLimit({ backend: eff.backend, model: eff.model ?? null, status: rl.status, rateLimitType: rl.rateLimitType, utilization: rl.utilization, resetsAt: rl.resetsAt, updatedAt: new Date().toISOString() });
+            if (o.recordLimits !== false) void writeLimit({ backend: eff.backend, model: eff.model ?? null, status: rl.status, rateLimitType: rl.rateLimitType, utilization: rl.utilization, resetsAt: rl.resetsAt, updatedAt: new Date().toISOString() });
             if (rl.status === "rejected") limitRejected = { resetsAt: rl.resetsAt ? new Date(rl.resetsAt * 1000) : null };
           }
         }
@@ -281,12 +286,12 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
         const resets = (await rejectedLimits(eff.backend, eff.model)).map((l) => (l.resetsAt ?? 0) * 1000).filter((t) => t > Date.now());
         if (resets.length) {
           // Still over it: trusted for another while, so other agents on this model don't try it meanwhile.
-          await confirmLimit(eff.backend, eff.model);
+          if (o.recordLimits !== false) await confirmLimit(eff.backend, eff.model);
           throw new UsageLimitError(eff.backend, new Date(Math.max(...resets)), eff.model ?? null);
         }
       }
       if (classify(e) === "limit") {
-        await writeLimit({ backend: eff.backend, model: eff.model ?? null, status: "rejected", updatedAt: new Date().toISOString() });
+        if (o.recordLimits !== false) await writeLimit({ backend: eff.backend, model: eff.model ?? null, status: "rejected", updatedAt: new Date().toISOString() });
         throw new UsageLimitError(eff.backend, null, eff.model ?? null);
       }
       throw e;

@@ -30,6 +30,8 @@ export interface Settings {
    * Empty by default: agents have full access unless you protect something here (e.g. "~/Documents").
    */
   protect: string[];
+  /** false: no reflect passes for any agent unless its own settings turn them on (default on). */
+  reflect?: boolean;
   /** Whether the person has been asked about starting the daemon at login (asked once). */
   autostartAsked?: boolean;
   /** Extra ACP backends: name -> command line that speaks ACP on stdio. */

@@ -7,7 +7,7 @@ import { paths } from "../paths.js";
 import { listAgents, loadAgent, effectiveSettings, allMcpServers } from "../agent/agent.js";
 import { readLimits, usageToday } from "../runtime/usage.js";
 import { loadSettings } from "../settings.js";
-import type { Runtime, ChangeEvent, SettingsPatch } from "./runtime.js";
+import { reflectEnabled, type Runtime, type ChangeEvent, type SettingsPatch } from "./runtime.js";
 
 /** Summary of one agent for the agent list. */
 export interface AgentSummary {
@@ -240,6 +240,8 @@ export class ControlServer {
         protect: eff.protect,
         protectOwn: a.settings.protect ?? [],
         visibility: a.settings.visibility ?? "public",
+        reflect: reflectEnabled(eff),
+        reflectModel: a.settings.reflectModel ?? null,
         spentUsd: today.usd,
         costReported: today.costReported,
         tokensToday: today.tokens,
@@ -401,7 +403,7 @@ export class ControlServer {
 }
 
 /** Settings as sent by the app or the CLI (for `set`, and `new` with settings chosen up front). */
-function settingsPatch({ backend, model, dailyBudgetUsd, dailyTokenBudget, workspace, protect, visibility }: Record<string, any>): SettingsPatch {
+function settingsPatch({ backend, model, dailyBudgetUsd, dailyTokenBudget, workspace, protect, visibility, reflect, reflectModel }: Record<string, any>): SettingsPatch {
   return {
     backend: backend || undefined,
     model,
@@ -410,6 +412,8 @@ function settingsPatch({ backend, model, dailyBudgetUsd, dailyTokenBudget, works
     workspace,
     protect: protect === undefined ? undefined : protect === null ? null : (Array.isArray(protect) ? protect : [protect]).map(String).filter(Boolean),
     visibility,
+    reflect: reflect === undefined ? undefined : reflect === null ? null : reflect !== false && reflect !== "false",
+    reflectModel,
   };
 }
 

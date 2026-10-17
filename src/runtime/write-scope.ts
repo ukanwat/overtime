@@ -100,6 +100,8 @@ export class OwnWrites {
   private before = new Map<string, Buffer | null>();
   private left = new Map<string, string | null>();
   private open = new Map<string, string[]>();
+  /** Files someone else changed between two of the session's writes to them: never put back. */
+  private others = new Set<string>();
   private readonly dirs: string[];
 
   constructor(writable: string[], private readonly cwd: string) {
@@ -114,8 +116,12 @@ export class OwnWrites {
     if (u.sessionUpdate === "tool_call" || writes(u) || known) {
       const targets = callPaths(u, this.cwd).filter((p) => !inside(p, this.dirs));
       if (targets.length && (writes(u) || known)) {
-        // Before the tool runs (its first update announces it): how the file is now.
-        for (const p of targets) if (!this.before.has(p)) this.before.set(p, content(p));
+        // Before the tool runs (its first update announces it): how the file is now. A file it wrote
+        // before that has changed since was edited by someone else too: theirs is kept, whatever happens.
+        for (const p of targets) {
+          if (!this.before.has(p)) this.before.set(p, content(p));
+          else if (!known && this.left.has(p) && this.left.get(p) !== hash(p)) this.others.add(p);
+        }
         this.open.set(id, [...new Set([...(known ?? []), ...targets])]);
       }
     }
@@ -133,12 +139,15 @@ export class OwnWrites {
   async undo(): Promise<{ restored: string[]; kept: string[] }> {
     const restored: string[] = [];
     const kept: string[] = [];
+    // A tool cut off when the session stopped never said it finished: what it left is as it is now.
+    for (const ps of this.open.values()) for (const p of ps) this.left.set(p, hash(p));
+    this.open.clear();
     for (const [p, was] of this.before) {
       const now = hash(p);
       const wasHash = was === null ? null : createHash("sha1").update(was).digest("hex");
       if (now === wasHash) continue;
       // Changed by its own tool, and nothing since: the session's change, so it's undone.
-      if (this.left.has(p) && this.left.get(p) === now) {
+      if (!this.others.has(p) && this.left.has(p) && this.left.get(p) === now) {
         if (was === null) await rm(p, { force: true });
         else await writeFile(p, was);
         restored.push(p);

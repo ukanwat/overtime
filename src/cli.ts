@@ -210,6 +210,12 @@ const SETTINGS: Record<string, (v: string) => [string, unknown]> = {
     if (!/^(public|private)$/.test(v)) fail(`"${v}" isn't a visibility.`, "visibility=public (other agents see it and can message it) or visibility=private");
     return ["visibility", v];
   },
+  reflect: (v) => {
+    if (/^(on|true|yes)$/i.test(v)) return ["reflect", true];
+    if (/^(off|false|no)$/i.test(v)) return ["reflect", false];
+    fail(`"${v}" isn't on or off.`, "reflect=on (reflect passes keep its memory current) or reflect=off");
+  },
+  reflectModel: (v) => ["reflectModel", v === "" || v === "default" ? null : v],
   protect: (v) => {
     if (v === "" || /^(none|nothing)$/i.test(v)) return ["protect", null];
     const list = v.split(",").map((x) => x.trim()).filter(Boolean).map((x) => (x === "~" || x.startsWith("~/") ? homedir() + x.slice(1) : x));
@@ -390,6 +396,7 @@ async function main() {
         row("tokens", s.dailyTokenBudget ? `${s.dailyTokenBudget.toLocaleString()} a day` : "no limit", `${s.tokensToday.toLocaleString()} used today`);
         row("workspace", s.workspace, s.workspaceIsDefault ? "its own folder" : "");
         row("visibility", s.visibility, s.visibility === "public" ? "other agents see it and can message it" : "hidden from other agents");
+        row("reflect", s.reflect ? "on" : "off", s.reflect ? `passes run on ${s.reflectModel ?? "its own model"}` : "no reflect passes");
         row("protected", s.protect?.length ? s.protect.join(", ") : "nothing", s.protect?.length ? "read-only for it" : "it can write anywhere you can");
         print();
         print(gray("Change with: ") + cmdText(`overtime set ${name} budget=20 model=… workspace=~/code/…`));

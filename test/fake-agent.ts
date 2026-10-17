@@ -62,6 +62,8 @@ async function done(t: Awaited<ReturnType<typeof tools>>, result: string, task: 
     await t.call("done", { result: first });
   } catch (e: any) {
     if (!/no learned lines/.test(String(e?.message))) throw e;
+    // DONE_ONCE: a helper that never calls done twice; its first result has to stand.
+    if (/DONE_ONCE/.test(task)) return;
     writeFileSync(join(process.env.OVERTIME_FAKE_NOTES ?? process.cwd(), `learned-asked-${process.pid}`), String(e.message));
     await t.call("done", { result: `${first}\n\nlearned: nothing new` });
   }
@@ -114,7 +116,20 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
     if (/You are running a reflect pass/.test(text)) {
       const home = process.env.OVERTIME_FAKE_NOTES ?? process.env.OVERTIME_HOME ?? s.cwd;
       const who = /reflect pass for (\S+),/.exec(text)?.[1] ?? "x";
-      writeFileSync(join(home, `reflect-seen-${who}.txt`), `${names.join(",")}\nservers: ${(s.servers ?? []).join(",")}\n${text}`);
+      writeFileSync(join(home, `reflect-seen-${who}.txt`), `${names.join(",")}\nservers: ${(s.servers ?? []).join(",")}\nmodel: ${s.model}\n${text}`);
+      // A reflect-fail file (once): the pass fails as a backend reports an overload, a usage limit (Claude's
+      // way: a rejected limit report, then the error) or a plain error.
+      const failMark = join(home, "reflect-fail");
+      if (existsSync(failMark)) {
+        const how = readFileSync(failMark, "utf8").trim();
+        rmSync(failMark);
+        if (how === "overloaded") throw new acp.RequestError(-32603, "Internal error", { errorKind: "overloaded", message: "API Error: 529" });
+        if (how === "limit") {
+          await cx.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "usage_update", used: 1000, size: 100000, _meta: { "_claude/rateLimit": { status: "rejected", rateLimitType: "seven_day", resetsAt: Math.floor(Date.now() / 1000) + 3600 } } } as any });
+          throw new acp.RequestError(-32603, "Internal error", { errorKind: "rate_limit", message: "You've hit your weekly limit" });
+        }
+        throw new acp.RequestError(-32603, "Internal error", { message: "scripted failure" });
+      }
       // REFLECT_HOLD: a pass that runs until it's stopped.
       if (/REFLECT_HOLD/.test(text) && (await slow())) return { stopReason: "cancelled" };
       // A reflect-slow file in Overtime's home (once): a pass still running when the agent gets work, so it
@@ -273,6 +288,7 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
       }
       if (/SPAWN_MISSING/.test(text) && names.includes("spawn")) writeFileSync(join(s.cwd, "spawn-note.txt"), await t.call("spawn", { task: "write result.txt", backend: "not-installed-cli", model: "some-model" }));
       else if (/SPAWN_MEMWRITE/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "WRITE_PARENT_MEMORY write result.txt" });
+      else if (/SPAWN_DONE_ONCE/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "DONE_ONCE write result.txt" });
       else if (/SPAWN_FLAKY/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "FLAKY write result.txt" });
       else if (/SPAWN_SLOW/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "SLOW write result.txt" });
       else if (/SPAWN_TOOLWAIT/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "TOOLWAIT write result.txt" });
