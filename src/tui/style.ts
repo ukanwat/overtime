@@ -273,8 +273,8 @@ export type StateKind = "trouble" | "working" | "needs" | "paused" | "stopped" |
  * The circle before an agent's name: its state (statusParts) at a glance. All circles, so they read as one
  * set; the shape says the state, colour only helps:
  * - working: a half-filled circle turning, in the accent      - needs you: a full circle, pulsing yellow
- * - retrying or can't reach its backend: struck through, red  - asleep: an empty circle, breathing slowly
- * - paused: a dotted circle; stopped: a circled minus; new: a small circle (all still and dim)
+ * - retrying or can't reach its backend: struck through, red
+ * - asleep: an empty circle; paused: a dotted circle; stopped: a circled minus; new: a small circle (all still and dim)
  * SF Mono has only ●, ○ and ◦; Terminal.app draws the rest from Menlo, also one column wide.
  * `period` is how often it changes, in ms (null when it's still).
  */
@@ -293,10 +293,9 @@ export function stateGlyph(a: StatusLike, now = Date.now()): { glyph: string; pe
     }
     case "trouble":
       return { glyph: red(STATE_ICONS.trouble), period: null };
-    case "asleep": {
-      const t = pulse("text", 0.25, 0.6, 2800, 200);
-      return { glyph: (t ?? muted)(STATE_ICONS.asleep), period: t ? 200 : null };
-    }
+    case "asleep":
+      // Still: agents are asleep most of the time, and a list of them all breathing is distracting.
+      return { glyph: muted(STATE_ICONS.asleep), period: null };
     case "stopped":
       return { glyph: faint(STATE_ICONS.stopped), period: null };
     default:

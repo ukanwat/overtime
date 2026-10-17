@@ -43,7 +43,7 @@ describe("the agent's state circle", () => {
     expect(new Set(all).size).toBe(all.length);
   });
 
-  it("turns calmly while working, pulses yellow for you, and breathes slowly while asleep", () => {
+  it("turns calmly while working, pulses yellow for you, and stays still while asleep", () => {
     delete process.env.OVERTIME_STILL;
     dark();
     const frames = (o: any, from: number, to: number, step: number) => Array.from({ length: (to - from) / step }, (_, i) => stateGlyph({ ...base, ...o }, from + i * step).glyph);
@@ -56,14 +56,11 @@ describe("the agent's state circle", () => {
     const w = frames({ waiting: 1 }, 0, 1600, 100);
     expect(new Set(w).size).toBeGreaterThan(5);
     expect(frames({ waiting: 1 }, 1600, 3200, 100)).toEqual(w);
-    // Asleep: a slow breath (2.8 s), changing only every 200 ms, and only in brightness.
-    expect(stateGlyph(base).period).toBe(200);
-    const z = frames({}, 0, 2800, 100);
-    expect(z[0]).toBe(z[1]);
-    expect(new Set(z).size).toBeGreaterThan(5);
-    expect(frames({}, 2800, 5600, 100)).toEqual(z);
+    // Asleep: a still, dim circle, the same at every moment.
+    expect(stateGlyph(base).period).toBe(null);
+    expect(new Set(frames({}, 0, 2800, 100)).size).toBe(1);
     // Still states don't ask for frames.
-    for (const o of [{ lastError: "x" }, { status: "paused" }, { status: "stopped" }, { status: "new" }]) expect(stateGlyph({ ...base, ...o }).period).toBe(null);
+    for (const o of [{}, { lastError: "x" }, { status: "paused" }, { status: "stopped" }, { status: "new" }]) expect(stateGlyph({ ...base, ...o }).period).toBe(null);
   });
 
   it("means one thing per circle: the word next to it always agrees", () => {

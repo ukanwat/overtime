@@ -443,8 +443,8 @@ describe("terminal app, with a scripted daemon", () => {
       };
       const base = fakeData().agents[0];
       const quiet = { ...base, waiting: 0, unread: 0 };
-      // Asleep breathes slowly; an open question pulses; work spins.
-      expect(await frameMs([quiet])).toBe(200);
+      // Asleep is still; an open question pulses; work spins.
+      expect(await frameMs([quiet])).toBe(null);
       expect(await frameMs([quiet, { ...base, name: "b" }])).toBe(100);
       expect(await frameMs([quiet, { ...quiet, name: "b", status: "working" }])).toBe(100);
       // Nothing moving: no frames.
