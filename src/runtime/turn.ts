@@ -91,7 +91,7 @@ export function promptWasSent(e: unknown): boolean {
 export function sessionPreamble(agent: Agent, kind: "main" | "chat" = "main"): string {
   const parts = [
     workingInstructions(agent.name, kind),
-    `# Your folder\n\n${agent.dir}\n\nAGENT.md and INDEX.md live there. Everything else in it is yours to organise.`,
+    `# Your folder\n\n${agent.dir}\n\nAGENT.md and INDEX.md live there. Everything else in it is yours: clone, download and organise whatever the work needs.`,
     `# AGENT.md (who you are)\n\n${agent.identity.trim() || "(empty)"}`,
     `# INDEX.md (your map of your folder)\n\n${agent.index.trim() || "(You haven't written INDEX.md yet. Create it once you have files worth finding again.)"}`,
     skillsBlock(agent.dir),
