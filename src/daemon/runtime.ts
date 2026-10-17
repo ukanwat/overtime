@@ -91,11 +91,8 @@ const REFLECT_TIMEOUT_MS = 15 * 60_000;
 /** Claude Code tools a reflect pass doesn't get: it works with file tools only. */
 const REFLECT_TOOLS_OFF = ["Bash", "BashOutput", "KillShell", "WebFetch", "WebSearch", "NotebookEdit", "Monitor"];
 
-/**
- * Reflect passes are off until they can't touch anything outside memory/ and read the whole history in
- * order (reviews found them reverting AGENT.md edits). OVERTIME_REFLECT=1 turns them on, for tests.
- */
-const reflectOn = () => process.env.OVERTIME_REFLECT === "1";
+/** Reflect passes are on; OVERTIME_REFLECT=0 in the daemon's environment turns them off (for every agent). */
+const reflectOn = () => process.env.OVERTIME_REFLECT !== "0";
 
 /** What a pass would read: unread turns, how long their digest is, and when the newest began. */
 export type ReflectBacklog = { turns: number; chars: number; newest: Date | null };

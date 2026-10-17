@@ -14,8 +14,6 @@ settings.customBackends.gemini = settings.customBackends.fake;
 writeFileSync(settingsFile, JSON.stringify(settings));
 // Claude's own memories live under its config folder: a scratch one here, never the person's.
 process.env.CLAUDE_CONFIG_DIR = mkdtempSync(join(tmpdir(), "overtime-claude-"));
-// Reflect passes are off by default for now; these tests cover them.
-process.env.OVERTIME_REFLECT = "1";
 const { Runtime, reflectDue, REFLECT_CHUNK_CHARS, REFLECT_IDLE_MS, REFLECT_PASSES_PER_DAY, REFLECT_BACKOFF_MS } = await import("../src/daemon/runtime.js");
 const { loadAgent, setSettings, updateState } = await import("../src/agent/agent.js");
 const { paths } = await import("../src/paths.js");
@@ -205,12 +203,15 @@ describe("when a reflect pass is due", () => {
     // Never more than 4 hours.
     expect(reflectDue(stopped(9, 4 * 3600_000), big, today, now)).toBeTruthy();
   });
-  it("never, unless reflect passes are turned on", () => {
-    delete process.env.OVERTIME_REFLECT;
+  it("on by default; never when turned off with OVERTIME_REFLECT=0", () => {
+    const due = () => reflectDue({ ...base, compactedSinceReflect: true }, { turns: 40, chars: REFLECT_CHUNK_CHARS * 3, newest: ago(6 * 3600_000) }, today, now);
+    expect(process.env.OVERTIME_REFLECT).toBeUndefined();
+    expect(due()).toBeTruthy();
+    process.env.OVERTIME_REFLECT = "0";
     try {
-      expect(reflectDue({ ...base, compactedSinceReflect: true }, { turns: 40, chars: REFLECT_CHUNK_CHARS * 3, newest: ago(6 * 3600_000) }, today, now)).toBeNull();
+      expect(due()).toBeNull();
     } finally {
-      process.env.OVERTIME_REFLECT = "1";
+      delete process.env.OVERTIME_REFLECT;
     }
   });
 });
