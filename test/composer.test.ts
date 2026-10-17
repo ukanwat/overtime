@@ -300,3 +300,86 @@ describe("the message box edits like a text box", () => {
     expect(app.pending.length).toBe(1);
   });
 });
+
+describe("the / menu takes the mouse", () => {
+  let stops: (() => void)[] = [];
+  afterEach(() => {
+    for (const s of stops) s();
+    stops = [];
+    style.resetPalette();
+  });
+  const click = (t: TestTerminal, x: number, y: number) => (t.press(press(x, y)), t.press(release(x, y)));
+  const wheel = (down: boolean, x: number, y: number) => `\x1b[<${down ? 65 : 64};${x + 1};${y + 1}M`;
+  const names = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf"];
+
+  async function open(rows: number, tint: boolean) {
+    if (tint) style.applyTerminalColors({ background: { r: 12, g: 12, b: 12 }, foreground: { r: 224, g: 224, b: 224 } }, true);
+    const t = new TestTerminal(120, rows);
+    const c = new FakeClient();
+    const r = await runApp({ terminal: t as any, client: c as any, onQuit: () => {}, opener: () => {}, clipboard: () => true, });
+    stops.push(r.stop);
+    await until(async () => (await t.screen()).includes("repo-keeper"), 30_000, "the app on screen");
+    r.app.skills = names.map((name) => ({ name, description: `the ${name} skill` }));
+    t.type("/");
+    await until(async () => (await t.screen()).includes("/alpha"), 5_000, "the / menu");
+    /** Where an item is drawn: the row and the column its label starts at. */
+    const at = async (label: string) => {
+      const lines = (await t.screen()).split("\n");
+      const y = lines.findIndex((l) => l.includes(`${label} `));
+      return { y, x: y < 0 ? -1 : lines[y].indexOf(label) };
+    };
+    const value = () => r.app.input.getValue();
+    return { t, app: r.app, at, value };
+  }
+
+  for (const [rows, tint] of [[36, false], [36, true], [14, false]] as const) {
+    it(`a click on an item chooses it, as Enter does (${rows} rows${tint ? ", tinted" : ""})`, async () => {
+      const { t, at, value } = await open(rows, tint);
+      const p = await at("/charlie");
+      expect(p.y).toBeGreaterThan(0);
+      click(t, p.x + 3, p.y);
+      await until(async () => value() === "/charlie ", 5_000, "charlie chosen");
+      await until(async () => !(await t.screen()).includes("/delta"), 5_000, "the menu closed");
+      // Nothing is sent: like Enter, it only puts the skill in the message.
+      t.type("go");
+      await until(async () => value() === "/charlie go", 5_000, "typing after it");
+    });
+  }
+
+  it("the wheel over the menu moves the highlight; a click picks what's drawn under it, even once the list has scrolled", async () => {
+    const { t, app, at, value } = await open(36, false);
+    const { y, x } = await at("/alpha");
+    const before = (app as any).scroll;
+    for (let i = 0; i < 6; i++) t.press(wheel(true, x, y));
+    await until(async () => (await t.screen()).includes("(7/7)"), 5_000, "highlight on the last");
+    expect((app as any).scroll).toBe(before); // the conversation didn't scroll
+    t.press(wheel(false, x, y));
+    await until(async () => (await t.screen()).includes("(6/7)"), 5_000, "back one");
+    expect(await t.screen()).not.toContain("/alpha "); // scrolled: the first items are out of view
+    const g = await at("/golf");
+    click(t, g.x, g.y);
+    await until(async () => value() === "/golf ", 5_000, "golf chosen");
+  });
+
+  it("the wheel step then Enter chooses the highlighted item", async () => {
+    const { t, at, value } = await open(36, false);
+    const { y, x } = await at("/alpha");
+    t.press(wheel(true, x, y));
+    await until(async () => (await t.screen()).includes("(2/7)"), 5_000, "highlight moved");
+    t.press("\r");
+    await until(async () => value() === "/bravo ", 5_000, "bravo chosen");
+  });
+
+  it("a click on the menu's blank row, its count or outside its items picks nothing", async () => {
+    const { t, at, value } = await open(36, false);
+    const a = await at("/alpha");
+    const lines = (await t.screen()).split("\n");
+    const count = lines.findIndex((l) => l.includes("(1/7)"));
+    click(t, a.x, a.y - 1); // the blank row between the text and the menu
+    click(t, a.x, count);
+    click(t, 0, a.y); // the box's frame
+    await new Promise((r) => setTimeout(r, 100));
+    expect(value()).toBe("/");
+    expect(await t.screen()).toContain("/alpha");
+  });
+});

@@ -464,6 +464,31 @@ class Composer extends Editor {
     const menu = (this as any).renderedAutocompleteHeight ?? 0;
     return { text: lines.slice(1, Math.max(2, lines.length - 1 - menu)), menu: menu ? lines.slice(lines.length - menu) : [], above: this.above, below: this.below };
   }
+
+  /** The / menu's list (the editor keeps it private); null when the menu is closed. */
+  private get menuList(): { selectedIndex: number; filteredItems: unknown[]; getVisibleRange(): { startIndex: number; endIndex: number } } | null {
+    return this.isShowingAutocomplete() ? (this.ed.autocompleteList ?? null) : null;
+  }
+
+  /** Which of the / menu's items are in view, as indexes (none when it's closed). */
+  menuShown(): { start: number; end: number } {
+    const r = this.menuList?.getVisibleRange();
+    return r ? { start: r.startIndex, end: r.endIndex } : { start: 0, end: 0 };
+  }
+
+  /** Move the / menu's highlight by d items, stopping at either end (as its own wheel does). */
+  moveMenu(d: number): void {
+    const list = this.menuList;
+    if (list) list.selectedIndex = Math.max(0, Math.min(list.filteredItems.length - 1, list.selectedIndex + d));
+  }
+
+  /** Highlight item i of the / menu and choose it, exactly as Enter on it does. */
+  pickMenu(i: number): void {
+    const list = this.menuList;
+    if (!list || i < 0 || i >= list.filteredItems.length) return;
+    list.selectedIndex = i;
+    this.handleInput("\r");
+  }
 }
 
 export interface SkillInfo {
@@ -535,7 +560,7 @@ export class App implements Component {
    * column. A mouse press there is the box's (it places the cursor and selects text in it), never the
    * screen's, so a selection there can't run into the conversation or pick up the box's frame.
    */
-  private box = { top: 0, bottom: -1, textTop: 0, textRows: 0, textX: 0 };
+  private box = { top: 0, bottom: -1, textTop: 0, textRows: 0, textX: 0, textW: 0, menuRows: 0 };
   /** A mouse press in the message box being dragged: where it was pressed. */
   private boxPress: Pos | null = null;
   private width = 0;
@@ -747,7 +772,12 @@ export class App implements Component {
   handleMouse(ev: TuiMouseEvent): TuiMouseEventResult | undefined {
     if (ev.type === "wheel") {
       const d = (ev.wheelDelta ?? 0) > 0 ? 1 : -1;
-      if (this.leftW > 0 && ev.screenX < this.leftW && !this.overlay) this.select(this.sel + d);
+      // Over the / menu, the wheel moves its highlight.
+      const menu = this.box.menuRows && !this.overlay && ev.screenY >= this.menuTop() && ev.screenY < this.menuTop() + this.box.menuRows;
+      if (menu) {
+        this.input.moveMenu(d);
+        this.tui.requestRender();
+      } else if (this.leftW > 0 && ev.screenX < this.leftW && !this.overlay) this.select(this.sel + d);
       else if (this.overlay?.kind === "settings") this.moveSettings(d);
       else if (this.overlay?.kind === "pick") this.movePick(d);
       else this.scrollBy(d * 3);
@@ -760,6 +790,11 @@ export class App implements Component {
     if (!hit) return undefined;
     void Promise.resolve(hit.act()).catch((e) => this.say(friendly(e), "err"));
     return { handled: true };
+  }
+
+  /** The / menu's first screen row, as last drawn: under the box's text, past a blank row. */
+  private menuTop(): number {
+    return this.box.textTop + this.box.textRows + 1;
   }
 
   /**
@@ -1593,6 +1628,15 @@ export class App implements Component {
     b.top = out.length;
     b.bottom = out.length + composerH - 1;
     b.textTop += b.top;
+    // The / menu's items, under the text past a blank row: a click on one chooses it, as Enter does.
+    const shown = b.menuRows ? this.input.menuShown() : { start: 0, end: 0 };
+    for (let i = shown.start; i < shown.end; i++) {
+      const pick = () => {
+        this.input.pickMenu(i);
+        this.tui.requestRender();
+      };
+      this.hits.push({ row: this.menuTop() + i - shown.start, x0: b.textX, x1: b.textX + b.textW, act: pick });
+    }
     out.push(...composer);
     out.push(fit(this.renderFooter(width), width));
     return out;
@@ -2190,7 +2234,7 @@ export class App implements Component {
     const up = typed?.above ? muted(`↑ ${typed.above} more`) : "";
     const down = typed?.below ? muted(`↓ ${typed.below} more`) : "";
     // Where the text sits in the box (rows from the box's top, the column it starts at), for the mouse.
-    const at = (textTop: number, textX: number) => Object.assign(this.box, { textTop, textX, textRows: body.length });
+    const at = (textTop: number, textX: number) => Object.assign(this.box, { textTop, textX, textRows: body.length, menuRows: typed?.menu.length ?? 0, textW: inner });
     if (!roomy) {
       at(up ? 1 : 0, 3);
       return [...(up ? [`  ${up}`] : []), ...lines, ...(down ? [`  ${down}`] : [])].map((l) => fit(" " + l, w));
