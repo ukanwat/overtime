@@ -69,8 +69,8 @@ give it access to, and asks before anything that's yours to decide.
   memory and its skills, all plain files you can read and edit.
 - **It keeps its own time.** It decides when to wake next: at a time, on a schedule, or on a *watch*,
   a small script that wakes it the moment something happens. Asleep, it costs nothing.
-- **It asks, and keeps going.** A question comes with options and its recommendation; you answer with
-  one key. You also get a notification for every question and report.
+- **It asks, and keeps going.** Questions come with options and its recommendation, wait pinned above
+  the message box, and you answer whenever you like. You also get a notification for every question and report.
 - **It stays inside your limits**: a daily budget per agent, and paths you protect are read-only to it,
   enforced by the operating system.
 
