@@ -51,6 +51,22 @@ async function tools(where: string | { command: string; args: string[] }) {
   };
 }
 
+/**
+ * A helper's done, the way a model does it: a result without learned lines is refused once, and it
+ * calls again with them added. LEARNED <text> in the task: that line is in the result from the start.
+ */
+async function done(t: Awaited<ReturnType<typeof tools>>, result: string, task: string): Promise<void> {
+  const given = /LEARNED ([^\n]+)/.exec(task)?.[1];
+  const first = given ? `${result}\n\nlearned: ${given}` : result;
+  try {
+    await t.call("done", { result: first });
+  } catch (e: any) {
+    if (!/no learned lines/.test(String(e?.message))) throw e;
+    writeFileSync(join(process.env.OVERTIME_FAKE_NOTES ?? process.cwd(), `learned-asked-${process.pid}`), String(e.message));
+    await t.call("done", { result: `${first}\n\nlearned: nothing new` });
+  }
+}
+
 async function turn(sessionId: string, text: string, cx: any): Promise<acp.PromptResponse> {
   const s = sessions.get(sessionId)!;
   const say = (t: string) => cx.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: t } } });
@@ -149,7 +165,7 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
     if (/A note from /.test(text) && existsSync(helperMark)) {
       const note = /who started you:\n\n([\s\S]*?)\n\n/.exec(text)?.[1] ?? "";
       writeFileSync(join(s.cwd, "notes.txt"), `${existsSync(join(s.cwd, "notes.txt")) ? readFileSync(join(s.cwd, "notes.txt"), "utf8") : ""}${note}\n`);
-      await t.call("done", { result: `handled note: ${note}${/This is a new session/.test(text) ? " (new session)" : ""}` });
+      await done(t, `handled note: ${note}${/This is a new session/.test(text) ? " (new session)" : ""}`, text);
       await say("note handled");
     } else if (existsSync(helperMark)) {
       // FLAKY: the provider fails once with a 502, then works (the retry continues from the folder).
@@ -191,11 +207,11 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
         if (await slow()) return { stopReason: "cancelled" };
       }
       if (/SLOW/.test(text)) {
-        await t.call("done", { result: "partial: got halfway" });
+        await done(t, "partial: got halfway", text);
         if (await slow()) return { stopReason: "cancelled" };
       }
       writeFileSync(join(s.cwd, "result.txt"), "helper output\n");
-      await t.call("done", { result: `wrote ${join(s.cwd, "result.txt")}` });
+      await done(t, `wrote ${join(s.cwd, "result.txt")}`, text);
       await say("helper done");
     } else if (/The person just wrote:/.test(text)) {
       const msg = /The person just wrote:\n\n([\s\S]*?)\n\nAnswer them/.exec(text)?.[1] ?? text.split("\n").pop();

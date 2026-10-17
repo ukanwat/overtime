@@ -410,6 +410,9 @@ describe("memory in a running agent", () => {
     expect(h.branch).toBeUndefined();
     expect(existsSync(join(h.workdir, "notes"))).toBe(true);
     const run = readdirSync(join(paths.meta("rem"), "runs")).find((f) => f.startsWith("helper_"))!;
-    expect(readFileSync(join(paths.meta("rem"), "runs", run), "utf8")).toContain('lines starting \\"learned: \\"');
+    // It's told to end with learned lines, and a result without them is sent back once for them.
+    expect(readFileSync(join(paths.meta("rem"), "runs", run), "utf8")).toContain('ending with your learned lines');
+    expect(h.result).toMatch(/\n\nlearned: nothing new$/);
+    expect(readdirSync(notes).some((f) => f.startsWith("learned-asked-"))).toBe(true);
   });
 });

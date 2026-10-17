@@ -15,6 +15,8 @@ export interface ToolContext {
   sent?: boolean;
   /** For helpers: set when the helper called done. */
   result?: string;
+  /** A helper called done without its learned lines and was asked for them (once per result). */
+  learnedAsked?: boolean;
 }
 
 /** What tools need from the daemon. Kept as an interface so tools stay testable without a daemon. */

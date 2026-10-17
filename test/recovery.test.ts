@@ -76,7 +76,7 @@ describe("helpers", () => {
     expect(await rt.tellHelper("teller", h.id, "use blue")).toMatch(/reads this/);
     const done = await until(async () => (await rt.store("teller").helpers()).find((x) => x.id === h.id && x.status === "done"), 30_000, "helper done");
     expect(Date.now() - started).toBeLessThan(30_000); // it didn't sit out its slow work first
-    expect(done.result).toBe("handled note: use blue"); // same session: no "(new session)"
+    expect(done.result).toBe("handled note: use blue\n\nlearned: nothing new"); // same session: no "(new session)"
     expect(done.sessionId).toBe(h.sessionId);
     expect(readFileSync(join(done.workdir, "notes.txt"), "utf8")).toBe("use blue\n");
 
@@ -95,7 +95,7 @@ describe("helpers", () => {
     await rt.tellHelper("midtool", h.id, "use red");
     const done = await until(async () => (await rt.store("midtool").helpers()).find((x) => x.id === h.id && x.status === "done"), 30_000, "helper done");
     expect(readFileSync(join(done.workdir, "tool-cut.txt"), "utf8")).toBe("false");
-    expect(done.result).toBe("handled note: use red");
+    expect(done.result).toBe("handled note: use red\n\nlearned: nothing new");
   });
 
   it("report how they're going while they work, and the agent can check on them any time", async () => {
