@@ -134,4 +134,46 @@ describe("a limit reported with the same kind as a passing rate limit (Claude's 
     expect(new Date(a.state.limitResetsAt!).getTime()).toBe(resetsAt * 1000);
     await rt.stopAgent("ratekind");
   });
+
+  /** limits.json as Claude's reports leave it: each window of the backend's default model, as last reported. */
+  const reported = (windows: Record<string, { status: string; utilization?: number; resetsAt: number }>) =>
+    writeFileSync(join(home, "limits.json"), JSON.stringify({ "fake/default": { windows: Object.fromEntries(Object.entries(windows).map(([w, l]) => [w, { backend: "fake", model: null, rateLimitType: w, updatedAt: new Date().toISOString(), ...l }])) } }));
+
+  // job-applier, 2026-10-11: Claude warned the five-hour window was nearly used, then every turn got only
+  // errorKind rate_limit ("You've hit your session limit · resets 8pm"), with no "rejected" report.
+  it("is the session limit when the backend last warned that window was nearly used up and it hasn't reset: it pauses until the reset", async () => {
+    await employ("sessionlimit");
+    const now = Math.floor(Date.now() / 1000);
+    reported({ five_hour: { status: "allowed_warning", utilization: 0.97, resetsAt: now + 3600 }, seven_day: { status: "allowed_warning", utilization: 0.8, resetsAt: now + 4 * 86400 } });
+    await rt.send("sessionlimit", "RATE_LIMITED_TURN now");
+    const a = await until(async () => {
+      const x = await loadAgent("sessionlimit");
+      return x.state.status === "paused" ? x : null;
+    }, 30_000, "paused");
+    expect(a.state.pauseReason).toBe("limit");
+    expect(a.state.troubleSince ?? null).toBeNull();
+    expect(a.state.transientFailures ?? 0).toBe(0);
+    // The window that ran out is the one nearest its limit, and other agents on the model wait for it too.
+    expect(new Date(a.state.limitResetsAt!).getTime()).toBe((now + 3600) * 1000);
+    expect(await blockedUntil("fake")).toBeInstanceOf(Date);
+    await rt.stopAgent("sessionlimit");
+  });
+
+  it("is still a passing rate limit without such a warning, or once that window has reset", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    for (const [name, windows] of [
+      ["ratefine", { five_hour: { status: "allowed", utilization: 0.3, resetsAt: now + 3600 } }],
+      ["ratereset", { five_hour: { status: "allowed_warning", utilization: 0.97, resetsAt: now - 60 } }],
+    ] as const) {
+      await employ(name);
+      reported(windows);
+      await rt.send(name, "RATE_LIMITED_TURN now");
+      const a = await until(async () => {
+        const x = await loadAgent(name);
+        return (x.state.transientFailures ?? 0) >= 1 ? x : null;
+      }, 30_000, "waiting out provider trouble");
+      expect(a.state.status).not.toBe("paused");
+      await rt.stopAgent(name);
+    }
+  });
 });

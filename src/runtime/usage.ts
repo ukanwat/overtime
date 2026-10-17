@@ -133,11 +133,21 @@ export async function writeLimit(l: LimitStatus): Promise<void> {
 /** How long a recorded limit is trusted before the backend is simply tried again. */
 export const LIMIT_RECHECK_MS = 15 * 60_000;
 
-/** The limits recorded as used up for this backend and model (whatever their time), with a reset not yet passed. */
-export async function rejectedLimits(backend: string, model?: string | null, now = Date.now()): Promise<LimitStatus[]> {
+/** The limits last reported with this status for this backend and model (whatever their time), with a reset not yet passed. */
+async function limitsAt(status: LimitStatus["status"], backend: string, model?: string | null, now = Date.now()): Promise<LimitStatus[]> {
   const all = await readLimits();
   const ls = [...Object.values(all[limitKey(backend, model)]?.windows ?? {}), ...Object.values(all[anyModel(backend)]?.windows ?? {})];
-  return ls.filter((l) => l.status === "rejected" && !(l.resetsAt && l.resetsAt * 1000 <= now));
+  return ls.filter((l) => l.status === status && !(l.resetsAt && l.resetsAt * 1000 <= now));
+}
+
+/** The limits recorded as used up for this backend and model (whatever their time), with a reset not yet passed. */
+export async function rejectedLimits(backend: string, model?: string | null, now = Date.now()): Promise<LimitStatus[]> {
+  return limitsAt("rejected", backend, model, now);
+}
+
+/** The limits the backend last warned were nearly used up for this model, with a reset not yet passed. */
+export async function warnedLimits(backend: string, model?: string | null, now = Date.now()): Promise<LimitStatus[]> {
+  return limitsAt("allowed_warning", backend, model, now);
 }
 
 /**

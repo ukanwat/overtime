@@ -12,7 +12,7 @@ import { memoryBlock } from "../agent/memory.js";
 import { sandboxAvailable } from "./sandbox.js";
 import { inScope, OwnWrites, writeLayers } from "./write-scope.js";
 import { answer } from "./permissions.js";
-import { clearLimit, confirmLimit, recordTurnUsage, rejectedLimits, writeLimit, type TurnUsage } from "./usage.js";
+import { clearLimit, confirmLimit, recordTurnUsage, rejectedLimits, warnedLimits, writeLimit, type TurnUsage } from "./usage.js";
 import { classify } from "./errors.js";
 
 /** reflect: a short session Overtime runs now and then to keep an agent's memory/ current. */
@@ -288,6 +288,17 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
           // Still over it: trusted for another while, so other agents on this model don't try it meanwhile.
           if (o.recordLimits !== false) await confirmLimit(eff.backend, eff.model);
           throw new UsageLimitError(eff.backend, new Date(Math.max(...resets)), eff.model ?? null);
+        }
+        // No "rejected" report, but the backend last warned that a limit of this model was nearly used up,
+        // and it hasn't reset: a rate limit now is that limit running out (Claude doesn't always send the
+        // rejected report, e.g. when it already knows before the request goes out). The window nearest its
+        // limit (by its reported use, else the soonest to reset) is recorded as used up, so other agents on
+        // this model wait too; it's tried again every 15 minutes, and lifts as soon as a turn gets through.
+        const warned = (e as any)?.data?.errorKind === "rate_limit" ? await warnedLimits(eff.backend, eff.model) : [];
+        if (warned.length) {
+          const w = warned.sort((a, b) => (b.utilization ?? 0) - (a.utilization ?? 0) || (a.resetsAt ?? Infinity) - (b.resetsAt ?? Infinity))[0];
+          if (o.recordLimits !== false) await writeLimit({ ...w, status: "rejected", updatedAt: new Date().toISOString() });
+          throw new UsageLimitError(eff.backend, w.resetsAt ? new Date(w.resetsAt * 1000) : null, eff.model ?? null);
         }
       }
       if (classify(e) === "limit") {
