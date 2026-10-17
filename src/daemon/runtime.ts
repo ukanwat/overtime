@@ -2048,7 +2048,7 @@ function mainTurnText(items: InboxItem[], firstJob: boolean, contextReset: boole
   }
   if (contextReset) parts.push("Note: this is a fresh session. Your earlier work session isn't carried over (your recent conversation with the person is above); your folder is. Check INDEX.md and your notes for where things stand.");
   parts.push(inboxBlock(items, session));
-  parts.push("Reply with send to new messages from the person (not to ones passed on from your conversation: those were already answered, so never acknowledge them twice). Do the work, as part of your goals. Before this turn ends, bring your notes and INDEX.md up to date; if you were corrected or worked out how to do something, save it: a how-to as a skill, anything else as a memory (memory/). Decide the next useful step toward your goals, and choose when to wake.");
+  parts.push("Reply with send to new messages from the person (not to ones passed on from your conversation: those were already answered, so never acknowledge them twice). Do the work, as part of your goals. Before this turn ends, bring your notes and INDEX.md up to date; if you were corrected or worked out how to do something, save it: a how-to as a skill, anything else as a memory (memory/), with the person's words as its quote; not a snapshot of what's on disk or where things are now. Decide the next useful step toward your goals, and choose when to wake.");
   // After the request, never ahead of it: the index has grown past its cap.
   if (memoryNote) parts.push(memoryNote.trim());
   return parts.join("\n\n");
