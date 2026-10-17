@@ -251,8 +251,11 @@ export class Store {
     });
   }
 
-  /** After a crash: anything still in flight goes back to the inbox. Returns how many items. */
-  async recoverInflight(): Promise<number> {
+  /**
+   * After a crash: anything still in flight goes back to the inbox. Returns how many items. `shownIn` says
+   * which session a run's items were already shown to, if any (see returnInbox).
+   */
+  async recoverInflight(shownIn: (runId: string) => string | undefined = () => undefined): Promise<number> {
     let files: string[] = [];
     try {
       files = (await readdir(this.p("inflight"))).filter((f) => f.endsWith(".json"));
@@ -263,7 +266,7 @@ export class Store {
     for (const f of files) {
       const runId = f.replace(/\.json$/, "");
       n += (await readJson<InboxItem[]>(this.p("inflight", f), [])).length;
-      await this.returnInbox(runId);
+      await this.returnInbox(runId, shownIn(runId));
     }
     return n;
   }

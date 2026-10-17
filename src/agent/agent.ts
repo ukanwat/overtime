@@ -104,6 +104,11 @@ export interface AgentState {
   reflectFailures?: number;
   /** Reflect passes started today (the person's local day), against the daily cap. */
   reflectDay?: { day: string; passes: number };
+  /**
+   * The main turn running now: set as it starts, cleared once it has ended. Still set when the daemon starts
+   * means Overtime restarted (an update, a crash, the app replacing it) in the middle of it, so it's resumed.
+   */
+  inflightTurn?: { runId: string; reason: string; sessionId?: string | null; at: string } | null;
 }
 
 export interface Agent {

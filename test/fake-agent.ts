@@ -297,7 +297,8 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
       else if (/SPAWN_SLOW/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "SLOW write result.txt" });
       else if (/SPAWN_TOOLWAIT/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "TOOLWAIT write result.txt" });
       else if (/SPAWN/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "write result.txt" });
-      if (/SLOW/.test(text) && !/SPAWN_SLOW/.test(text) && !/Helper result/.test(text) && (await slow())) return { stopReason: "cancelled" };
+      // Carried on after Overtime restarted, it finishes: what it was doing slowly was cut off by the restart.
+      if (/SLOW/.test(text) && !/SPAWN_SLOW/.test(text) && !/Helper result/.test(text) && !/Overtime restarted/.test(text) && (await slow())) return { stopReason: "cancelled" };
       if (/WATCH_LONG/.test(text)) await t.call("wake", { watch: "for i in 1 2 3; do echo tick $i; sleep 1; done; sleep 600", reason: "long test", cooldown: "1s" });
       if (/WATCH_REPEAT/.test(text)) await t.call("wake", { watch: "cat watched.txt 2>/dev/null || echo none", every: "10s", reason: "repeat test", cooldown: "1s" });
       if (/Message from the person[^\n]*\n[^\n]*\bASK\b/.test(text)) await t.call("ask", { question: "Bridge or ferry?", why: "test", recommendation: "Bridge", options: ["Bridge", "Ferry"], category: "test-choice" });

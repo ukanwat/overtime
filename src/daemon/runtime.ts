@@ -28,6 +28,8 @@ import { MonitorRunner, reapStaleMonitors } from "./monitors.js";
 import { classify, isTransient, needsPerson } from "../runtime/errors.js";
 import { describeStep, ownToolStep } from "./steps.js";
 import { probeOnline } from "../runtime/network.js";
+import { packageVersion } from "./build.js";
+import { noteRunningVersion } from "./update.js";
 
 const exec = promisify(execFile);
 
@@ -226,6 +228,10 @@ export class Runtime extends EventEmitter implements ToolHost {
   private helperTrouble = new Map<string, { agent: string; since: string; backend: string; signIn?: boolean }>();
   /** When a turn on each backend last got through: proof it's signed in, so agents waiting for that try at once. */
   private gotThrough = new Map<string, number>();
+  /** What a turn cut off by this daemon's start is told happened ("Overtime restarted (update to 0.7.9)"). */
+  private restartNote = "Overtime restarted";
+  /** Agents whose main turn this daemon carries on after a restart: why that turn had begun. */
+  private resumeWhy = new Map<string, string>();
 
   constructor(private readonly log: (line: string) => void) {
     super();
@@ -253,28 +259,59 @@ export class Runtime extends EventEmitter implements ToolHost {
     await mkdir(paths.agentsDir(), { recursive: true });
     const reaped = reapStaleMonitors();
     if (reaped) this.log(`killed ${reaped} watch process(es) left by an earlier daemon`);
+    // A newer version than the last daemon ran: what it carries on is told it was an update.
+    const from = await noteRunningVersion().catch(() => null);
+    if (from) {
+      this.restartNote = `Overtime restarted (update to ${packageVersion()})`;
+      this.log(`updated from ${from} to ${packageVersion()}`);
+    }
     await this.tools.start();
+    const resume: (() => void)[] = [];
     for (const a of await listAgents()) {
       try {
-        await this.recover(a);
+        resume.push(...(await this.recover(a)));
       } catch (e: any) {
         this.log(`[${a.name}] recovery: ${e?.stack ?? e}`);
       }
     }
+    // Only once every agent is recovered: main turns and helpers that were running when Overtime stopped
+    // carry on, each in its own session.
+    for (const go of resume) go();
     this.timer = setInterval(() => void this.tick(), TICK_MS);
     void this.tick();
     this.log("runtime started");
   }
 
-  /** Pick up where an earlier daemon left off: nothing the person sent or the agent was due is lost. */
-  private async recover(a: Agent): Promise<void> {
+  /**
+   * Pick up where an earlier daemon left off: nothing the person sent or the agent was due is lost. Returns
+   * what to carry on once every agent is recovered: its main turn and helpers that were running.
+   */
+  private async recover(a: Agent): Promise<(() => void)[]> {
     const store = this.store(a.name);
+    const resume: (() => void)[] = [];
     if (a.state.status === "working") await updateState(a.name, { status: hasIdentity(a) ? "asleep" : "new" });
-    const returned = await store.recoverInflight();
+    // A turn cut off by a crash: what it was handed goes back, marked as shown to its session, which it carries on in.
+    const cut = a.state.inflightTurn;
+    const returned = await store.recoverInflight((runId) => (runId === cut?.runId ? (cut.sessionId ?? undefined) : undefined));
     if (returned) this.log(`[${a.name}] ${returned} inbox item(s) from an interrupted turn are back in its inbox`);
-    // Helpers that were running when the daemon died can't be resumed: tell the agent, with where their work is.
+    if (cut && a.state.status === "stopped") await updateState(a.name, { inflightTurn: null });
+    else if (cut) {
+      // Its main turn was running when Overtime stopped (an update, the app replacing it, a crash): it carries
+      // on in the same session, told why. A turn that had already ended isn't here, so it never runs twice.
+      resume.push(() => {
+        this.resumeWhy.set(a.name, cut.reason);
+        this.log(`[${a.name}] its main turn was cut off by the restart; carrying it on`);
+        this.wakeMain(a.name, `${this.restartNote} while you were working, so your last turn was cut off. Carry on where you were.`);
+      });
+    }
     for (const h of await store.helpers()) {
       if (h.status !== "running") continue;
+      // Helpers that were running carry on in their own sessions, and their results reach the agent as usual.
+      if (a.state.status !== "stopped" && existsSync(h.workdir)) {
+        resume.push(() => void this.launchHelper(a.name, h, undefined, this.restartNote).catch((e) => this.log(`[${a.name}] helper ${h.id}: ${e?.stack ?? e}`)));
+        continue;
+      }
+      // A stopped agent's helpers stay stopped (and one whose folder is gone can't carry on): tell the agent, with where their work is.
       h.status = "failed";
       h.finishedAt = new Date().toISOString();
       h.result = "Overtime was restarted while this helper was running, so it was cut off.";
@@ -291,7 +328,7 @@ export class Runtime extends EventEmitter implements ToolHost {
     }
     // A last message from the person that never reached the agent (an older version answered messages
     // in a separate session): hand it over now, so it's answered.
-    if (a.state.status === "stopped") return;
+    if (a.state.status === "stopped") return resume;
     const all = await store.messages();
     const last = all.at(-1);
     // Already handed to the agent (it may have answered by doing the work, not in words), or waiting to be
@@ -299,6 +336,7 @@ export class Runtime extends EventEmitter implements ToolHost {
     const queued = new Set((await store.inbox()).map((i) => i.messageId).filter(Boolean));
     const delivered = await store.deliveredMessageIds();
     if (last?.from === "you" && !last.replyTo && !last.closes && !queued.has(last.id) && !delivered.has(last.id)) await store.pushInbox({ type: "message", text: withFiles(last.text, last.attachments), messageId: last.id, attachments: last.attachments });
+    return resume;
   }
 
   async stop(): Promise<void> {
@@ -661,6 +699,12 @@ export class Runtime extends EventEmitter implements ToolHost {
 
     const firstJob = !hasIdentity(agent);
     const runId = newId("main");
+    // Carrying on a turn a restart cut off: why that one began, kept as this one's reason should it be cut off too.
+    const why = this.resumeWhy.get(agentName);
+    this.resumeWhy.delete(agentName);
+    const inflight = { runId, reason: why ?? reason, at: new Date().toISOString(), sessionId: null as string | null };
+    /** Cut off by Overtime stopping: left marked as running, so the next daemon carries it on. */
+    let cut = false;
     this.lastAttempt.set(agentName, Date.now());
     const items = await store.takeInbox(runId);
     const turnCtl = new AbortController();
@@ -675,7 +719,7 @@ export class Runtime extends EventEmitter implements ToolHost {
     try {
       // Overtime's line says what this turn is about, the same all turn (live steps there were too much
       // churn to read); it shows when the agent has no status line of its own.
-      await updateState(agentName, { status: "working", activity: firstJob ? "learning its job" : await turnAbout(store, items) });
+      await updateState(agentName, { status: "working", activity: firstJob ? "learning its job" : await turnAbout(store, items), inflightTurn: inflight });
       this.changed(agentName, "state");
 
       // Continue the main session unless the backend or model changed, its context is getting full, or
@@ -697,7 +741,7 @@ export class Runtime extends EventEmitter implements ToolHost {
         runId,
         agent: agentName,
         kind: "main",
-        reason,
+        reason: why ? `${reason} (That turn began because: ${why})` : reason,
         // If resuming fails, the backend starts fresh, and the agent is told so.
         // A fresh session also gets the recent conversation with the person: it's the one voice they talk to.
         // Items an unfinished turn already showed this same session are marked as such; a fresh one gets them as new.
@@ -711,7 +755,8 @@ export class Runtime extends EventEmitter implements ToolHost {
         // Recorded as soon as the session exists, so a turn interrupted to answer you resumes this session.
         onSession: (id) => {
           sessionId = id;
-          void updateState(agentName, { mainSessionId: id, mainSessionBackend: eff.backend, mainSessionModel: eff.model ?? null, mainSessionPrompt: promptVersion("main") }).catch(() => {});
+          inflight.sessionId = id;
+          void updateState(agentName, { mainSessionId: id, mainSessionBackend: eff.backend, mainSessionModel: eff.model ?? null, mainSessionPrompt: promptVersion("main"), inflightTurn: inflight }).catch(() => {});
         },
         onUpdate: (u) => {
           boundary.update(u);
@@ -776,6 +821,8 @@ export class Runtime extends EventEmitter implements ToolHost {
         return true;
       }
       if (e instanceof TurnIncompleteError && this.stopping) {
+        // Overtime is stopping (an update, or the app replacing it): the next daemon carries this turn on.
+        cut = true;
         await updateState(agentName, { status: idle });
         return true;
       }
@@ -830,6 +877,7 @@ export class Runtime extends EventEmitter implements ToolHost {
     } finally {
       if (this.mainAborts.get(agentName) === turnCtl) this.mainAborts.delete(agentName);
       if (this.boundaries.get(agentName) === boundary) this.boundaries.delete(agentName);
+      if (!cut) await updateState(agentName, { inflightTurn: null }).catch(() => {});
       this.tools.close(ctx.token);
       this.emit("turnEnd", { agent: agentName, kind: "main" });
       await this.refreshNextWake(agentName).catch(() => {});
@@ -1583,13 +1631,10 @@ export class Runtime extends EventEmitter implements ToolHost {
 
   /** Start a finished helper again from where it was, with a note as its next instruction. */
   private async carryOnHelper(agentName: string, id: string, text: string): Promise<string> {
-    const key = `${agentName}/${id}`;
     const store = this.store(agentName);
     const now = (await store.helpers()).find((h) => h.id === id)!;
     if (now.cleanedAt || !existsSync(now.workdir)) throw new Error(`${id}'s folder was removed (a week after it finished), so it can't carry on. Start a new helper.`);
     if (this.stopping) throw new Error("Overtime is shutting down; tell it next turn.");
-    const agent = await loadAgent(agentName);
-    const eff = await effectiveSettings(agent);
     const b = await this.blocked(agentName, now.backend, now.model);
     if (b) throw new Error(`Can't continue ${id}: ${this.blockedLine(b)}.`);
     await withLock(`spawn:${agentName}`, async () => {
@@ -1600,12 +1645,24 @@ export class Runtime extends EventEmitter implements ToolHost {
       delete now.result;
       await store.saveHelper(now);
     });
+    await this.launchHelper(agentName, now, text);
+    return `${id} carries on from where it was, with this as its next instruction. Its result comes to you as before.`;
+  }
+
+  /**
+   * Run a helper that has run before, in its session: carried on with a note from the agent (continueWith),
+   * or after Overtime restarted under it (restarted: what happened).
+   */
+  private async launchHelper(agentName: string, rec: HelperRecord, continueWith?: string, restarted?: string): Promise<void> {
+    const key = `${agentName}/${rec.id}`;
+    const agent = await loadAgent(agentName);
+    const eff = await effectiveSettings(agent);
+    // Its role, as it was given (the file may have changed since: it's read again).
+    const instructions = rec.role ? await readFile(isAbsolute(rec.role) ? rec.role : join(agent.dir, rec.role), "utf8").then((t: string) => parseFrontMatter(t).body).catch(() => "") : "";
     const ctl = new AbortController();
     this.helperAborts.set(key, ctl);
-    // Its role, as it was given (the file may have changed since: it's read again).
-    const instructions = now.role ? await readFile(isAbsolute(now.role) ? now.role : join(agent.dir, now.role), "utf8").then((t: string) => parseFrontMatter(t).body).catch(() => "") : "";
-    const run: Promise<void> = this.runHelper(agentName, now, instructions, eff.workspace, "", ctl.signal, text)
-      .catch((e) => this.log(`[${agentName}] helper ${now.id}: ${e?.stack ?? e}`))
+    const run: Promise<void> = this.runHelper(agentName, rec, instructions, eff.workspace, "", ctl.signal, continueWith, restarted)
+      .catch((e) => this.log(`[${agentName}] helper ${rec.id}: ${e?.stack ?? e}`))
       .finally(() => {
         // Only its own: a later run of the same helper may already be registered.
         if (this.helperRuns.get(key) !== run) return;
@@ -1614,11 +1671,11 @@ export class Runtime extends EventEmitter implements ToolHost {
         this.helperAborts.delete(key);
       });
     this.helperRuns.set(key, run);
+    if (restarted) this.log(`[${agentName}] helper ${rec.id} was running when Overtime stopped; carrying it on`);
     this.changed(agentName, "helpers");
-    return `${id} carries on from where it was, with this as its next instruction. Its result comes to you as before.`;
   }
 
-  private async runHelper(agentName: string, rec: HelperRecord, instructions: string, workspace: string, note: string, cancel: AbortSignal, continueWith?: string): Promise<void> {
+  private async runHelper(agentName: string, rec: HelperRecord, instructions: string, workspace: string, note: string, cancel: AbortSignal, continueWith?: string, restarted?: string): Promise<void> {
     const store = this.store(agentName);
     const key = `${agentName}/${rec.id}`;
     const { ctx, mcp } = this.tools.open({ agent: agentName, kind: "helper", helperId: rec.id, depth: rec.depth });
@@ -1631,12 +1688,21 @@ export class Runtime extends EventEmitter implements ToolHost {
       `${resumed ? `${agentName} wants you to carry on (you had stopped). ` : ""}A note from ${agentName}, who started you:\n\n${notes.join("\n\n")}\n\n` +
       (fresh ? `(This is a new session. ${task}\n\nWhat you already did is in your folder: check it, and carry on from there.)` : "Take it into account and carry on from where you were.") +
       (resumed ? " When you're finished, call done again with the whole result." : "");
-    let next: (fresh: boolean) => string = continueWith ? noteText([continueWith], true) : firstText;
+    /** Carrying on after Overtime restarted under it: in its session, or, if that can't be continued, from its folder. */
+    const restartText = (fresh: boolean) =>
+      fresh
+        ? `${firstText()}\n\n(${restarted} while you were working on this, and your session couldn't be continued, so this is a new one. What you already did is in your folder: check it, and carry on from there.)`
+        : `${restarted} while you were working, so your last turn was cut off. Carry on from where you were. When you're finished, call done with the whole result.`;
+    let next: (fresh: boolean) => string = continueWith ? noteText([continueWith], true) : restarted ? restartText : firstText;
+    /** Why it's awake, for the turn about to run. */
+    let reason = restarted ? `${restarted} while you were working` : `${agentName} gave you a task`;
     /** The notes the next turn's text is made of (none for its first task), and whether they carry it on. */
     let told: string[] = continueWith ? [continueWith] : [];
     let resumed = !!continueWith;
     this.liveHelpers.set(key, rec);
     let lastReply = "";
+    /** Cut off by Overtime stopping: it stays running, to be carried on by the next daemon. */
+    let kept = false;
     this.helperClosing.delete(key);
     try {
       // A passing provider problem (a 502, overloaded) doesn't fail the helper: it waits and tries again,
@@ -1654,7 +1720,7 @@ export class Runtime extends EventEmitter implements ToolHost {
           const r = await runTurn({
             agent: agentName,
             kind: "helper",
-            reason: `${agentName} gave you a task`,
+            reason,
             text: (fresh) => (attempt ? `${text(fresh)}\n\n${cutOff}` : text(fresh)),
             preamble,
             cwd: rec.workdir,
@@ -1772,6 +1838,7 @@ export class Runtime extends EventEmitter implements ToolHost {
             }
           }
           attempt = 0;
+          reason = `${agentName} gave you a task`;
           const notes = this.helperNotes.get(key);
           this.helperNotes.delete(key);
           if (!notes?.length) {
@@ -1795,7 +1862,7 @@ export class Runtime extends EventEmitter implements ToolHost {
         if (this.helperTrouble.delete(rec.id)) this.changed(agentName, "helpers");
       }
       rec.status = "done";
-      rec.result = ctx.result ?? (lastReply || "(It finished without describing its result. Check its folder.)");
+      rec.result = ctx.result ?? rec.reported ?? (lastReply || "(It finished without describing its result. Check its folder.)");
     } catch (e: any) {
       this.helperClosing.add(key);
       // Stopping the agent cancels its helpers too: that's the person's stop, not the agent's cancel.
@@ -1806,13 +1873,14 @@ export class Runtime extends EventEmitter implements ToolHost {
         rec.status = "cancelled";
         rec.result = "Cancelled, as you asked.";
       } else if (this.stopping) {
-        rec.status = "failed";
-        rec.result = "Overtime was shut down while this helper was running, so it was cut off.";
+        // Overtime is stopping (an update, or the app replacing it): the helper stays running, and the next
+        // daemon carries it on in its session (see recover). Nothing goes to the agent until it finishes.
+        kept = true;
       } else {
         rec.status = "failed";
         rec.result = `The helper failed: ${String(e?.message ?? e)}`;
       }
-      if (ctx.result) rec.result += `\n\nBefore that, it reported:\n${ctx.result}`;
+      if (ctx.result && !kept) rec.result += `\n\nBefore that, it reported:\n${ctx.result}`;
     } finally {
       this.helperNotes.delete(key);
       this.helperSteps.delete(key);
@@ -1820,6 +1888,13 @@ export class Runtime extends EventEmitter implements ToolHost {
       this.tools.close(ctx.token);
       this.emit("turnEnd", { agent: agentName, kind: "helper", helperId: rec.id });
     }
+    if (kept) {
+      // What it said with done so far stands if, carried on, it ends without calling done again.
+      if (ctx.result) rec.reported = ctx.result;
+      await store.saveHelper(rec);
+      return;
+    }
+    delete rec.reported;
     rec.finishedAt = new Date().toISOString();
     await store.saveHelper(rec);
     await store.pushInbox({ type: "helper", text: helperInboxText(rec), data: { helperId: rec.id } });
@@ -2127,7 +2202,7 @@ function inboxBlock(all: InboxItem[], session: string | null = null): string {
   const shown = session ? all.filter((i) => i.shownIn === session) : [];
   const items = all.filter((i) => !shown.includes(i));
   const again = shown.length
-    ? `Already handed to you earlier in this session, in a turn that was cut off (an error or a usage limit). If you already dealt with one (answered it, did it), don't do it again; otherwise deal with it now:\n\n${shown.map((i) => `- ${i.type} — ${i.t}\n${i.text}`).join("\n\n")}`
+    ? `Already handed to you earlier in this session, in a turn that was cut off (an error, a usage limit or Overtime restarting). If you already dealt with one (answered it, did it), don't do it again; otherwise deal with it now:\n\n${shown.map((i) => `- ${i.type} — ${i.t}\n${i.text}`).join("\n\n")}`
     : "";
   if (!items.length) return again;
   return (

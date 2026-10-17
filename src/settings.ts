@@ -32,6 +32,8 @@ export interface Settings {
   protect: string[];
   /** false: no reflect passes for any agent unless its own settings turn them on (default on). */
   reflect?: boolean;
+  /** Whether Overtime updates itself when a new version is out (see daemon/update.ts). On by default. */
+  autoUpdate: boolean;
   /** Whether the person has been asked about starting the daemon at login (asked once). */
   autostartAsked?: boolean;
   /** Extra ACP backends: name -> command line that speaks ACP on stdio. */
@@ -46,6 +48,7 @@ export const DEFAULT_SETTINGS: Settings = {
   turnTimeoutMinutes: 180,
   mcpServers: [],
   protect: [],
+  autoUpdate: true,
   customBackends: {},
 };
 

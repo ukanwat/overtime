@@ -3,6 +3,15 @@ import { fileURLToPath } from "node:url";
 
 let cached: string | null = null;
 
+/** The version of Overtime this code is (its package.json), or "?" if that can't be read. */
+export function packageVersion(): string {
+  try {
+    return JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
+  } catch {
+    return "?";
+  }
+}
+
 /**
  * Which build of Overtime this is: the package version plus when the daemon's code was built. The app
  * and CLI compare theirs with the running daemon's, so after an update (npm, or a local rebuild) the
@@ -10,10 +19,7 @@ let cached: string | null = null;
  */
 export function buildId(): string {
   if (cached) return cached;
-  let version = "?";
-  try {
-    version = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
-  } catch {}
+  const version = packageVersion();
   let stamp = 0;
   for (const f of ["./main.js", "./main.ts"]) {
     try {

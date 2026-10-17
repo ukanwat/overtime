@@ -186,6 +186,8 @@ export interface HelperRecord {
   contextText?: string;
   /** What it reported while working (the latest last). */
   updates?: { t: string; text: string }[];
+  /** What it had said with done when Overtime restarted under it: its result if it doesn't call done again. */
+  reported?: string;
 }
 
 /** A question's parts: the questions on its card, or the one question it is. */
