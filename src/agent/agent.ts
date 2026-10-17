@@ -222,6 +222,14 @@ export function publicButNew(name: string): boolean {
   return rosterOf().some((a) => a.name === name && a.job === null);
 }
 
+/**
+ * Whether this agent is public, by its settings alone, given its job or not: a new agent's first session
+ * starts before it has written AGENT.md and carries on after, so its tools can't wait for its job.
+ */
+export function isPublic(name: string): boolean {
+  return rosterOf().some((a) => a.name === name);
+}
+
 /** Every public agent; job is null for one that hasn't been given its job yet. */
 function rosterOf(): { name: string; job: string | null }[] {
   let names: string[] = [];
