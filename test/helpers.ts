@@ -9,6 +9,8 @@ export const here = dirname(fileURLToPath(import.meta.url));
 export function fakeHome(extra: Record<string, unknown> = {}): string {
   const dir = mkdtempSync(join(tmpdir(), "overtime-test-"));
   process.env.OVERTIME_HOME = dir;
+  // Tests act as the person, even when an agent runs them: from inside an agent the daemon only lets it look.
+  delete process.env.OVERTIME_AGENT;
   process.env.OVERTIME_NO_NOTIFY = "1"; // no real desktop notifications from test agents
   process.env.OVERTIME_FAST_RETRY = "1"; // retries after provider trouble in moments, not minutes
   mkdirSync(join(dir, "protected"), { recursive: true });

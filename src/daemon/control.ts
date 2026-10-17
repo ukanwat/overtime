@@ -56,6 +56,20 @@ const liveKey = (e: { agent: string; kind: string; threadId?: string; helperId?:
 type Handler = (params: any, sock: Socket) => Promise<unknown>;
 
 /**
+ * What a request made from inside an agent (it carries the agent's name as "caller") may do: only
+ * look. Everything else (sending, answering, changing or stopping agents) is the person's, and a
+ * message sent from an agent's shell would otherwise land as if the person wrote it.
+ */
+const AGENT_CALLS = new Set(["ping", "agents", "agent", "messages", "settings", "skills", "mcpList", "limits", "live", "backends", "backendStatus", "models", "subscribe"]);
+
+/** Why an agent can't make a request that only the person may. */
+export function personOnly(what: string, caller: string, name?: unknown): string {
+  return name === caller
+    ? `${what} can only be done by the person; ${caller} reaches the person with its own send tool.`
+    : `${what} can only be done by the person; agents reaching other agents (here, ${caller}) is not supported.`;
+}
+
+/**
  * The daemon's control socket: newline-delimited JSON requests ({id, method, params}) and responses
  * ({id, result} or {id, error}). "subscribe" turns the connection into a live event stream as well.
  */
@@ -360,8 +374,14 @@ export class ControlServer {
     const reply = (body: object) => !sock.destroyed && sock.write(JSON.stringify({ id: msg.id, ...body }) + "\n");
     const h = msg.method ? this.methods[msg.method] : undefined;
     if (!h) return void reply({ error: `Unknown method ${msg.method}` });
+    const params: any = msg.params ?? {};
+    if (typeof params.caller === "string" && params.caller) {
+      if (!AGENT_CALLS.has(msg.method!)) return void reply({ error: personOnly(`"${msg.method}"`, params.caller, params.name) });
+      // Reading isn't the person reading: their unread count stays as it was.
+      params.markRead = false;
+    }
     try {
-      reply({ result: await h(msg.params ?? {}, sock) });
+      reply({ result: await h(params, sock) });
     } catch (e: any) {
       reply({ error: String(e?.message ?? e) });
     }

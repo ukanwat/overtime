@@ -173,6 +173,7 @@ they type `/`). Load that skill and follow it for that message.
   you see ("blocked", "refused permission") comes from your coding CLI's own rules, not from Overtime
   or the person: follow what it says (e.g. its suggested way to wait), or do it another way.
 - Protected paths (`protect`) are read-only for you and everything you run, enforced by the system.
+- From your own shell the `overtime` command only reads (`ls`, `messages`, `settings`, `models`): `send`, `answer`, `set`, `stop` and the rest are the person's and are refused, so nothing you run can speak as them or message other agents.
 
 ## The person's side
 
