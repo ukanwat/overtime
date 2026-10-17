@@ -39,7 +39,7 @@ export interface Message {
   /** For your answer to a question: which question, and the option picked (1-based). */
   replyTo?: string;
   choice?: number;
-  /** For your answer: what you wrote, on its own (text is the whole answer as the agent reads it). */
+  /** For your answer: what you wrote, on its own (text is the whole answer as the agent reads it). On a withdrawal: the agent's why. */
   note?: string;
   /** A reply that closes a question without answering it: the agent withdrew it, or the person dismissed it. Not shown as a message. */
   closes?: "withdrawn" | "dismissed";

@@ -111,3 +111,13 @@ export function headed(m: Message, fallback: string): { title: string; body: str
   const body = text.startsWith(title) ? text.slice(title.length).trim() : text;
   return { title, body };
 }
+
+/**
+ * How a question closed without an answer reads, the same in the app and `overtime messages`. A withdrawal
+ * says why (or that it's no longer needed), so it never reads as the person's question being refused.
+ */
+export function closedLine(answer: NonNullable<Message["answer"]>, agent: string): string {
+  if (answer.closed === "dismissed") return "✕ You dismissed this question";
+  const why = answer.note?.trim();
+  return why ? `✕ ${agent} withdrew this: ${why}` : `✕ ${agent} withdrew this question (no longer needed)`;
+}

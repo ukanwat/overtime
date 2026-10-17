@@ -629,6 +629,31 @@ describe("terminal app, with a scripted daemon", () => {
     expect(s).not.toContain("Dismiss this question");
   });
 
+  it("shows a withdrawn question with the agent's why, muted rather than red, so it never reads as a refusal", async () => {
+    style.applyTerminalColors({ background: { r: 12, g: 12, b: 12 }, foreground: { r: 224, g: 224, b: 224 } }, true);
+    const c = new FakeClient();
+    const iso = (m: number) => new Date(Date.now() - m * 60000).toISOString();
+    c.data.messages["game-builder"] = [
+      { id: "a", t: iso(90), from: "agent", kind: "question", title: "Can I push to main?", text: "Can I push to main?", options: ["Yes", "No"], answer: { closed: "withdrawn", note: "you gave me full access", text: "Withdrawn", t: iso(89) } },
+      { id: "b", t: iso(80), from: "agent", kind: "question", title: "Which branch?", text: "Which branch?", answer: { closed: "withdrawn", text: "Withdrawn", t: iso(79) } },
+    ];
+    const { t, seen } = await open(120, 40, c);
+    await seen("Merge the dependency fix?");
+    t.press(KEY.down);
+    await seen("withdrew this question (no longer needed)");
+    const s = await t.screen();
+    expect(s).toContain("✕ game-builder withdrew this: you gave me full access");
+    expect(s).toContain("✕ game-builder withdrew this question (no longer needed)");
+    const lines = s.split("\n");
+    const y = lines.findIndex((l) => l.includes("withdrew this:"));
+    const cell = await t.cell(lines[y].indexOf("✕"), y);
+    // The muted grey of every closed card, not the red of a failure.
+    expect("#" + (cell.fg ?? 0).toString(16).padStart(6, "0")).not.toBe("#e06c75");
+    expect(cell.fgMode).not.toBe(0);
+    const grey = await t.cell(lines[y].indexOf("withdrew"), y);
+    expect(grey.fg).toBe(cell.fg);
+  });
+
   it("shows an answered question's note under its options, and dismissed ones with their options muted", async () => {
     const c = new FakeClient();
     const iso = (m: number) => new Date(Date.now() - m * 60000).toISOString();

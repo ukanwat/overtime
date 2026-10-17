@@ -26,8 +26,8 @@ export interface ToolHost {
   /** Wake the agent's main session soon (coalesced if one is running). */
   wakeMain(agent: string, reason: string): void;
   spawnHelper(ctx: ToolContext, req: { role?: string; instructions?: string; task: string; backend?: string; model?: string; withContext?: boolean }): Promise<{ id: string; workdir: string; note?: string }>;
-  /** Withdraw one of the agent's own open questions. False if there is no such open question. */
-  withdrawQuestion(agent: string, questionId: string): Promise<boolean>;
+  /** Withdraw one of the agent's own open questions, with why it's no longer needed. False if there is no such open question. */
+  withdrawQuestion(agent: string, questionId: string, why?: string): Promise<boolean>;
   /** Stop a running helper. False if there is no such running helper. */
   cancelHelper(agent: string, helperId: string): Promise<boolean>;
   /** Send a helper a note: a running one reads it and carries on; a finished one carries on from where it was. */

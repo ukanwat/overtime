@@ -4,7 +4,7 @@ import { personOnly, type AgentSummary } from "./daemon/control.js";
 import { AGENT_MARKER } from "./runtime/leftovers.js";
 import { validateName } from "./agent/agent.js";
 import { accent, ago, bold, clean, cleanDeep, fit, friendly, gray, green, italic, money, red, stamp, statusLine, yellow } from "./tui/style.js";
-import { headed, humanBytes, openQuestion, type AgentSettingsView, type Message } from "./tui/types.js";
+import { closedLine, headed, humanBytes, openQuestion, type AgentSettingsView, type Message } from "./tui/types.js";
 
 const [, , cmd, ...rest] = process.argv;
 
@@ -153,7 +153,8 @@ function printMessage(name: string, m: Message, open: boolean): void {
     if (m.why) print(`${bar} ${gray(`Why it matters: ${m.why}`)}`);
     if (m.recommendation) print(`${bar} ${bold("Recommended:")} ${m.recommendation}`);
     m.options?.forEach((o, i) => print(`${bar}  ${open ? accent(bold(String(i + 1))) : m.answer?.choice === i + 1 ? accent("✓") : gray(String(i + 1))}  ${m.answer && m.answer.choice !== i + 1 ? gray(o) : o}`));
-    if (m.answer && !m.answer.choice) print(`${bar} ${gray(`You: ${m.answer.text}`)}`);
+    if (m.answer?.closed) print(`${bar} ${gray(closedLine(m.answer, name))}`);
+    else if (m.answer && !m.answer.choice) print(`${bar} ${gray(`You: ${m.answer.text}`)}`);
     for (const l of m.links ?? []) print(`${bar} ${accent("↗")} ${l.target}`);
     print();
     return;
@@ -366,7 +367,8 @@ async function main() {
         }
         if (r.hasMore) print(gray(`(showing the latest ${ms.length}; add a number for more: overtime messages ${name} 200)\n`));
         const q = openQuestion(ms);
-        for (const m of ms) printMessage(name, m, m === q);
+        // A question's withdrawal or dismissal shows on the question itself, as in the app.
+        for (const m of ms) if (!m.closes) printMessage(name, m, m === q);
         if (q?.options?.length) print(gray(`Answer with: overtime answer ${name} <1-${q.options.length}> ["note"]`));
         break;
       }

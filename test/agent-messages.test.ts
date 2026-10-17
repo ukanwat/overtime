@@ -166,6 +166,20 @@ describe("agents messaging each other", () => {
     for (const k of ["backend", "model", "budget", "tokens", "workspace", "visibility", "protect"]) expect(r.out).toContain(k);
   }, 60_000);
 
+  it("shows a withdrawn question in `overtime messages` with the agent's why, as the app does", async () => {
+    const dir = paths.agent("ann");
+    const q1 = await rt.store("ann").addMessage({ from: "agent", kind: "question", text: "Can I deploy on Friday?", options: ["Yes", "No"], baseDir: dir });
+    const q2 = await rt.store("ann").addMessage({ from: "agent", kind: "question", text: "Which region?", baseDir: dir });
+    expect(await rt.withdrawQuestion("ann", q1.id, "you gave me full access")).toBe(true);
+    expect(await rt.withdrawQuestion("ann", q2.id)).toBe(true);
+    expect(await rt.withdrawQuestion("ann", q2.id)).toBe(false); // already closed
+    const r = await cli(["messages", "ann"]);
+    expect(r.out).toContain("✕ ann withdrew this: you gave me full access");
+    expect(r.out).toContain("✕ ann withdrew this question (no longer needed)");
+    // Never as if the person had answered "Withdrawn", nor the closing reply as a message of its own.
+    expect(r.out).not.toContain("Withdrawn");
+  }, 60_000);
+
   it("says there's no such agent when asked for the messages of one that doesn't exist", async () => {
     const r = await cli(["messages", "zz"]);
     expect(r.code).not.toBe(0);
