@@ -16,6 +16,8 @@ export function parseFrontMatter(text: string): { data: Record<string, unknown>;
 /** Front matter (with an optional comment line first, which parsing ignores) and the body. Nothing to put in: just the body. */
 export function stringifyFrontMatter(data: Record<string, unknown>, body: string, comment?: string): string {
   const clean = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
-  if (Object.keys(clean).length === 0) return body;
-  return `---\n${comment ? `# ${comment}\n` : ""}${YAML.stringify(clean).trimEnd()}\n---\n\n${body.replace(/^\n+/, "")}`;
+  // The blank line that followed a removed block would otherwise stay as the file's first line.
+  const rest = body.replace(/^\n+/, "");
+  if (Object.keys(clean).length === 0) return rest;
+  return `---\n${comment ? `# ${comment}\n` : ""}${YAML.stringify(clean).trimEnd()}\n---\n\n${rest}`;
 }
