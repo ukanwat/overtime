@@ -1,12 +1,10 @@
-"""Makes the files the scripted demos' agents "made": charts (PNG, plus a .ansi twin the demo's
-in-terminal viewer can show, since a recording can't capture terminal images) and the CV as a PDF.
-Made-up data throughout. Needs matplotlib and Pillow; the PDF needs Google Chrome.
+"""Makes the charts the scripted demos' agents "made": a PNG, plus a .ansi twin the demo's in-terminal
+viewer can show, since a recording can't capture terminal images. Made-up data throughout. Needs
+matplotlib and Pillow.
 
     python3 docs/demos/files.py
 """
 import os
-import subprocess
-import tempfile
 
 import matplotlib
 
@@ -100,37 +98,9 @@ def budget():
     fig.savefig(p, facecolor=BG)
     ansi(fig, ax, p[:-4] + ".ansi", 112, "October: planned (grey) vs spent; saved $1,912, $412 more than planned",
          ["Rent · Groceries · Eating out (+$42) · Transport · Subscriptions (+$47: 3 unused) · Fun · Saved",
-          "Unused: Peloton app $24, StreamPlus $15, cloud storage tier 2 $8 · cancel all three: $564 a year"])
-
-
-def cv_pdf():
-    chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-    if not os.path.exists(chrome):
-        print("skipping the CV PDF: no Google Chrome")
-        return
-    md = open(os.path.join(HERE, "life/files/sam-cv-stripe.md")).read()
-    html = []
-    for line in md.splitlines():
-        line = line.replace("**", "\x00")
-        while "\x00" in line:
-            line = line.replace("\x00", "<b>", 1).replace("\x00", "</b>", 1)
-        if line.startswith("# "):
-            html.append(f"<h1>{line[2:]}</h1>")
-        elif line.startswith("## "):
-            html.append(f"<h2>{line[3:]}</h2>")
-        elif line.startswith("- "):
-            html.append(f"<li>{line[2:]}</li>")
-        elif line.strip():
-            html.append(f"<p>{line}</p>")
-    css = "body{font:11pt -apple-system,Helvetica;margin:48px;color:#1b1b1f}h1{margin:0;font-size:22pt}h2{border-bottom:1px solid #ccc;font-size:12pt;text-transform:uppercase;letter-spacing:.06em;margin-top:22px}li{margin:4px 0}"
-    with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False) as f:
-        f.write(f"<html><head><meta charset=utf-8><style>{css}</style></head><body>{''.join(html)}</body></html>")
-    out = os.path.join(HERE, "life/files/sam-cv-stripe.pdf")
-    subprocess.run([chrome, "--headless", "--no-sandbox", f"--user-data-dir={tempfile.mkdtemp()}", "--disable-gpu", "--no-pdf-header-footer", f"--print-to-pdf={out}", f.name], check=True, capture_output=True)
-    os.unlink(f.name)
+          "Unused: a fitness app $24, a streaming service $15, a cloud storage tier $8 · cancel all three: $564 a year"])
 
 
 canary()
 budget()
-cv_pdf()
 print("made the demo files")

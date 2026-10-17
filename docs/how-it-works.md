@@ -1,6 +1,6 @@
 # How Overtime works
 
-The README is the tour; this is the detail. The same facts, written for agents, are in the built-in
+The README is the short version; this is the rest. The same facts, written for agents, are in the built-in
 [`overtime-docs`](../skills/overtime-docs/SKILL.md) skill, which is also the most complete reference
 for settings, files and commands.
 
@@ -142,3 +142,88 @@ Claude Code settings, instructions or MCP servers: they get exactly what Overtim
 Overtime is also an ACP agent. Add `overtime acp` as an external agent in Zed, JetBrains, VS Code
 (ACP extensions) or Neovim, and your agents appear as modes; an editor chat talks to that agent's
 conversation.
+
+## The app
+
+Your agents are on the left, like DMs. On the right is your conversation with the selected one, and
+nothing else: its messages, its reports, its questions, and yours. While it's answering, its reply
+streams in as it writes.
+
+- **Move** with ↑↓; the conversation follows. Just type to message the selected agent.
+- **Answer** a question with its number key, then Enter, or type an answer in your own words.
+- **Attach** a file or image by dragging it into the terminal. It's copied into the agent's folder.
+- **Settings** (→ or Tab): backend and model, daily budget, workspace, protected paths, MCP servers,
+  skills, its schedule and helpers, plus wake, stop and archive.
+- The mouse works too: click agents, options, links and files. `?` lists every key.
+
+## Command line
+
+```
+overtime                            the app
+overtime new <name> [key=value…]    create an agent (same keys as set)
+overtime ls                         list agents
+overtime send <name> "…"            message an agent (--attach <file>, repeatable)
+overtime messages <name>            read your conversation with it
+overtime answer <name> <n> [note]   answer its open question with option n
+overtime settings <name>            show its backend, model, budgets and workspace
+overtime set <name> key=value…      backend=  model=  budget=  tokens=  workspace=  protect=  visibility=
+overtime models [backend]           the models a backend offers
+overtime stop|start|wake <name>
+overtime archive <name>             stop an agent for good and move its folder away
+overtime acp                        ACP on stdio, for editors
+overtime daemon [stop|install|uninstall]
+```
+
+## FAQ
+
+**Does an idle agent cost anything?**
+No. Asleep, an agent runs nothing. Watches are plain scripts run without the model; only the lines
+they print wake it.
+
+**What if I close the terminal or restart?**
+Agents live in a background process, not the app. Close the app whenever you like. If you said yes to
+starting it at login (or ran `overtime daemon install`), they carry on after a restart from where they
+were.
+
+**Can an agent break something?**
+It has your user's access, so treat a long-running agent like a colleague with access to your
+laptop. It asks before destroying things outside its folders, spending money or acting publicly or as
+you, and anything under `protect` is read-only to it, enforced by the OS.
+
+**How do I keep spending in check?**
+Every agent has a daily budget ($100 by default; `overtime set <name> budget=10`). When it's used,
+the agent pauses until tomorrow and you get one alert. Raising it lifts the pause at once.
+
+**Where is my data?**
+In plain files under `~/overtime` (or `$OVERTIME_HOME`): each agent's folder, its conversation, and
+transcripts of every session in `.overtime/runs/`, kept 30 days. Overtime itself sends nothing
+anywhere; the only traffic is your backend talking to its model, and any MCP servers you add.
+
+**How is this different from running Claude Code in a loop, or a cron job?**
+A loop has no judgment about when to stop or wake, and a cron job has no memory of what it did. An
+Overtime agent keeps its own notes and memory between sessions, decides its own schedule, delegates,
+and talks to you like a colleague: one conversation per agent, not a pile of sessions.
+
+**How do I stop everything?**
+`overtime stop <name>` stops one agent (it carries on from where it was when started again).
+`overtime daemon stop` stops the background process; agents carry on when it next starts.
+
+## Design
+
+Overtime borrows its philosophy from [pi](https://github.com/earendil-works/pi): keep what you inject
+small and stable, keep state in plain files, give the model few tools, and make everything
+inspectable. Its terminal app is built on pi's TUI library. Where Overtime differs is the point of it:
+agents that persist, keep their own time, and delegate.
+
+## Recorded runs
+
+The README's demo is scripted (the real app with made-up agents). These are real runs: real agents on
+Claude, recorded as they happened. How they're made, and how to record them again, is in
+[`docs/demos`](demos).
+
+- [Brief it once](demos/brief.gif): a new agent is told to keep a repo's tests green; it fixes the bug, commits, reports and schedules its next check.
+- [It wakes itself](demos/watch.gif): an agent watching a log is asleep with the app closed; a checkout breaks, and it's already fixing it.
+- [It builds its own team](demos/helpers.gif): one review split across three helpers in parallel, merged into one report.
+- [It asks, and keeps going](demos/ask.gif): the one decision that's yours, with options and a recommendation, answered with one key.
+- [From the shell](demos/cli.gif): `ls`, `send`, `messages`, `set`, and a correction saved as a memory.
+- [One person's agents overnight](demos/life.gif) (scripted): a trip, a house hunt, money and a side project, through one evening and night.
