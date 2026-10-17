@@ -80,8 +80,15 @@ const REFLECT_TIMEOUT_MS = 15 * 60_000;
 /** Claude Code tools a reflect pass doesn't get: it works with file tools only. */
 const REFLECT_TOOLS_OFF = ["Bash", "BashOutput", "KillShell", "WebFetch", "WebSearch", "NotebookEdit", "Monitor"];
 
+/**
+ * Reflect passes are off until they can't touch anything outside memory/ and read the whole history in
+ * order (reviews found them reverting AGENT.md edits). OVERTIME_REFLECT=1 turns them on, for tests.
+ */
+const reflectOn = () => process.env.OVERTIME_REFLECT === "1";
+
 /** Why a reflect pass is due for this agent now, or null. */
 export function reflectDue(s: AgentState, now = Date.now()): string | null {
+  if (!reflectOn()) return null;
   const turns = s.turnsSinceReflect ?? 0;
   const since = s.lastReflectAt ? now - new Date(s.lastReflectAt).getTime() : Infinity;
   if (s.compactedSinceReflect && turns >= 1 && since >= REFLECT_AFTER_COMPACTION_GAP_MS) return "its session was compacted";
