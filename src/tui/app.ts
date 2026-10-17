@@ -35,6 +35,7 @@ import { validateName } from "../agent/agent.js";
 import { paths } from "../paths.js";
 import { pastedFiles, type PendingAttachment } from "./attach.js";
 import { copyText } from "./clipboard.js";
+import { wholeSequences } from "./input.js";
 import {
   accent,
   applyTerminalColors,
@@ -2517,6 +2518,9 @@ export async function runApp(o: AppOptions = {}): Promise<{ app: App; tui: TuiAl
   const connectFn = o.reconnect ?? ensureDaemon;
   const c = o.client ?? (await connectFn());
   const term = o.terminal ?? new ProcessTerminal();
+  // A mouse report or key split across reads reaches the screen whole, never as typed text (see input.ts).
+  const start = term.start.bind(term);
+  term.start = (onInput, onResize) => start(wholeSequences(onInput), onResize);
   const opener = o.opener ?? openTarget;
   // The screen library pages, jumps and searches its own viewport (PgUp/PgDn, Home/End, Ctrl+↑↓,
   // Ctrl+Shift+F), but this app draws one screen and scrolls the conversation itself: hand those keys to
