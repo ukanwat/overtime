@@ -570,12 +570,14 @@ export class App implements Component {
   private hits: Hit[] = [];
   /** Screen rows the two panes take (from the top edge down to the message box), as last drawn. */
   private paneRows = 0;
+  /** The agent list's rows: down to the footer, beside the conversation and the message box. */
+  private listRows = 0;
   /**
    * Where the message box was drawn: its screen rows, and its text's first row, row count and left
    * column. A mouse press there is the box's (it places the cursor and selects text in it), never the
    * screen's, so a selection there can't run into the conversation or pick up the box's frame.
    */
-  private box = { top: 0, bottom: -1, textTop: 0, textRows: 0, textX: 0, textW: 0, menuRows: 0 };
+  private box = { top: 0, bottom: -1, left: 0, textTop: 0, textRows: 0, textX: 0, textW: 0, menuRows: 0 };
   /** A mouse press in the message box being dragged: where it was pressed. */
   private boxPress: Pos | null = null;
   private width = 0;
@@ -791,7 +793,7 @@ export class App implements Component {
     if (ev.type === "wheel") {
       const d = (ev.wheelDelta ?? 0) > 0 ? 1 : -1;
       // Over the / menu, the wheel moves its highlight.
-      const menu = this.box.menuRows && !this.overlay && ev.screenY >= this.menuTop() && ev.screenY < this.menuTop() + this.box.menuRows;
+      const menu = this.box.menuRows && !this.overlay && ev.screenX >= this.box.left && ev.screenY >= this.menuTop() && ev.screenY < this.menuTop() + this.box.menuRows;
       if (menu) {
         this.input.moveMenu(d);
         this.tui.requestRender();
@@ -824,7 +826,7 @@ export class App implements Component {
     const b = this.box;
     // The / menu's rows are below the text: those aren't the text's.
     const rows = this.input.isShowingAutocomplete() ? b.textTop + b.textRows - 1 : b.bottom;
-    const inBox = !this.overlay && ev.button === "left" && ev.screenY >= b.top && ev.screenY <= rows;
+    const inBox = !this.overlay && ev.button === "left" && ev.screenY >= b.top && ev.screenY <= rows && ev.screenX >= b.left;
     const at = () => this.input.posAt(ev.screenY - b.textTop, Math.max(0, ev.screenX - b.textX));
     if (ev.type === "press") {
       if (!inBox) {
@@ -1747,8 +1749,9 @@ export class App implements Component {
    * box has its own selection (boxMouse), so the screen's never starts there.
    */
   selectionArea(x: number, y: number): { top: number; bottom: number; cols: (row: number) => [number, number] } | null {
-    if (y >= this.paneRows) return { top: y, bottom: y, cols: () => [0, this.width] };
-    if (this.leftW > 0 && x < this.leftW) return { top: 0, bottom: this.paneRows - 1, cols: () => [0, this.leftW] };
+    // The agent list runs down beside the message box, to the footer.
+    if (this.leftW > 0 && x < this.leftW && y < this.listRows) return { top: 0, bottom: this.listRows - 1, cols: () => [0, this.leftW] };
+    if (y >= this.paneRows) return { top: y, bottom: y, cols: () => (y < this.listRows && this.leftW > 0 ? [this.leftW + 1, this.width] : [0, this.width]) };
     const x0 = this.leftW > 0 ? this.leftW + 1 : 0;
     return { top: 0, bottom: this.paneRows - 1, cols: (row) => this.textCols.get(row) ?? [x0, this.width] };
   }
@@ -1760,32 +1763,38 @@ export class App implements Component {
     this.textCols.clear();
     this.motion = Infinity;
     const rows = Math.max(8, this.term.rows);
-    const chipsH = this.pending.length && !this.onNewRow ? 1 : 0;
-    const composer = this.renderComposer(width, rows >= 16);
-    const composerH = composer.length;
-    const bodyH = Math.max(1, rows - TOP - chipsH - composerH - 1);
     const narrow = width < NARROW;
     // The agent list grows a little on wide terminals, so their status lines have room to be read.
     const leftW = narrow ? 0 : Math.min(width >= 150 ? 42 : 34, Math.max(26, Math.floor(width * 0.26)));
     const rightW = narrow ? width : width - leftW - 1;
+    // The message box and its attachments belong to the conversation: as wide as its pane, so the agent
+    // list and its divider run on down to the footer.
+    const x0 = narrow ? 0 : leftW + 1;
+    const chipsH = this.pending.length && !this.onNewRow ? 1 : 0;
+    const composer = this.renderComposer(rightW, rows >= 16);
+    const composerH = composer.length;
+    const bodyH = Math.max(1, rows - TOP - chipsH - composerH - 1);
     this.leftW = leftW;
     this.paneRows = TOP + bodyH;
+    this.listRows = rows - 1;
     this.width = width;
 
     // The gap above the panes is padding only: the divider between them still runs to the top edge.
     const out: string[] = Array(TOP).fill(narrow ? "" : " ".repeat(leftW) + faint("│"));
-    const left = narrow ? [] : this.renderAgents(leftW, bodyH);
-    const right = this.renderRight(rightW, bodyH, narrow ? 0 : leftW + 1, narrow);
+    const left = narrow ? [] : this.renderAgents(leftW, bodyH + chipsH + composerH);
+    const lp = (i: number) => (narrow ? "" : fit(left[i] ?? "", leftW) + faint("│"));
+    const right = this.renderRight(rightW, bodyH, x0, narrow);
     for (let i = 0; i < bodyH; i++) {
       const r = right[i] ?? "";
-      const lp = narrow ? "" : fit(left[i] ?? "", leftW) + faint("│");
-      out.push(typeof r === "string" ? lp + fit(r, rightW) : lp + "    " + r.image);
+      out.push(typeof r === "string" ? lp(i) + fit(r, rightW) : lp(i) + "    " + r.image);
     }
-    if (chipsH) out.push(this.renderChips(width, TOP + bodyH));
+    if (chipsH) out.push(lp(bodyH) + this.renderChips(rightW, TOP + bodyH, x0));
     const b = this.box;
     b.top = out.length;
     b.bottom = out.length + composerH - 1;
+    b.left = x0;
     b.textTop += b.top;
+    b.textX += x0;
     // The / menu's items, under the text past a blank row: a click on one chooses it, as Enter does.
     const shown = b.menuRows ? this.input.menuShown() : { start: 0, end: 0 };
     for (let i = shown.start; i < shown.end; i++) {
@@ -1795,7 +1804,7 @@ export class App implements Component {
       };
       this.hits.push({ row: this.menuTop() + i - shown.start, x0: b.textX, x1: b.textX + b.textW, act: pick });
     }
-    out.push(...composer);
+    composer.forEach((l, i) => out.push(lp(bodyH + chipsH + i) + fit(l, rightW)));
     out.push(fit(this.renderFooter(width), width));
     return out;
   }
@@ -1880,7 +1889,7 @@ export class App implements Component {
   private renderRight(w: number, h: number, x: number, narrow: boolean): Line[] {
     if (this.onNewRow) {
       // The new agent's settings step, and its pickers, where its conversation will be.
-      if (!this.overlay) return this.renderNew(w, narrow);
+      if (!this.overlay) return this.renderNew(w, x, narrow);
       const body = this.overlay.kind === "settings" ? this.renderSettings(this.overlay, w, x, TOP, h) : this.renderOverlay(w, h, x, TOP);
       return body.slice(0, h);
     }
@@ -1894,7 +1903,7 @@ export class App implements Component {
     return [...head, ...body.slice(0, bodyH)];
   }
 
-  private renderNew(w: number, narrow: boolean): Line[] {
+  private renderNew(w: number, x: number, narrow: boolean): Line[] {
     const pad = (s: string) => "   " + s;
     const wrap = (s: string) => wrapTextWithAnsi(s, Math.max(20, Math.min(72, w - 6))).map(pad);
     const name = this.input.getValue().trim();
@@ -1908,7 +1917,14 @@ export class App implements Component {
     lines.push(pad(`${accent("1")}  Type a name below and press ${bold("Enter")}.`));
     lines.push(pad(`${accent("2")}  Tell it what it's for, in plain words.`));
     lines.push(pad(`${accent("3")}  It writes down its job and gets started.`), "");
-    if (name) lines.push(...(err ? wrap(red(err)) : [pad(`${accent("✓")} ${muted(`Press Enter to create ${name}.`)}`)]));
+    if (err) lines.push(...wrap(`${red("✗")} ${red(err)}`));
+    else if (name) {
+      // The way on: a filled button in the accent, which a click presses as Enter does.
+      const btn = inverse(accent(bold(`  Create ${name}  `)));
+      const bw = visibleWidth(btn);
+      this.hits.push({ row: TOP + lines.length, x0: x + 3, x1: x + 3 + bw, act: () => this.create() });
+      lines.push(pad(`${btn}  ${muted("⏎ or press Enter")}`));
+    }
     else lines.push(pad(muted("Lowercase letters, digits and dashes, e.g. repo-keeper.")));
     lines.push("", ...wrap(muted("Agents keep running when you close this window. Press ? for keys.")));
     return lines;
@@ -2412,9 +2428,9 @@ export class App implements Component {
     return `Message ${a.name}  ·  drag files here to attach`;
   }
 
-  private renderChips(w: number, row: number): string {
+  private renderChips(w: number, row: number, x0: number): string {
     let s = "  ";
-    let x = 2;
+    let x = x0 + 2;
     this.pending.forEach((p, i) => {
       const icon = p.kind === "image" ? "🖼" : p.kind === "folder" ? "🗀" : "📎";
       const chip = `${icon} ${p.name}${p.bytes != null ? muted(` ${humanBytes(p.bytes)}`) : ""} `;

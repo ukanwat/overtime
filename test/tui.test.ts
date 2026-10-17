@@ -63,7 +63,7 @@ describe("terminal app, against a real daemon", () => {
     await seen("lowercase letters");
     for (let i = 0; i < 3; i++) t.press(KEY.bs);
     t.type("alpha");
-    await seen("Press Enter to create alpha");
+    await seen("Create alpha");
     // Enter shows its settings first, with Create selected: Enter twice makes it with the defaults.
     t.press(KEY.enter);
     t.press(KEY.enter);
@@ -302,12 +302,45 @@ describe("terminal app, with a scripted daemon", () => {
     await seen("○ asleep");
   });
 
-  it("shows as many agents at 110×24 as before", async () => {
+  it("runs the agent list down beside the message box at 110×24, so it shows six agents", async () => {
     const { t, seen } = await open(110, 24, mixed());
     await seen("Merge the dependency fix?");
+    const lines = (await t.screen()).split("\n");
     const s = (await sidebar(t)).join("\n");
-    for (const name of ["repo-keeper", "game-builder", "inbox-triage", "scout", "old-bot"]) expect(s).toContain(name);
+    for (const name of ["repo-keeper", "game-builder", "inbox-triage", "scout", "old-bot", "docs-writer"]) expect(s).toContain(name);
     expect(s).toContain("1 of 8");
+    // The divider runs unbroken from the top to the footer; the box starts right after it, and the footer
+    // keeps the whole width.
+    const sep = lines[1].indexOf("│");
+    for (let y = 0; y < 23; y++) expect(lines[y][sep], `row ${y}`).toBe("│");
+    const box = lines.findIndex((l) => l.slice(sep + 1).startsWith("╭"));
+    expect(box).toBeGreaterThan(15);
+    expect(lines[box].trimEnd().endsWith("╮")).toBe(true);
+    expect(lines[23][sep]).not.toBe("│");
+  });
+
+  it("places the cursor where you click in the narrower box, and a click beside it still picks an agent", async () => {
+    const { t, seen } = await open(110, 24, mixed());
+    await seen("Merge the dependency fix?");
+    t.type("hello world");
+    await seen("hello world");
+    let lines = (await t.screen()).split("\n");
+    const y = lines.findIndex((l) => l.includes("hello world"));
+    click(t, lines[y].indexOf("world"), y);
+    t.type("X");
+    await seen("hello Xworld");
+    // A taller message: the box grows up beside the agent list, whose rows stay where they were; a click
+    // on an agent's row beside the box picks that agent, not the box.
+    for (let i = 0; i < 3; i++) t.press("\x1b\r");
+    t.type("more");
+    await seen("more");
+    lines = (await t.screen()).split("\n");
+    const dw = lines.findIndex((l) => l.includes(" docs-writer"));
+    const sep = lines[1].indexOf("│");
+    const top = lines.findIndex((l) => l.slice(sep + 1).startsWith("╭"));
+    expect(dw + 1).toBeGreaterThan(top);
+    click(t, 6, dw + 1);
+    await seen("docs-writer  ⊘ retrying");
   });
 
   it("selects an agent with a click on its name or its status, not on the gap between agents", async () => {
@@ -355,7 +388,7 @@ describe("terminal app, with a scripted daemon", () => {
     const lines = (await t.screen()).split("\n");
     const sep = lines[1].indexOf("│");
     const top = lines.findIndex((l) => /^─{20}/.test(l.slice(sep + 1)));
-    const end = lines.findIndex((l, i) => i > top && l.startsWith("╭"));
+    const end = lines.findIndex((l, i) => i > top && l.slice(sep + 1).startsWith("╭"));
     // Where each row's rule is, in the conversation (after the agent list).
     const rule = (l: string) => /[┃│]/.exec(l.slice(sep + 1))?.index ?? -1;
     const rows = lines.slice(top + 1, end).filter((l) => rule(l) >= 0);
@@ -501,7 +534,7 @@ describe("terminal app, with a scripted daemon", () => {
     expect(await t.screen()).toMatch(/Backend\s+gemini\s+not installed/);
     expect(c.calls.some((x: any) => x.method === "new")).toBe(false);
     t.press(KEY.esc);
-    await seen("Press Enter to create gem");
+    await seen("Create gem");
     expect(c.calls.some((x: any) => x.method === "new")).toBe(false);
   });
 
@@ -537,6 +570,30 @@ describe("terminal app, with a scripted daemon", () => {
     expect(s).toMatch(/Other agents\s+private/);
     expect(s).toMatch(/Backend\s+claude/);
     expect(c.calls.some((x) => x.method === "new")).toBe(false);
+  });
+
+  it("shows a Create button for a good name that a click presses like Enter, and a clear error for a bad one", async () => {
+    const { t, seen } = await open(120, 36);
+    await seen("Merge the dependency fix?");
+    for (let i = 0; i < 5; i++) t.press(KEY.down);
+    await seen("Name the new agent");
+    t.type("Bad");
+    await seen("✗ ");
+    let lines = (await t.screen()).split("\n");
+    const errRow = lines.findIndex((l) => l.includes("lowercase letters"));
+    expect(lines[errRow]).toMatch(/✗ /);
+    expect(lines.some((l) => l.includes("Create Bad"))).toBe(false);
+    for (let i = 0; i < 3; i++) t.press(KEY.bs);
+    t.type("zeta");
+    await seen("Create zeta");
+    lines = (await t.screen()).split("\n");
+    const y = lines.findIndex((l) => l.includes("Create zeta"));
+    const x = lines[y].indexOf("Create zeta");
+    // A filled button (inverse), with Enter named beside it.
+    expect((await t.cell(x, y)).inverse).toBe(true);
+    expect(lines[y]).toContain("or press Enter");
+    click(t, x + 2, y);
+    await seen("Backend");
   });
 
   it("shows answered questions with the chosen answer", async () => {
