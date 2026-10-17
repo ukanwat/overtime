@@ -67,7 +67,7 @@ const AGENT_CALLS = new Set(["ping", "agents", "agent", "messages", "settings", 
 export function personOnly(what: string, caller: string, name?: unknown): string {
   return name === caller
     ? `${what} can only be done by the person; ${caller} reaches the person with its own send tool.`
-    : `${what} can only be done by the person; agents reaching other agents (here, ${caller}) is not supported.`;
+    : `${what} can only be done by the person. To reach another agent, use your message tool.`;
 }
 
 /**
