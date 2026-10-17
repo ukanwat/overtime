@@ -38,6 +38,21 @@ describe("escape sequences from the terminal stay whole", () => {
     expect(got.slice(-2)).toEqual(["\x1b", "q"]);
   });
 
+  it("keeps a key sent with ESC before it one key, though the terminal library splits it into Escape and the key", async () => {
+    const got: string[] = [];
+    const buf = new StdinBuffer();
+    buf.on("data", wholeSequences((d) => got.push(d)));
+    // Shift+Option+← and → from macOS Terminal with "Use Option as Meta key", and Option+← in its default form.
+    buf.process("\x1b\x1b[1;2D");
+    buf.process("\x1b\x1b[1;2C");
+    buf.process("\x1bb");
+    expect(got).toEqual(["\x1b\x1b[1;2D", "\x1b\x1b[1;2C", "\x1bb"]);
+    // Escape before a mouse report stays Escape: the report is never a key.
+    buf.process("\x1b\x1b[<65;57;41M");
+    expect(got.slice(3)).toEqual(["\x1b", wheel]);
+    buf.destroy();
+  });
+
   it("joins a wheel report whose start the terminal library let go too early while the app was busy", async () => {
     // A real pipe and the library's own input buffer: the start of the report comes first, the rest 20 ms
     // later, but every read is followed by 120 ms of drawing, so the library's 50 ms timer goes off first.

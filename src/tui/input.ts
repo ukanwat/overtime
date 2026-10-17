@@ -6,6 +6,10 @@
  * arrived is read: the start ("ESC [") is then handed over on its own, as a key, and the rest
  * ("<65;57;41M", a mouse wheel report) is typed into the message box as text. So a lone start of a sequence
  * waits here a little longer for its rest, and goes on as it is only if nothing continues it.
+ *
+ * The library also splits a key sent with ESC before it ("ESC ESC [1;2D", Shift+Option+← in macOS Terminal
+ * with "Use Option as Meta key") into Escape and the key, handed over at once. Escape is waiting here
+ * then, so the two are joined again: otherwise Escape would clear the message.
  */
 
 const ESC = "\x1b";
@@ -13,6 +17,9 @@ const ESC = "\x1b";
 const WAIT_MS = 20;
 /** Longer than any sequence a terminal sends as input: past this it's not one. */
 const MAX = 64;
+/** A key sent as CSI (arrows, Home/End, function and editing keys, kitty's keys), not a mouse report or paste mark. */
+const CSI_KEY = /^\x1b\[[\d;]*[A-DFHP-S~u]$/;
+const PASTE_MARK = /^\x1b\[20[01]~$/;
 
 /**
  * Where the escape sequence at the start of `s` ends: its length if it's complete, "more" if `s` is the
@@ -63,6 +70,11 @@ export function wholeSequences(onInput: (data: string) => void, waitMs = WAIT_MS
     clearTimeout(timer);
     turn++;
     const joined = held + data;
+    // Escape followed at once by a key is that key with ESC before it, as the terminal sent it.
+    if (held === ESC && CSI_KEY.test(data) && !PASTE_MARK.test(data)) {
+      held = "";
+      return onInput(joined);
+    }
     const end = sequenceEnd(joined);
     if (end === "more") return hold(joined);
     // Not a continuation (a lone ESC followed by anything but "[" is the Escape key, then that key).
