@@ -97,6 +97,21 @@ describe("agents messaging each other", () => {
     await expect(rt.messageAgent("ann", "dan", "hi")).rejects.toThrow(`There's no agent called "dan". Agents you can message: bob.`);
   });
 
+  it("gives a new public agent the tool in its first session, before it has its job; a new private one gets none", async () => {
+    // Its first session starts with no job in AGENT.md, writes it, and carries on with the same tools.
+    await rt.create("eve");
+    await tell("eve", "MSG_TO bob: hello from the new one", "eve's first turn");
+    const [tools, ...desc] = read("eve", ".message-desc").split("\n");
+    expect(tools.split(",")).toContain("message");
+    expect(desc.join("\n")).toContain(`- bob: Test job. (${paths.agent("bob")})`);
+    expect(desc.join("\n")).not.toContain("cat");
+    expect(read("eve", ".message-result")).toBe("Sent to bob.");
+    await rt.create("fay");
+    await setSettings("fay", { visibility: "private" });
+    await tell("fay", "MSG_TO bob: hello", "fay's first turn");
+    expect(read("fay", ".message-desc").split("\n")[0].split(",")).not.toContain("message");
+  });
+
   it("keeps a message for a stopped agent until it's started", async () => {
     await rt.stopAgent("bob");
     rmSync(file("bob", ".agent-inbox"), { force: true });

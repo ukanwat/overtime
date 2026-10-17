@@ -7,7 +7,7 @@ import { execFile } from "node:child_process";
 import { isAbsolute, join, sep } from "node:path";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
-import { createAgent, effectiveSettings, hasIdentity, listAgents, loadAgent, publicAgents, publicButNew, restoreSettings, updateState, type Agent, type AgentState } from "../agent/agent.js";
+import { createAgent, effectiveSettings, hasIdentity, isPublic, listAgents, loadAgent, publicAgents, publicButNew, restoreSettings, updateState, type Agent, type AgentState } from "../agent/agent.js";
 import { newId, readJson, writeJson } from "../fsutil.js";
 import { paths } from "../paths.js";
 import { loadSettings, saveSettings } from "../settings.js";
@@ -1385,7 +1385,8 @@ export class Runtime extends EventEmitter implements ToolHost {
   async messageAgent(from: string, to: string, text: string): Promise<void> {
     if (to === from) throw new Error("That's you: message another agent.");
     const listed = publicAgents().map((a) => a.name);
-    if (!listed.includes(from)) throw new Error("Only public agents can message other agents.");
+    // The sender is judged by its settings, not its job: a new agent can send from its first session.
+    if (!isPublic(from)) throw new Error("Only public agents can message other agents.");
     const others = listed.filter((n) => n !== from).join(", ") || "none";
     if (!listed.includes(to) && publicButNew(to)) throw new Error(`${to} exists but hasn't been set up yet: the person hasn't given it its job, so it can't take messages. Agents you can message: ${others}.`);
     // A private agent is answered exactly like one that doesn't exist.

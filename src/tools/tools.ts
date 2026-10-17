@@ -6,7 +6,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolContext, ToolHost } from "./host.js";
 import { clampWake, MAX_SLEEP_MS, MIN_SLEEP_MS, parseDuration } from "../store/store.js";
 import { parseFrontMatter } from "../agent/frontmatter.js";
-import { publicAgents } from "../agent/agent.js";
+import { isPublic, publicAgents } from "../agent/agent.js";
 import { paths } from "../paths.js";
 import { listSkills, readSkill } from "../skills.js";
 import { home } from "../paths.js";
@@ -236,9 +236,10 @@ Messages, answers and finished helpers always wake you early.`,
     );
 
     // Public agents can message each other; a private one isn't listed, can't be messaged and has no tool.
-    const everyone = publicAgents();
-    const others = everyone.filter((a) => a.name !== ctx.agent);
-    if (others.length && everyone.length > others.length) {
+    // Whether this one is public comes from its settings, not its job: a new agent gets the tool in the
+    // first session too, which goes on after it has written AGENT.md.
+    const others = publicAgents().filter((a) => a.name !== ctx.agent);
+    if (others.length && isPublic(ctx.agent)) {
       reg(
         "message",
         {
