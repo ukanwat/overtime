@@ -45,6 +45,7 @@ Global, in `~/overtime/settings.json`:
 | `mcpServers` | `[]` | MCP servers every agent gets (see MCP) |
 | `protect` | `[]` | paths no agent may write to, e.g. `["~/Documents", "~/.ssh"]` |
 | `customBackends` | `{}` | extra ACP backends: `{ "name": { "command": "...", "args": [...] } }` |
+| `autoUpdate` | `true` | Overtime updates itself to new versions (`overtime set autoUpdate=off`, or in the app's settings) |
 
 Per agent (only keys that differ from the global ones), shown for reference in the block at the top
 of its `AGENT.md`; the copy that counts is in its `.overtime/settings.json`:
@@ -249,6 +250,13 @@ they type `/`). Load that skill and follow it for that message.
   lifts (tried again every 15 minutes, or at the reset).
 - Any other failed turn is retried with growing gaps (1, 5, 15, 60 minutes); after 3 the person gets an alert.
 - A backend that isn't installed fails with a plain message; tell the person what to install.
+- Overtime restarting (an update, the app replacing its background process, a crash) doesn't lose work:
+  a turn or helper that was running carries on by itself in the same session, told "Overtime restarted
+  (update to …) while you were working". Check what you had already done before redoing it.
+- Auto-update: once a day and at each start, Overtime installs a newer version from npm the way it was
+  installed (npm, pnpm, bun or yarn, globally), never older, and not from a source checkout or `npm link`.
+  If that fails (e.g. no write permission), the person is told once with the command to run. Its lines in
+  `~/overtime/overtimed.log` start with "auto-update:".
 - A backend that says it isn't signed in (its own sign-in code, never words like "unauthorized" in an
   error) isn't a failure either: the agent, or a helper, checks again after 30 seconds, 1, 2, then every
   5 minutes, in the same session, and at once when another turn on that backend gets through or the app

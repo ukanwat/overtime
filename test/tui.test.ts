@@ -791,6 +791,29 @@ describe("terminal app, with a scripted daemon", () => {
     await seen("hidden from them");
   });
 
+  it('says "Updated to …" once when it opens after an update, and turns auto-update off from settings', async () => {
+    const c = new FakeClient();
+    c.data.notice = { text: "Updated to 0.7.9", tone: "ok" };
+    const { t, seen } = await open(110, 60, c);
+    await seen("Updated to 0.7.9");
+    expect(c.calls.filter((k) => k.method === "updateNotice").length).toBe(1);
+    t.press("\x1b[C"); // → settings
+    await seen("Auto-update");
+    expect(await t.screen()).toMatch(/Auto-update\s+on\s+updates itself; now 0\.7\.9/);
+    for (let i = 0; i < 40 && !(await t.screen()).match(/› Auto-update/); i++) {
+      t.press(KEY.down);
+      await sleep(20);
+    }
+    t.press(KEY.enter);
+    await until(async () => c.calls.some((k) => k.method === "setGlobal" && k.params.autoUpdate === false), 5_000, "turned off");
+    await seen("Overtime won't update itself");
+    await until(async () => /Auto-update\s+off\s+now 0\.7\.9; update by hand/.test(await t.screen()), 5_000, "shown off");
+    // A notice the daemon has for an app that's open (an update that needs the person) shows at once.
+    c.data.notice = { text: "Overtime couldn't update itself to 0.8.0. To update, run: npm i -g @ukanwat/overtime@0.8.0", tone: "err" };
+    c.emit({ event: "notice" });
+    await seen("npm i -g @ukanwat/overtime@0.8.0");
+  });
+
   it("goes to a question with a click, picks an option with a click and answers with Enter, like its number key", async () => {
     const { t, c, seen } = await open();
     await seen("A question for you");

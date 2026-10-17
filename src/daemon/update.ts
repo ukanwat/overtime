@@ -184,6 +184,7 @@ export async function noteRunningVersion(version = packageVersion()): Promise<st
 
 /** What the app should show once about updating, if anything: taken, so it shows once. */
 export async function takeNotice(): Promise<{ text: string; tone: "ok" | "err" } | null> {
+  if (!(await readJson<UpdateState>(statePath(), {})).notice) return null;
   let notice: UpdateState["notice"] = null;
   await patchState((s) => {
     notice = s.notice ?? null;
@@ -217,6 +218,8 @@ export const HANDOVER_EXIT = 75;
 export interface UpdaterDeps {
   log: (line: string) => void;
   notify: (title: string, body: string) => void;
+  /** There's something for the app to say (takeNotice): an app that's open shows it now. */
+  onNotice?: () => void;
   /** Hand over to the new version: start its daemon (its main.js) once this one has stopped, and stop. */
   handover: (version: string, mainJs: string) => Promise<void> | void;
   /** The rest are replaced by tests. */
@@ -315,6 +318,7 @@ export class Updater {
         s.notice = { text, tone: "err" };
         this.d.notify("Overtime couldn't update itself", `To update to ${latest}, run: ${cmd.text}`);
       });
+      this.d.onNotice?.();
       return "failed";
     }
     log(`auto-update: installed ${latest}; handing over to its daemon (everything running carries on there)`);

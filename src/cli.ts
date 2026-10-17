@@ -58,6 +58,7 @@ function HELP(): string {
         ["overtime settings <name>", "show its backend, model, budgets and workspace"],
         ["overtime set <name> key=value…", "backend=  model=  budget=  tokens=  workspace=  protect=~/a,~/b"],
         ["overtime models [backend]", "the models a backend offers"],
+        ["overtime set autoUpdate=on|off", "whether Overtime updates itself to new versions (on by default)"],
         ["overtime archive <name>", "stop an agent for good and move its folder away"],
       ],
     ],
@@ -489,6 +490,14 @@ async function main() {
         break;
       }
       case "set": {
+        // No agent named: a setting for all of Overtime.
+        if (rest[0] && /^autoUpdate=/i.test(rest[0])) {
+          const v = rest[0].slice(rest[0].indexOf("=") + 1);
+          const on = /^(on|true|yes)$/i.test(v) ? true : /^(off|false|no)$/i.test(v) ? false : fail(`"${v}" isn't on or off.`, "overtime set autoUpdate=off (or on)");
+          await call("setGlobal", { autoUpdate: on });
+          ok(on ? "Auto-update on: Overtime updates itself when a new version is out." : `Auto-update off. Update by hand with ${cmdText("npm i -g @ukanwat/overtime")}${gray(".")}`);
+          break;
+        }
         const name = need(rest[0], "overtime set <name> [backend=…] [model=…] [budget=…]");
         const changes = parseSettings(rest.slice(1));
         await call("set", { name, ...changes }, 120_000); // checking a model name may start the backend

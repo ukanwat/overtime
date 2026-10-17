@@ -1,12 +1,13 @@
 import { connect, createServer, type Server, type Socket } from "node:net";
 import { describeStep } from "./steps.js";
 import { listSkills } from "../skills.js";
-import { buildId } from "./build.js";
+import { buildId, packageVersion } from "./build.js";
+import { takeNotice, type Updater } from "./update.js";
 import { existsSync, unlinkSync } from "node:fs";
 import { paths } from "../paths.js";
 import { listAgents, loadAgent, effectiveSettings, allMcpServers } from "../agent/agent.js";
 import { readLimits, usageToday } from "../runtime/usage.js";
-import { loadSettings } from "../settings.js";
+import { loadSettings, saveSettings } from "../settings.js";
 import { reflectEnabled, type Runtime, type ChangeEvent, type SettingsPatch } from "./runtime.js";
 
 /** Summary of one agent for the agent list. */
@@ -64,7 +65,7 @@ type Handler = (params: any, sock: Socket) => Promise<unknown>;
  * look. Everything else (sending, answering, changing or stopping agents) is the person's, and a
  * message sent from an agent's shell would otherwise land as if the person wrote it.
  */
-const AGENT_CALLS = new Set(["ping", "agents", "agent", "messages", "settings", "skills", "mcpList", "limits", "live", "backends", "backendStatus", "models", "subscribe"]);
+const AGENT_CALLS = new Set(["ping", "agents", "agent", "messages", "settings", "skills", "mcpList", "limits", "live", "backends", "backendStatus", "models", "subscribe", "globalSettings"]);
 
 /** Requests that put words in an agent's conversation: what an agent does for that is message it, or the person. */
 const MESSAGING = new Set(["send", "answer"]);
@@ -91,7 +92,7 @@ export class ControlServer {
   private opened!: () => void;
   private readonly ready = new Promise<void>((r) => (this.opened = r));
 
-  constructor(private readonly rt: Runtime, private readonly log: (s: string) => void, private readonly onShutdown: () => void) {
+  constructor(private readonly rt: Runtime, private readonly log: (s: string) => void, private readonly onShutdown: () => void, private readonly updater?: Updater) {
     rt.on("change", (e: ChangeEvent) => this.broadcast({ event: "change", ...e }));
     rt.on("update", (e: { agent: string; kind: string; threadId?: string; helperId?: string; update: any }) => this.onUpdate(e));
     rt.on("step", (e: { agent: string; kind: string; helperId?: string; step: string }) => this.setStep(e, e.step));
@@ -276,6 +277,18 @@ export class ControlServer {
       await this.rt.wakeNow(name);
       return { ok: true };
     },
+    /** Settings for all of Overtime (not one agent's), and the version running. */
+    globalSettings: async () => ({ autoUpdate: (await loadSettings()).autoUpdate !== false, version: packageVersion() }),
+    setGlobal: async ({ autoUpdate }) => {
+      if (typeof autoUpdate !== "boolean") throw new Error("autoUpdate is on or off.");
+      await saveSettings({ ...(await loadSettings()), autoUpdate });
+      this.log(`auto-update turned ${autoUpdate ? "on" : "off"}`);
+      // Turned on: look for a newer version now rather than at tomorrow's check.
+      if (autoUpdate) void this.updater?.check("auto-update was turned on").catch(() => {});
+      return { ok: true };
+    },
+    /** What the app says once about updating ("Updated to 0.7.9", or an update that needs the person). */
+    updateNotice: async () => takeNotice(),
     limits: async () => readLimits(),
     live: async () => [...this.live.values()].map(({ timer, ...rest }) => rest),
     backends: async () => this.rt.backends(),
@@ -333,6 +346,11 @@ export class ControlServer {
       lastRunAt: a.state.lastRunAt ?? null,
       dir: a.dir,
     };
+  }
+
+  /** Something about updating for the app to say: an app that's open asks for it (updateNotice) now. */
+  noticeReady(): void {
+    this.broadcast({ event: "notice" });
   }
 
   private broadcast(msg: unknown): void {

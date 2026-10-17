@@ -139,7 +139,7 @@ type NewAgentDraft = {
   status?: { name: string; missing: string | null }[];
   ready?: Promise<void>;
 };
-type SettingsOverlay = { kind: "settings"; data: AgentSettingsView | null; extra: any; mcp?: McpEntry[]; mcpStatus?: McpStatus; idx: number; sel?: string; editing?: Field; error?: string; draft?: NewAgentDraft };
+type SettingsOverlay = { kind: "settings"; data: AgentSettingsView | null; extra: any; mcp?: McpEntry[]; mcpStatus?: McpStatus; global?: { autoUpdate: boolean; version: string }; idx: number; sel?: string; editing?: Field; error?: string; draft?: NewAgentDraft };
 type Overlay =
   | null
   | { kind: "help" }
@@ -793,14 +793,14 @@ export class App implements Component {
     return this.live.get(`${agent}/chat/`);
   }
 
-  say(text: string, tone: "ok" | "err" | "info" = "info"): void {
+  say(text: string, tone: "ok" | "err" | "info" = "info", ms = tone === "err" ? 8000 : 4000): void {
     this.flash = { text, tone };
     this.tui.requestRender();
     if (this.flashTimer) clearTimeout(this.flashTimer);
     this.flashTimer = setTimeout(() => {
       this.flash = null;
       this.tui.requestRender();
-    }, tone === "err" ? 8000 : 4000);
+    }, ms);
     this.flashTimer.unref?.();
   }
 
@@ -1353,6 +1353,18 @@ export class App implements Component {
     this.say(on ? `Reflect passes are off for ${a.name}.` : `Reflect passes are on for ${a.name}.`, "ok");
   }
 
+  /** Auto-update is for all of Overtime, not one agent. */
+  private async toggleAutoUpdate(on: boolean): Promise<void> {
+    await this.c.call("setGlobal", { autoUpdate: !on });
+    this.say(on ? "Overtime won't update itself. Update with: npm i -g @ukanwat/overtime" : "Overtime updates itself when a new version is out.", "ok");
+  }
+
+  /** Say once what the background process has to say about updating ("Updated to 0.7.9", or an update that needs you). */
+  async showUpdateNotice(): Promise<void> {
+    const n = await this.get<{ text: string; tone: "ok" | "err" } | null>("updateNotice").catch(() => null);
+    if (n?.text) this.say(n.text, n.tone, n.tone === "err" ? 30_000 : 10_000);
+  }
+
   private async toggleStop(): Promise<void> {
     const a = this.needAgent();
     if (!a) return;
@@ -1520,6 +1532,12 @@ export class App implements Component {
     } catch {
       o.mcp = undefined; // an older background process: the section just doesn't show
     }
+    try {
+      const g = await this.get<{ autoUpdate: boolean; version: string }>("globalSettings");
+      o.global = typeof g?.autoUpdate === "boolean" ? g : undefined;
+    } catch {
+      o.global = undefined; // an older background process: no Overtime section
+    }
   }
 
   private settingsRows(o: SettingsOverlay): SettingsRow[] {
@@ -1583,6 +1601,20 @@ export class App implements Component {
       { label: "Open its folder", note: tilde(a.dir), stay: true, run: () => this.openLink(a.dir) },
       { label: "AGENT.md", note: "who it is, its job and rules", stay: true, run: () => this.openLink(join(a.dir, "AGENT.md")) },
       { label: "Transcripts", note: "everything it was sent and did", stay: true, run: () => this.openLink(join(paths.meta(a.name), "runs")) },
+      // For all of Overtime, not this agent: last.
+      ...(o.global
+        ? [
+            { label: "Overtime", heading: true } as SettingsRow,
+            {
+              label: "Auto-update",
+              key: "autoUpdate",
+              value: o.global.autoUpdate ? "on" : "off",
+              note: o.global.autoUpdate ? `updates itself; now ${o.global.version}` : `now ${o.global.version}; update by hand`,
+              stay: true,
+              run: () => this.toggleAutoUpdate(o.global!.autoUpdate),
+            } as SettingsRow,
+          ]
+        : []),
     ];
     const x = o.extra;
     if (x?.schedule) {
@@ -2906,12 +2938,15 @@ export async function runApp(o: AppOptions = {}): Promise<{ app: App; tui: TuiAl
     app.c = client;
     await client.subscribe((e: any) => {
       if (e?.event === "live") app.onLive(e);
+      else if (e?.event === "notice") void app.showUpdateNotice();
       else void app.refresh();
     });
     try {
       app.setLive(await client.call("live"));
     } catch {}
     await app.refresh();
+    // Back after an update, or opened since: "Updated to 0.7.9", once.
+    void app.showUpdateNotice();
     void client.closed.then(async () => {
       if (quitting) return;
       app.connected = false;

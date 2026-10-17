@@ -184,6 +184,7 @@ overtime models [backend]           the models a backend offers
 overtime stop|start|wake <name>
 overtime archive <name>             stop an agent for good and move its folder away
 overtime acp                        ACP on stdio, for editors
+overtime set autoUpdate=on|off      whether Overtime updates itself (on by default)
 overtime daemon [stop|install|uninstall]
 ```
 
@@ -196,7 +197,16 @@ they print wake it.
 **What if I close the terminal or restart?**
 Agents live in a background process, not the app. Close the app whenever you like. If you said yes to
 starting it at login (or ran `overtime daemon install`), they carry on after a restart from where they
-were.
+were. Whatever was running when the background process stopped (an update, a crash), a turn or a
+helper, carries on by itself in the same session when it starts again.
+
+**How do I update?**
+Overtime updates itself: once a day, and whenever its background process starts, it checks npm for a
+newer version and installs it the way you installed it (`npm i -g`, pnpm, bun or yarn), then hands over
+to it while agents keep working. The app says "Updated to …" once. It never goes back to an older
+version, and doesn't run from a source checkout or `npm link`. If it can't install (no permission to
+write where Overtime is installed, say), you're told once, with the command to run. Turn it off with
+`overtime set autoUpdate=off` (or in the app's settings); `~/overtime/overtimed.log` shows what it did.
 
 **Can an agent break something?**
 It has your user's access, so treat a long-running agent like a colleague with access to your

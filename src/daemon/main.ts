@@ -4,6 +4,7 @@ import { Runtime } from "./runtime.js";
 import { ControlServer } from "./control.js";
 import { takeLock } from "./lock.js";
 import { AGENT_MARKER } from "../runtime/leftovers.js";
+import { HANDOVER_EXIT, relaunchAfterExit, Updater } from "./update.js";
 
 /** overtimed: the always-on process. One per machine (per OVERTIME_HOME). */
 async function main() {
@@ -36,16 +37,27 @@ async function main() {
 
   const rt = new Runtime(log);
   let shuttingDown = false;
-  const shutdown = async (why: string) => {
+  const shutdown = async (why: string, code = 0) => {
     if (shuttingDown) return;
     shuttingDown = true;
     log(`shutting down (${why})`);
+    updater.stop();
     await control.stop().catch(() => {});
     await rt.stop().catch((e) => log(`stop: ${e}`));
     lock.release();
-    process.exit(0);
+    process.exit(code);
   };
-  const control = new ControlServer(rt, log, () => void shutdown("requested"));
+  // A newer version installed: its daemon starts once this one has stopped, and carries on what was running.
+  const updater = new Updater({
+    log,
+    notify: (title, body) => rt.notify(title, body),
+    onNotice: () => control.noticeReady(),
+    handover: async (version, mainJs) => {
+      relaunchAfterExit(process.pid, mainJs);
+      await shutdown(`handing over to ${version}`, HANDOVER_EXIT);
+    },
+  });
+  const control = new ControlServer(rt, log, () => void shutdown("requested"), updater);
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("uncaughtException", (e) => log(`uncaught: ${e?.stack ?? e}`));
@@ -62,6 +74,7 @@ async function main() {
   await rt.start();
   control.open();
   log(`overtimed ready (pid ${process.pid}, home ${home()})`);
+  updater.start();
 }
 
 main().catch((e) => {

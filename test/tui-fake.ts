@@ -104,7 +104,7 @@ export function fakeData() {
     { name: "github", source: "shared", enabled: true, describe: "npx -y @modelcontextprotocol/server-github (GITHUB_TOKEN set)" },
     { name: "broken", source: "agent", enabled: true, describe: "uvx mcp-server-broken" },
   ];
-  return { agents, messages, settings, mcp };
+  return { agents, messages, settings, mcp, autoUpdate: true as boolean, notice: null as { text: string; tone: string } | null };
 }
 
 export class FakeClient {
@@ -178,6 +178,17 @@ export class FakeClient {
       }
       case "defaults":
         return { backend: "claude", model: null, dailyBudgetUsd: 10 };
+      case "globalSettings":
+        return { autoUpdate: d.autoUpdate ?? true, version: "0.7.9" };
+      case "setGlobal":
+        d.autoUpdate = params.autoUpdate;
+        return { ok: true };
+      case "updateNotice": {
+        // Said once, as the daemon does.
+        const n = d.notice ?? null;
+        d.notice = null;
+        return n;
+      }
       case "new": {
         const backend = params.backend ?? "claude";
         const model = params.model ?? null;
