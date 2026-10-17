@@ -13,7 +13,7 @@ import { paths } from "../paths.js";
 import { loadSettings, saveSettings } from "../settings.js";
 import { withLock } from "../store/mutex.js";
 import { Store, clampWake } from "../store/store.js";
-import { questionParts, type Attachment, type Decision, type HelperRecord, type InboxItem, type Message, type Monitor, type QuestionPart, type Reply } from "../store/types.js";
+import { askedAt, questionParts, shortQuestion, type Attachment, type Decision, type HelperRecord, type InboxItem, type Message, type Monitor, type QuestionPart, type Reply } from "../store/types.js";
 import { receiveAttachments } from "../store/attachments.js";
 import type { ToolContext, ToolHost } from "../tools/host.js";
 import { ToolServer } from "../tools/server.js";
@@ -1044,8 +1044,8 @@ export class Runtime extends EventEmitter implements ToolHost {
 
   /**
    * The person answered a question: pick one or more options and/or write something. Defaults to the newest
-   * open question. A card of several questions takes one reply per question (replies); any left out stay
-   * unanswered, and the agent is told so.
+   * open question (several can be open at once: the app and the CLI say which). A card of several questions
+   * takes one reply per question (replies); any left out stay unanswered, and the agent is told so.
    */
   async answer(agentName: string, questionId?: string, choice?: number | number[], text?: string, replies?: Reply[]): Promise<void> {
     const agent = await loadAgent(agentName);
@@ -1072,6 +1072,9 @@ export class Runtime extends EventEmitter implements ToolHost {
       return { part, reply: { ...(chosen.length ? { choices: chosen } : {}), ...(own ? { note: own } : {}) }, labels, said };
     });
     if (!lines.some((l) => l.said) && !note) throw new Error("Pick an option or write an answer.");
+    // Several questions can be open at once, and the agent kept working after asking: the answer names the
+    // question it's for, and when it was asked, so it's never read as being about something else.
+    const about = `${card ? "Answers to your questions" : "Answer to your question"} "${shortQuestion(q)}" (asked ${askedAt(q.t)})`;
     let answerText: string;
     let m: Message;
     if (!card) {
@@ -1088,8 +1091,8 @@ export class Runtime extends EventEmitter implements ToolHost {
       if (!l.said) continue;
       await store.recordDecision({ threadId: q.id, category: q.category ?? "uncategorised", question: l.part.text, answer: l.said, ...(l.labels.length ? { choice: l.labels.join("; ") } : {}) });
     }
-    const data = { question: card ? q.title || `${parts.length} questions` : q.text, answers: lines.map((l) => ({ question: l.part.text, chosen: l.labels, ...(l.reply.note ? { note: l.reply.note } : {}) })), ...(card && note ? { note } : {}) };
-    await store.pushInbox({ type: "answer", text: answerText + (await this.autonomyHint(agentName, q.category)), messageId: m.id, data });
+    const data = { questionId: q.id, question: card ? q.title || `${parts.length} questions` : q.text, answers: lines.map((l) => ({ question: l.part.text, chosen: l.labels, ...(l.reply.note ? { note: l.reply.note } : {}) })), ...(card && note ? { note } : {}) };
+    await store.pushInbox({ type: "answer", text: `${about}:${card ? "\n" : " "}${answerText}` + (await this.autonomyHint(agentName, q.category)), messageId: m.id, data });
     this.changed(agentName, "messages");
     await this.deliver(agentName, card ? "the person answered your questions" : "the person answered one of your questions");
   }
@@ -1261,7 +1264,7 @@ export class Runtime extends EventEmitter implements ToolHost {
     if (!q || q.kind !== "question") throw new Error(`There's no question ${questionId}.`);
     if (q.answer) return;
     await store.addMessage({ from: "you", kind: "message", text: "Dismissed", replyTo: q.id, closes: "dismissed", baseDir: agent.dir });
-    await store.pushInbox({ type: "answer", text: `The person dismissed your ${q.questions?.length ? "questions" : "question"} without answering: "${q.text.slice(0, 300)}". Don't wait on it: go with your own judgement, or ask again in a different way only if it really matters.`, data: { question: q.text } });
+    await store.pushInbox({ type: "answer", text: `The person dismissed your ${q.questions?.length ? "questions" : "question"} "${shortQuestion(q)}" (asked ${askedAt(q.t)}) without answering. Don't wait on it: go with your own judgement, or ask again in a different way only if it really matters.`, data: { questionId: q.id, question: q.text } });
     this.changed(agentName, "messages");
   }
 
@@ -2137,7 +2140,7 @@ function inboxBlock(all: InboxItem[], session: string | null = null): string {
               ? "Passed on from your conversation with the person. They have already been answered about this: don't reply to it or acknowledge it again. Do the work, and message them only with new results or questions"
               : "Message from the person"
             : i.type === "answer"
-              ? `The person answered your ${(i.data as any)?.answers?.length > 1 ? "questions" : "question"}: "${String((i.data as any)?.question ?? "").slice(0, 200)}"`
+              ? `${i.messageId ? "The person answered" : "The person closed"} your question${(i.data as any)?.questionId ? ` (${(i.data as any).questionId})` : ""}`
               : i.type === "monitor"
                 ? "Monitor fired"
                 : i.type === "helper"
@@ -2167,7 +2170,10 @@ function recentConversation(all: Message[]): string {
   const lines = shown.map((m) => {
     const kind = m.kind === "question" ? " [your question]" : m.kind === "report" ? " [report]" : m.kind === "alert" ? " [alert]" : "";
     const answer = m.kind === "question" && m.answer ? `\n  (${m.answer.closed ? `${m.answer.closed}${m.answer.note ? `: ${m.answer.note}` : ""}` : `answered: ${m.answer.text}`})` : m.kind === "question" ? "\n  (not answered yet)" : "";
-    return `${who(m)} (${m.t})${kind}: ${withFiles(m.text, m.attachments)}${answer}`;
+    // An answer says which question it was for: several can be open, and others came in between.
+    const q = m.replyTo ? all.find((x) => x.id === m.replyTo) : undefined;
+    const to = q ? ` [answer to "${shortQuestion(q)}"]` : "";
+    return `${who(m)} (${m.t})${kind}${to}: ${withFiles(m.text, m.attachments)}${answer}`;
   });
   let text = lines.join("\n\n");
   if (text.length > 16_000) text = "…\n" + text.slice(-16_000);

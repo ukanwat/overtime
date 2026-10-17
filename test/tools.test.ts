@@ -67,6 +67,9 @@ describe("ask", () => {
     const { tools } = await connect(host);
     const ask = tools.find((t) => t.name === "ask")!;
     expect(ask.description).toContain("Batch related questions into one ask");
+    // Asking never parks the agent: only what depends on the answer waits, and more can be asked any time.
+    expect(ask.description).toContain("only the thing you asked about waits on the answer; carry on with everything else");
+    expect(ask.description).toContain("several questions can be open at once, and none replaces another");
     expect(ask.description).toContain("They may pick several options unless you set single.");
     const props = ask.inputSchema.properties as any;
     expect(props.single.type).toBe("boolean");
@@ -78,7 +81,7 @@ describe("ask", () => {
   it("asks one question the old way, multi-select unless single", async () => {
     const { call } = await connect(host);
     added.length = notes.length = 0;
-    expect((await call("ask", { question: "Which platforms?", options: ["macOS", "Linux"] })).text).toContain("Asked (m_1)");
+    expect((await call("ask", { question: "Which platforms?", options: ["macOS", "Linux"] })).text).toContain("Asked (m_1). Carry on with everything else");
     await call("ask", { question: "Which version?", options: ["2.0.0", "1.9.0"], single: true });
     expect(added[0]).toMatchObject({ kind: "question", text: "Which platforms?", options: ["macOS", "Linux"] });
     expect(added[0].single).toBeUndefined();

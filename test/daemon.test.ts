@@ -89,6 +89,29 @@ describe("an agent's life", () => {
     await expect(rt.answer("tester", q.id, 1)).rejects.toThrow(/already answered/);
   });
 
+  it("keeps working with questions open, asks more without replacing any, and each answer names its question", async () => {
+    await rt.send("tester", "PASS ASK");
+    const first = await until(async () => (await rt.store("tester").openQuestions()).at(-1), 40_000, "question");
+    // The same turn went on after asking: it set its status and chose when to wake.
+    await until(async () => (await loadAgent("tester")).state.status === "asleep", 20_000, "turn finished");
+    expect((await loadAgent("tester")).state.ownStatus).toBe("fake is working");
+    // With the question open, it still takes and answers other work.
+    const m = await rt.send("tester", "PASS how is it going?");
+    await until(() => replyAfter("tester", m.id, (t) => t.includes("main reply")), 40_000, "reply while a question is open");
+    expect((await rt.store("tester").message(first.id))!.answer).toBeUndefined();
+    // A second question joins the first.
+    await rt.send("tester", "PASS ASK");
+    await until(async () => (await rt.store("tester").openQuestions()).length === 2, 40_000, "second question");
+    const open = await rt.store("tester").openQuestions();
+    expect(open.map((q) => q.id)[0]).toBe(first.id);
+    // Answering the older one by its id leaves the newer open, and the agent reads which it was.
+    await rt.answer("tester", first.id, 1);
+    expect((await rt.store("tester").openQuestions()).map((q) => q.id)).toEqual([open[1].id]);
+    const delivered = join(home, "agents", "tester", ".overtime", "inbox-delivered.jsonl");
+    await until(async () => existsSync(delivered) && readFileSync(delivered, "utf8").includes('Answer to your question \\"Bridge or ferry?\\" (asked '), 40_000, "answer naming its question delivered");
+    await rt.dismissQuestion("tester", open[1].id);
+  });
+
   it("notices when the person keeps giving the same answer (earned autonomy)", async () => {
     for (let i = 0; i < 2; i++) {
       await rt.send("tester", "PASS ASK");

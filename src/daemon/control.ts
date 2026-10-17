@@ -181,6 +181,8 @@ export class ControlServer {
     messages: async ({ name, limit, before, markRead }) => {
       const store = this.rt.store(name);
       let all = await store.messages();
+      // Every open question, however far back it was asked: they all show together, at the end.
+      const open = all.filter((m) => m.kind === "question" && !m.answer);
       if (before) {
         const i = all.findIndex((m) => m.id === before);
         if (i >= 0) all = all.slice(0, i);
@@ -192,7 +194,7 @@ export class ControlServer {
         await store.markRead(page.at(-1)?.id);
         this.rt.changed(name, "messages");
       }
-      return { messages: page, hasMore: all.length > page.length };
+      return { messages: page, hasMore: all.length > page.length, open };
     },
     send: async ({ name, text, attachments }) => {
       const m = await this.rt.send(name, String(text ?? ""), Array.isArray(attachments) ? attachments.map(String) : []);

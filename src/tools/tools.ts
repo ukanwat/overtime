@@ -134,7 +134,7 @@ Messages, answers and finished helpers always wake you early.`,
       "ask",
       {
         description:
-          "Ask the person something without stopping. It shows in your conversation with them as a question they answer when they can; the answer reaches you later. Only for what is genuinely theirs to decide or genuinely unsafe. Give your recommendation and short options so they can answer with one key. They may pick several options unless you set single. Batch related questions into one ask (questions) rather than asking them one after another: they answer them together.",
+          "Ask the person something without stopping: only the thing you asked about waits on the answer; carry on with everything else. It shows in your conversation with them, with any other open questions, and they answer when they can; the answer reaches you later, naming the question it's for. You can ask more at any time: several questions can be open at once, and none replaces another. Only for what is genuinely theirs to decide or genuinely unsafe. Give your recommendation and short options so they can answer with one key. They may pick several options unless you set single. Batch related questions into one ask (questions) rather than asking them one after another: they answer them together.",
         inputSchema: {
           question: z.string().optional().describe("The question. With questions: an optional heading for the card."),
           why: z.string().optional(),
@@ -171,7 +171,7 @@ Messages, answers and finished helpers always wake you early.`,
         // A question always needs you, so it always notifies: once for the whole card.
         host.notify(several ? `${ctx.agent} has ${several.length} questions` : `${ctx.agent} has a question`, several ? question || several[0].text : question!);
         host.changed(ctx.agent, "messages");
-        return ok(`Asked (${m.id}). Carry on with anything that doesn't depend on the answer. If it stops applying (you decided, or asked something else instead), withdraw it with cancel ${m.id} so it doesn't keep waiting on the person.`);
+        return ok(`Asked (${m.id}). Carry on with everything else; only what depends on this answer waits for it. If it stops applying (you decided, or asked something else instead), withdraw it with cancel ${m.id} so it doesn't keep waiting on the person.`);
       }),
     );
 

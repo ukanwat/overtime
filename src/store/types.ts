@@ -200,3 +200,18 @@ export function replyTo(a: Pick<Answer, "choice" | "choices" | "replies" | "note
   if (i > 0) return {};
   return { choices: a.choices ?? (a.choice ? [a.choice] : undefined), note: a.note };
 }
+
+/** A question in a few words, so an answer can say what it was for: its heading, or its first line, cut at a word. */
+export function shortQuestion(m: Pick<Message, "title" | "text" | "questions">, max = 80): string {
+  const one = ((m.title ?? "").trim() || (m.questions?.length ? `${m.questions.length} questions` : m.text.trim().split("\n")[0])).replace(/\s+/g, " ");
+  if (one.length <= max) return one;
+  const cut = one.slice(0, max);
+  return (cut.lastIndexOf(" ") > max / 2 ? cut.slice(0, cut.lastIndexOf(" ")) : cut).replace(/[\s,;:.-]+$/, "") + "…";
+}
+
+/** When something was asked, as a clock time ("3:12 PM"), with the day when it wasn't today ("Oct 16, 3:12 PM"). */
+export function askedAt(iso: string): string {
+  const d = new Date(iso);
+  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return new Date().toDateString() === d.toDateString() ? time : `${d.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
+}
