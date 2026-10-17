@@ -291,8 +291,9 @@ describe("memory in a running agent", () => {
     expect(st.reflectDay?.passes).toBe(1);
     expect(st.compactedSinceReflect).toBe(false);
     // The cursor is at the last turn it read; the next pass reads on from there, not again.
-    const mains = readdirSync(join(paths.meta("refl"), "runs")).filter((f) => f.startsWith("main_")).sort();
-    expect(st.reflectCursor).toBe(mains.at(-1)!.replace(/\.jsonl$/, ""));
+    // In the order the turns began: two turns in the same second have ids that don't sort by time.
+    const { runIds } = await import("../src/agent/runlog.js");
+    expect(st.reflectCursor).toBe((await runIds("refl")).filter((id) => id.startsWith("main_")).at(-1));
     // The next turn is told its memory changed.
     await tell("refl", "Next.");
     expect(prompts("refl").at(-1)).toContain("- [Check renders](reflected.md) — watch the whole render before sending it");
