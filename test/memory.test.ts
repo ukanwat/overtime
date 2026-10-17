@@ -433,21 +433,22 @@ describe("memory in a running agent", () => {
     expect(prompts("rpat").at(-1)).toContain("- [Release](release.md) — 0.5 is the current release (possibly stale: last verified 2026-01-01)");
   });
 
-  it("lets a helper read the agent's memory but not write it, and asks it to report what it learned", async () => {
-    await tell("rem", "SPAWN_MEMWRITE");
-    const h = await until(async () => (await rt.store("rem").helpers()).find((x) => x.task.startsWith("WRITE_PARENT_MEMORY") && x.status !== "running"), 60_000, "helper done");
+  it("lets a helper read the agent's memory, tells it the memory is read-only, and asks it to report what it learned", async () => {
+    await tell("rem", "SPAWN_MEMREAD");
+    const h = await until(async () => (await rt.store("rem").helpers()).find((x) => x.task.startsWith("READ_PARENT_MEMORY") && x.status !== "running"), 60_000, "helper done");
     const got = readFileSync(join(h.workdir, ".parent-memory"), "utf8");
     expect(got).toContain("read:- [Phone first](phone.md)");
-    if (sandboxAvailable().ok) {
-      expect(got).toContain("denied");
-      expect(existsSync(join(paths.agent("rem"), "memory", "from-helper.md"))).toBe(false);
-    }
     // A helper of an agent whose workspace is its folder (not a git repository) gets a copy.
     expect(h.branch).toBeUndefined();
     expect(existsSync(join(h.workdir, "notes"))).toBe(true);
     const run = readdirSync(join(paths.meta("rem"), "runs")).find((f) => f.startsWith("helper_"))!;
     // It's told to end with learned lines, and a result without them is sent back once for them.
-    expect(readFileSync(join(paths.meta("rem"), "runs", run), "utf8")).toContain('ending with your learned lines');
+    const log = readFileSync(join(paths.meta("rem"), "runs", run), "utf8");
+    expect(log).toContain('ending with your learned lines');
+    // Read-only by its instructions, not by a sandbox: a helper is sandboxed only for what the person
+    // configured (here, on macOS, the test home's protected path).
+    expect(log).toContain("it's read-only for you");
+    expect(JSON.parse(log.split("\n").find((l) => l.includes('"event":"start"'))!).data.sandboxed).toBe(process.platform === "darwin");
     expect(h.result).toMatch(/\n\nlearned: nothing new$/);
     expect(readdirSync(notes).some((f) => f.startsWith("learned-asked-"))).toBe(true);
   });
