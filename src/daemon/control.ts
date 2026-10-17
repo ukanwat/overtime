@@ -6,7 +6,8 @@ import { existsSync, unlinkSync } from "node:fs";
 import { paths } from "../paths.js";
 import { listAgents, loadAgent, effectiveSettings, allMcpServers } from "../agent/agent.js";
 import { readLimits, usageToday } from "../runtime/usage.js";
-import type { Runtime, ChangeEvent } from "./runtime.js";
+import { loadSettings } from "../settings.js";
+import type { Runtime, ChangeEvent, SettingsPatch } from "./runtime.js";
 
 /** Summary of one agent for the agent list. */
 export interface AgentSummary {
@@ -240,9 +241,14 @@ export class ControlServer {
         tokensToday: today.tokens,
       };
     },
-    new: async ({ name, backend, model }) => {
-      const a = await this.rt.create(name, { backend, model });
+    new: async ({ name, ...settings }) => {
+      const a = await this.rt.newAgent(name, settingsPatch(settings));
       return { name: a.name, dir: a.dir };
+    },
+    /** What a new agent gets unless the person chooses otherwise. */
+    defaults: async () => {
+      const g = await loadSettings();
+      return { backend: g.backend, model: g.model, dailyBudgetUsd: g.dailyBudgetUsd };
     },
     stop: async ({ name }) => {
       await this.rt.stopAgent(name);
@@ -265,16 +271,8 @@ export class ControlServer {
       return Promise.all((await this.rt.backends()).map(async (name) => ({ name, missing: await backendMissing(name) })));
     },
     models: async ({ backend }) => this.rt.models(String(backend)),
-    set: async ({ name, backend, model, dailyBudgetUsd, dailyTokenBudget, workspace, protect, visibility }) => {
-      await this.rt.setAgentSettings(name, {
-        backend: backend || undefined,
-        model,
-        dailyBudgetUsd: dailyBudgetUsd === undefined ? undefined : Number(dailyBudgetUsd),
-        dailyTokenBudget: dailyTokenBudget === undefined ? undefined : dailyTokenBudget === null ? null : Number(dailyTokenBudget),
-        workspace,
-        protect: protect === undefined ? undefined : protect === null ? null : (Array.isArray(protect) ? protect : [protect]).map(String).filter(Boolean),
-        visibility,
-      });
+    set: async ({ name, ...settings }) => {
+      await this.rt.setAgentSettings(name, settingsPatch(settings));
       return { ok: true };
     },
     archive: async ({ name }) => ({ dir: await this.rt.archive(name) }),
@@ -396,6 +394,19 @@ export class ControlServer {
       unlinkSync(paths.socket());
     } catch {}
   }
+}
+
+/** Settings as sent by the app or the CLI (for `set`, and `new` with settings chosen up front). */
+function settingsPatch({ backend, model, dailyBudgetUsd, dailyTokenBudget, workspace, protect, visibility }: Record<string, any>): SettingsPatch {
+  return {
+    backend: backend || undefined,
+    model,
+    dailyBudgetUsd: dailyBudgetUsd === undefined ? undefined : Number(dailyBudgetUsd),
+    dailyTokenBudget: dailyTokenBudget === undefined ? undefined : dailyTokenBudget === null ? null : Number(dailyTokenBudget),
+    workspace,
+    protect: protect === undefined ? undefined : protect === null ? null : (Array.isArray(protect) ? protect : [protect]).map(String).filter(Boolean),
+    visibility,
+  };
 }
 
 function socketAnswers(path: string): Promise<boolean> {
