@@ -1,20 +1,42 @@
 # The README's demos
 
 The README's GIFs are recorded from the real app and CLI by [VHS](https://github.com/charmbracelet/vhs).
-The hero, `team`, is scripted: [`team/team.ts`](team/team.ts) feeds the real app seven made-up agents
-and a timeline of their messages through the same fake daemon the tests use, so it runs no model and
-costs nothing. The other five are real recordings: real agents on Claude, nothing mocked. Each of those has a scratch
+Two are scripted: the hero, `team` ([`team/team.ts`](team/team.ts)), and `life`
+([`life/life.ts`](life/life.ts)). Each feeds the real app made-up agents and a timeline of their
+messages through the same fake daemon the tests use, so they run no model and cost nothing. The other
+five are real recordings: real agents on Claude, nothing mocked. Each of those has a scratch
 Overtime home under `/tmp/ot-demo-<name>`, with its own background process and its own small budget, so
 recording never touches `~/overtime`, your agents or the daemon they run in.
 
 | Demo | Shows | Agent | Takes |
 |---|---|---|---|
-| [`team`](team) | Scripted: one message to pm, and a team plans, builds, reviews, tests, handles an incident on the canary, asks you one question and ships | pm, backend, frontend, qa, reviewer, on-call, release | ~1 min |
+| [`team`](team) | Scripted: one message to pm, and a team plans, builds, reviews, tests, handles an incident on the canary, asks you one question and ships | pm, backend, frontend, qa, reviewer, on-call, release | ~2 min |
+| [`life`](life) | Scripted: one person's own agents; an evening check-in, an application approved, a night of work, a morning report | job-scout, interview-coach, visa-planner, grad-school, money, side-project, learning | ~2 min |
 | [`brief`](brief) | Make an agent in the app, brief it once: it fixes a failing test, commits, reports and schedules itself | keeper | ~3 min |
 | [`watch`](watch) | An agent watching a log sleeps for free; a checkout breaks and it wakes, fixes it and reports | on-call | ~4 min |
 | [`helpers`](helpers) | One brief becomes three helpers reviewing a repo in parallel, merged into one review | reviewer | ~6 min |
 | [`ask`](ask) | It asks the one thing that's yours to decide, with options and a recommendation, and keeps going | releaser | ~4 min |
 | [`cli`](cli) | `overtime ls`, `send`, `messages`, `set`; a correction saved as a memory in a plain file | scribe, tidy | ~3 min |
+
+## The scripted demos
+
+What they share is in [`scripted.ts`](scripted.ts). Three things a real run has that a recording
+can't show are stood in for there, and only there:
+
+- **The clock** is set to the scene's own time and runs faster (the night in `life` passes in twenty
+  seconds), so each GIF reads the same whenever it's recorded. Animations keep their real pace.
+- **Opening a file** (Ctrl+L, then Enter) shows it in the terminal, where the recording can see it,
+  instead of in its own app. Markdown is drawn as the app draws messages; a chart from a `.ansi` twin
+  in half-blocks; the CV PDF from the Markdown it was made from. Any key goes back.
+- **Notifications.** Overtime notifies through `osascript` on a Mac, which a terminal recording can't
+  see. The scene logs each one it would send (a question; a report) with its moment, and
+  [`notify-overlay.sh`](notify-overlay.sh) draws them onto the video as macOS banners, true to life:
+  Script Editor's icon, no app name, titled `<agent> has a question` or the agent's name over the
+  report's title. `--app-name` and `--icon` change that if Overtime ever notifies as itself.
+
+The agents' files (`team/files`, `life/files`: charts, a postmortem, a CV) are real files, made by
+[`files.py`](files.py) (`python3 docs/demos/files.py`; matplotlib, Pillow, and Chrome for the PDF).
+`record-all.sh team life` records both and runs the overlay; it needs Google Chrome for the banners.
 
 ## Recording
 
@@ -64,11 +86,14 @@ Real runs differ every time. Before committing a GIF, watch it once for:
 
 - **Nothing personal.** The claude backend knows your account and an agent may mention your name or
   email in a message. If it shows, record that demo again.
-- **team:** scripted, so it plays the same every time, but the clock is real: record it well before
-  midnight so the day doesn't turn over mid-demo. pm's opening shows your message and its plan; qa shows
-  `working · 2 helpers`, the failing `theme-toggle.spec.ts` and its report; on-call's incident report;
-  release's question with `2` chosen; it ends on pm's report with every agent asleep. Story time runs
-  20 times faster than the clock, so message times span about half an hour.
+- **team:** scripted, so it plays the same every time. pm's opening shows your message and its plan;
+  qa shows `working · 2 helpers`, your question and its answer, the failing `theme-toggle.spec.ts` and
+  its report; on-call's incident report with the postmortem and the chart opened; release's question
+  with `2` chosen; it ends on pm's report with every agent asleep. Banners for qa's, on-call's and pm's
+  reports and release's question, each sliding in at the moment it arrives.
+- **life:** scripted too. Sam's question to job-scout; visa-planner's start-date warning; the CV opened;
+  `1` chosen; good night; interview-coach's prep plan opened (stamped before midnight, under
+  "Yesterday" by morning); money's chart opened; job-scout's morning summary at 7. Five banners.
 - **brief:** the card shows the workspace as `/tmp/ot-demo-brief/weather`; the agent says it fixed the
   Fahrenheit conversion (+23 → +32) and the tests pass; the header ends on `asleep · wakes …` with its
   next check; settings (Tab) show claude, the model, the $3 budget and the workspace.
