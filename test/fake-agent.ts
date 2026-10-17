@@ -197,19 +197,10 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
           throw new acp.RequestError(-32603, "Internal error", { message: "stream error", codexErrorInfo: { responseStreamConnectionFailed: { httpStatusCode: 502 } } }); // Codex's shape
         }
       }
-      // WRITE_PARENT_MEMORY: try to write into the memory/ of the agent that started it (it may only read it).
-      if (/WRITE_PARENT_MEMORY/.test(text)) {
+      // READ_PARENT_MEMORY: read the memory/ of the agent that started it (it may only read it).
+      if (/READ_PARENT_MEMORY/.test(text)) {
         const mem = /'s memory is in (\S+)\/ \(/.exec(text)?.[1];
-        let r = "no path";
-        if (mem) {
-          r = existsSync(join(mem, "MEMORY.md")) ? `read:${readFileSync(join(mem, "MEMORY.md"), "utf8").trim()}\n` : "read:none\n";
-          try {
-            writeFileSync(join(mem, "from-helper.md"), "x");
-            r += "LEAKED";
-          } catch {
-            r += "denied";
-          }
-        }
+        const r = !mem ? "no path" : existsSync(join(mem, "MEMORY.md")) ? `read:${readFileSync(join(mem, "MEMORY.md"), "utf8").trim()}\n` : "read:none\n";
         writeFileSync(join(s.cwd, ".parent-memory"), r);
       }
       if (/UPDATE/.test(text)) await t.call("update", { text: "halfway there", urgent: /UPDATE_URGENT/.test(text) });
@@ -293,7 +284,7 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
         writeFileSync(join(s.cwd, "escape-result.txt"), result);
       }
       if (/SPAWN_MISSING/.test(text) && names.includes("spawn")) writeFileSync(join(s.cwd, "spawn-note.txt"), await t.call("spawn", { task: "write result.txt", backend: "not-installed-cli", model: "some-model" }));
-      else if (/SPAWN_MEMWRITE/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "WRITE_PARENT_MEMORY write result.txt" });
+      else if (/SPAWN_MEMREAD/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "READ_PARENT_MEMORY write result.txt" });
       else if (/SPAWN_DONE_ONCE/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "DONE_ONCE write result.txt" });
       else if (/SPAWN_FLAKY/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "FLAKY write result.txt" });
       else if (/SPAWN_SLOW/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "SLOW write result.txt" });

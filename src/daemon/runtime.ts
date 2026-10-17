@@ -1581,8 +1581,6 @@ export class Runtime extends EventEmitter implements ToolHost {
             backend: rec.backend,
             model: rec.model ?? undefined,
             extraMcp: [mcp],
-            // The agent's memory is its own: a helper reads it, and reports what it learned in done.
-            protect: [join(paths.agent(agentName), "memory")],
             // The same session throughout: notes and carrying on keep what it knew.
             resumeSessionId: rec.sessionId ?? null,
             onSession: (id) => {
@@ -2140,7 +2138,7 @@ You are a helper started by ${agentName} for one task. You start clean: everythi
 Work in: ${rec.workdir}${rec.branch ? ` (a git worktree of ${workspace}, on branch ${rec.branch}; commit your work there)` : ` (${note})`}
 The main workspace is ${workspace}; don't change it directly.
 
-${agentName}'s memory is in ${join(paths.agent(agentName), "memory")}/ (MEMORY.md is its index): read it when it helps, but don't change it; what ${agentName} should remember goes in your learned lines.
+${agentName}'s memory is in ${join(paths.agent(agentName), "memory")}/ (MEMORY.md is its index): it's read-only for you. Read it when it helps, but don't change it; what ${agentName} should remember goes in your learned lines, and ${agentName} saves them.
 
 When you're finished, call done with what you did, where the output is, what you checked, and anything left open, ending with your learned lines: one for each thing ${agentName} should remember next time (a fact about the person or their setup, a correction, a command that finally worked, where something lives), each starting "learned: ", or the one line "learned: nothing new". Then end your turn. On long work, tell ${agentName} how it's going with update (urgent only when you're blocked).
 

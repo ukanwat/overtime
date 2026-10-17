@@ -45,8 +45,6 @@ export interface TurnOptions {
   header?: string;
   /** Replace the default preamble for a fresh session (helpers and chats get their own). */
   preamble?: string;
-  /** Paths this session may not write to, on top of the person's protected ones (where the sandbox can enforce it). */
-  protect?: string[];
   /** Claude Code tools this session doesn't get, on top of the ones no Overtime session gets. */
   disallowedTools?: string[];
   /**
@@ -194,8 +192,7 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
     session = await AcpSession.open({
       backend: eff.backend,
       cwd: eff.workspace,
-      // Extra paths only where the sandbox can enforce them: without it, the turn would refuse to run at all.
-      protect: o.protect?.length && sandboxAvailable().ok ? [...base.protect, ...o.protect] : base.protect,
+      protect: base.protect,
       disallowedTools: o.disallowedTools,
       hide: base.hidden,
       writeLayers: o.writable && sandboxAvailable().ok ? writeLayers([...o.writable, join(paths.meta(agent.name), "codex-home")], { overtimeHome: overtimeHome(), agentDir: agent.dir, workspace: eff.workspace }) : undefined,
@@ -268,7 +265,7 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
     const body = typeof o.text === "function" ? o.text(fresh) : o.text;
     const preamble = o.preamble ?? sessionPreamble(agent);
     const prompt = fresh ? `${preamble}\n\n---\n\n${header}\n\n${body}` : `${header}\n\n${body}`;
-    await record("start", { kind: o.kind, backend: eff.backend, model: eff.model, sessionId: session.sessionId, fresh, reason: o.reason, instructionsVersion: INSTRUCTIONS_VERSION });
+    await record("start", { kind: o.kind, backend: eff.backend, model: eff.model, sessionId: session.sessionId, fresh, reason: o.reason, sandboxed: session.sandboxed, instructionsVersion: INSTRUCTIONS_VERSION });
     // Every byte Overtime sends is kept, so you can always see exactly what an agent was told.
     await record("prompt", { text: prompt });
 

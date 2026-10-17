@@ -243,11 +243,14 @@ export class AcpSession {
     open.add(self);
     self.stderrTail = stderrTail;
     self.exited = exited;
+    self.sandboxed = cmd.sandboxed;
     return self;
   }
 
   stderrTail: string[] = [];
   exited: Promise<void> = Promise.resolve();
+  /** Whether the backend runs inside Overtime's sandbox (protected paths, hidden folders or write rules). */
+  sandboxed = false;
 
   /** Turn "connection closed" into the backend's own last words, so failures say what actually went wrong. */
   static async explain<T>(p: Promise<T>, proc: ChildProcess, tail: string[], backend: string, exited: Promise<void>): Promise<T> {
