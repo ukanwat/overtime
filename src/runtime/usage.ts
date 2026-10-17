@@ -181,7 +181,10 @@ export async function gotThroughAt(backend: string, model?: string | null): Prom
 
 /** A turn on this backend and model got through: the limits recorded for it are over, for every agent on that model (not on others). */
 export async function clearLimit(backend: string, model?: string | null): Promise<void> {
-  if (!(await rejectedLimits(backend, model, 0)).length) return;
+  // Recorded even when this turn's own reports already marked the limits allowed: agents paused on this
+  // model go by when a turn got through. Nothing recorded for it at all: nobody waits on it.
+  const all = await readLimits();
+  if (!all[limitKey(backend, model)] && !all[anyModel(backend)]) return;
   const t = new Date().toISOString();
   await updateLimits(limitKey(backend, model), (m) => {
     for (const [w, l] of Object.entries(m.windows)) if (l.status === "rejected") m.windows[w] = { backend, model: l.model, status: "allowed", rateLimitType: l.rateLimitType, updatedAt: t };

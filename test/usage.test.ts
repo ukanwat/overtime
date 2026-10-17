@@ -56,7 +56,15 @@ describe("a recorded usage limit", async () => {
     expect(await gotThroughAt("c", "opus")).toBeInstanceOf(Date);
   });
 
-  it("recorded in the old one-per-backend format: one still in force holds for every model until a turn gets through; others are dropped", async () => {
+  it("a turn getting through is noted even when its own reports already marked the limit allowed", async () => {
+    const at = new Date().toISOString();
+    await writeLimit({ backend: "r", model: "opus", status: "rejected", rateLimitType: "seven_day", updatedAt: at });
+    await writeLimit({ backend: "r", model: "opus", status: "allowed", rateLimitType: "seven_day", updatedAt: at }); // the turn's own report
+    await clearLimit("r", "opus");
+    expect(await gotThroughAt("r", "opus")).toBeInstanceOf(Date);
+  });
+
+    it("recorded in the old one-per-backend format: one still in force holds for every model until a turn gets through; others are dropped", async () => {
     const now = Date.now();
     const at = new Date(now).toISOString();
     writeFileSync(
