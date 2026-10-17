@@ -91,8 +91,15 @@ const REFLECT_TIMEOUT_MS = 15 * 60_000;
 /** Claude Code tools a reflect pass doesn't get: it works with file tools only. */
 const REFLECT_TOOLS_OFF = ["Bash", "BashOutput", "KillShell", "WebFetch", "WebSearch", "NotebookEdit", "Monitor"];
 
-/** Reflect passes are on; OVERTIME_REFLECT=0 in the daemon's environment turns them off (for every agent). */
-const reflectOn = () => process.env.OVERTIME_REFLECT !== "0";
+/**
+ * Whether reflect passes run for an agent: its own `reflect` setting, else settings.json's (both kept
+ * across restarts), on by default. OVERTIME_REFLECT=0 in the daemon's environment turns them off for all.
+ */
+export function reflectEnabled(eff: { reflect: boolean }, env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.OVERTIME_REFLECT !== "0" && eff.reflect;
+}
+/** How long an agent must have been idle before even a full chunk or a compaction starts a pass: the person may still be talking to it. */
+export const REFLECT_SETTLE_MS = process.env.OVERTIME_FAST_RETRY ? 0 : 5 * 60_000;
 
 /** What a pass would read: unread turns, how long their digest is, and when the newest began. */
 export type ReflectBacklog = { turns: number; chars: number; newest: Date | null };
@@ -105,8 +112,7 @@ export function localDate(d: Date): string {
 }
 
 /** Why a reflect pass is due for this agent now (it is idle), or null. */
-export function reflectDue(s: AgentState, backlog: ReflectBacklog, today: ReflectToday, now = Date.now()): string | null {
-  if (!reflectOn()) return null;
+export function reflectDue(s: AgentState, backlog: ReflectBacklog, today: ReflectToday, now = Date.now(), settleMs = REFLECT_SETTLE_MS): string | null {
   if (!backlog.turns) return null;
   if (today.passes >= REFLECT_PASSES_PER_DAY) return null;
   if (today.budgetUsd > 0 && today.usd >= today.budgetUsd * REFLECT_BUDGET_SHARE) return null;
@@ -118,6 +124,7 @@ export function reflectDue(s: AgentState, backlog: ReflectBacklog, today: Reflec
     if (now - Math.max(lastWork, s.reflectStoppedAt ? Date.parse(s.reflectStoppedAt) : 0) < wait) return null;
   }
   const what = `${backlog.turns} turn${backlog.turns === 1 ? "" : "s"} not reflected yet`;
+  if (now - lastWork < settleMs) return null;
   if (s.compactedSinceReflect) return `its session was compacted; ${what}`;
   if (backlog.chars >= REFLECT_CHUNK_CHARS) return what;
   if (now - lastWork >= REFLECT_IDLE_MS) return `idle, ${what}`;
@@ -138,7 +145,7 @@ const COPY_MAX_BYTES = 200 * 1024 * 1024;
 export type ChangeEvent = { agent: string; what: "messages" | "state" | "schedule" | "monitors" | "helpers" | "agents" };
 
 /** A change to an agent's settings, as the person makes it from the app or the CLI. */
-export type SettingsPatch = { backend?: string; model?: string | null; dailyBudgetUsd?: number; dailyTokenBudget?: number | null; workspace?: string | null; protect?: string[] | null; visibility?: string };
+export type SettingsPatch = { backend?: string; model?: string | null; dailyBudgetUsd?: number; dailyTokenBudget?: number | null; workspace?: string | null; protect?: string[] | null; visibility?: string; reflect?: boolean | null; reflectModel?: string | null };
 
 /** Why an agent can't spend right now (usage limit or daily budget), or null if it can. */
 type Blocked = { kind: "limit"; until: Date; resetsAt: Date | null; backend: string } | { kind: "budget"; until: Date; text: string };
@@ -362,8 +369,7 @@ export class Runtime extends EventEmitter implements ToolHost {
       return;
     }
     // The main turn starts once the pass has actually stopped (a few seconds at most): until then its
-    // session can still write memory/, and on the way out it puts back AGENT.md and INDEX.md as they were
-    // before it, which would undo what the main turn changed there.
+    // session can still write memory/, and its partial work is committed on its own, before the turn's.
     const run = (reflecting?.done ?? Promise.resolve())
       .then(() => this.runMain(agent, reason))
       .catch((e) => {
@@ -831,12 +837,17 @@ export class Runtime extends EventEmitter implements ToolHost {
 
   /** Why a reflect pass is due for an idle agent now (see reflectDue), or null. */
   private async reflectTrigger(a: Agent, now: Date): Promise<string | null> {
+    // Offline, a pass could only fail; turned off, it never starts (and no cursor is set meanwhile, so
+    // turning it on later starts from the last few days, not from whenever it was turned off).
+    if (this.offlineSince) return null;
+    const eff = await effectiveSettings(a);
+    if (!reflectEnabled(eff)) return null;
     const backlog = await unreadVolume(a.name, await this.reflectCursor(a, now.getTime()), now.getTime());
     if (!backlog.turns) return null;
     const day = localDate(now);
     const passes = a.state.reflectDay?.day === day ? a.state.reflectDay.passes : 0;
     const usd = (await usageToday(a.name, now, "reflect")).usd;
-    return reflectDue(a.state, backlog, { passes, usd, budgetUsd: (await effectiveSettings(a)).dailyBudgetUsd }, now.getTime());
+    return reflectDue(a.state, backlog, { passes, usd, budgetUsd: eff.dailyBudgetUsd }, now.getTime());
   }
 
   /**
@@ -844,12 +855,16 @@ export class Runtime extends EventEmitter implements ToolHost {
    * (from its cursor, oldest first, a chunk at a time) and makes small edits to memory/, each citing the
    * runs it comes from. It may change nothing else (see runtime/write-scope.ts): it sees AGENT.md,
    * INDEX.md and the skills only to compare against, and what it thinks they lack becomes a memory.
-   * It counts toward the agent's budget, waits while it's paused or over a limit, and posts nothing to
-   * the person: one quiet line in its activity, and a commit in its folder's history.
+   * It runs on the agent's backend, on its reflectModel (default: its model). It counts toward the
+   * agent's budget, waits while it's paused or over a limit, and posts nothing to the person: one quiet
+   * line in its activity, and a commit in its folder's history. A usage limit it runs into is never
+   * recorded against the agent's real work: the pass just ends and is tried again later.
    */
   private async reflect(agentName: string, trigger: string, ctl: AbortController): Promise<void> {
     const agent = await loadAgent(agentName);
     if (agent.state.status !== "asleep" || (await this.blocked(agentName)) || limitHold(agent.state.limitHits)) return;
+    const eff = await effectiveSettings(agent);
+    if (!reflectEnabled(eff)) return;
     const cursor = await this.reflectCursor(agent);
     const chunk = await unreadChunk(agentName, cursor, REFLECT_CHUNK_CHARS);
     if (!chunk.turns.length) {
@@ -877,11 +892,15 @@ export class Runtime extends EventEmitter implements ToolHost {
     const runId = newId("reflect");
     let reply = "";
     let ok = false;
+    let transient = false;
     try {
       const r = await runTurn({
         runId,
         agent: agentName,
         kind: "reflect",
+        model: eff.reflectModel,
+        // Housekeeping: a limit it hits says nothing Overtime should act on for the agent's own turns.
+        recordLimits: false,
         reason: `a reflect pass (${trigger})`,
         text,
         preamble: reflectInstructions(agentName, agent.dir),
@@ -902,7 +921,10 @@ export class Runtime extends EventEmitter implements ToolHost {
       reply = r.reply;
       ok = true;
     } catch (e: any) {
-      if (!(ctl.signal.aborted && !this.stopping)) this.log(`[${agentName}] reflect pass failed: ${String(e?.message ?? e).split("\n")[0]}`);
+      // Offline, a passing provider problem or a usage limit: nothing wrong with these turns, so it
+      // only waits, and never counts toward passing them over.
+      transient = e instanceof UsageLimitError || isTransient(e) || !!this.offlineSince;
+      if (!(ctl.signal.aborted && !this.stopping)) this.log(`[${agentName}] reflect pass ${transient ? "couldn't run now (tried again later)" : "failed"}: ${String(e?.message ?? e).split("\n")[0]}`);
     } finally {
       this.tools.close(ctx.token);
     }
@@ -913,7 +935,7 @@ export class Runtime extends EventEmitter implements ToolHost {
       // Stopped for real work, or failed: the same turns are read again, once it has been idle a while.
       // A part of its history that keeps failing is passed over rather than paid for again and again.
       const stopped = ctl.signal.aborted;
-      const failures = stopped ? st.reflectFailures ?? 0 : (st.reflectFailures ?? 0) + 1;
+      const failures = stopped || transient ? st.reflectFailures ?? 0 : (st.reflectFailures ?? 0) + 1;
       const skip = failures >= REFLECT_FAILS_BEFORE_SKIP;
       await updateState(agentName, { reflectStops: (st.reflectStops ?? 0) + 1, reflectStoppedAt: now, reflectFailures: skip ? 0 : failures, ...(skip ? { reflectCursor: chunk.last } : {}) });
       if (stopped) this.log(`[${agentName}] reflect pass stopped: its main session has work`);
@@ -1871,7 +1893,11 @@ export class Runtime extends EventEmitter implements ToolHost {
     // A new backend means the old model name may not exist there: clear it unless one was given.
     // Public is the default, so only private is written down.
     const visibility = patch.visibility === undefined ? undefined : patch.visibility === "private" ? "private" : null;
-    await setSettings(name, { ...patch, visibility, model: patch.backend && patch.model === undefined ? null : patch.model });
+    // Reflecting is on unless turned off, so only off is written down (null: back to the global setting).
+    const reflect = patch.reflect === undefined ? undefined : patch.reflect === false ? false : null;
+    // A model belongs to its backend: a new backend clears the reflect model too, unless one was given.
+    const reflectModel = patch.backend && patch.reflectModel === undefined ? null : patch.reflectModel === "default" ? null : patch.reflectModel;
+    await setSettings(name, { ...patch, visibility, reflect, reflectModel, model: patch.backend && patch.model === undefined ? null : patch.model });
     this.log(`[${name}] settings changed: ${JSON.stringify(patch)}`);
     // Watches run under the protection they started with: restart them so a change applies to them too.
     if (patch.protect !== undefined || patch.workspace !== undefined) {
@@ -1900,19 +1926,21 @@ export class Runtime extends EventEmitter implements ToolHost {
       if (!existsSync(p) || !statSync(p).isDirectory()) throw new Error(`There's no folder at ${p}.`);
       patch.workspace = p;
     }
-    if (typeof patch.model === "string" && patch.model.trim() && patch.model !== "default") {
+    for (const key of ["model", "reflectModel"] as const) {
+      const name = patch[key];
+      if (typeof name !== "string" || !name.trim() || name === "default") continue;
       // Check the name against what the backend offers, so a typo can't quietly run on its default model.
       const backend = await backendFor();
       let offered: { id: string; name: string }[] | null = null;
       try {
         offered = await this.models(backend);
       } catch {} // can't ask the backend right now: accept, and the next turn reports a bad name
-      const want = patch.model.trim().toLowerCase();
+      const want = name.trim().toLowerCase();
       if (offered?.length && !offered.some((m) => m.id.toLowerCase() === want || m.name.toLowerCase() === want)) {
-        throw new Error(`${backend} doesn't offer a model called "${patch.model}". It offers: ${offered.map((m) => m.id).join(", ")}.`);
+        throw new Error(`${backend} doesn't offer a model called "${name}". It offers: ${offered.map((m) => m.id).join(", ")}.`);
       }
       const hit = offered?.find((m) => m.id.toLowerCase() === want || m.name.toLowerCase() === want);
-      if (hit) patch.model = hit.id;
+      if (hit) patch[key] = hit.id;
     }
     if (Array.isArray(patch.protect)) {
       // Stored as clean absolute paths, so what you see is exactly what's protected.

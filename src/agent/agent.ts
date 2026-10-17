@@ -27,6 +27,10 @@ export interface AgentSettings {
   protect?: string[];
   /** Whether other agents can see and message it (default public). A private agent has no message tool. */
   visibility?: "public" | "private";
+  /** false: no reflect passes for it (default: as settings.json's reflect, which is on). */
+  reflect?: boolean;
+  /** The model its reflect passes run on, on its own backend (default: its model). */
+  reflectModel?: string;
 }
 
 export type AgentStatus = "new" | "working" | "asleep" | "paused" | "stopped" | "error";
@@ -122,6 +126,10 @@ export interface EffectiveSettings {
   protect: string[];
   /** Folders this agent may not read: other agents' that are private. */
   hidden: string[];
+  /** Whether reflect passes run for it (its setting, else the global one; on by default). */
+  reflect: boolean;
+  /** The model its reflect passes run on: its reflectModel, else its model. */
+  reflectModel: string | null;
 }
 
 export function expandHome(p: string): string {
@@ -382,6 +390,8 @@ export async function effectiveSettings(agent: Agent): Promise<EffectiveSettings
     mcpServers: (await allMcpServers(agent)).map((x) => x.server).filter((x) => !disabled.has(x.name)),
     protect: [...new Set([...(g.protect ?? []), ...(agent.settings.protect ?? [])])],
     hidden: await privateFolders(agent),
+    reflect: agent.settings.reflect ?? g.reflect ?? true,
+    reflectModel: agent.settings.reflectModel ?? agent.settings.model ?? g.model,
   };
 }
 

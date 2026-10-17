@@ -1,6 +1,7 @@
 import { open, readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { paths } from "../paths.js";
+import { readJson } from "../fsutil.js";
 
 /**
  * What an agent did, read back from Overtime's own record of each of its turns (runs/<id>.jsonl): what
@@ -18,7 +19,7 @@ export interface TurnRecord {
   steps: string[];
   said: string;
   /** "learned:" lines from helpers' results in what it was told, each with the helper it came from. */
-  learned: string[];
+  learned: { helper: string; text: string }[];
   /** It ended (or failed); a run still being written has neither yet. */
   ended: boolean;
   /** When its log was last written. */
@@ -231,24 +232,33 @@ export function turnPart(prompt: string): string {
     .trim();
 }
 
+/** A helper's result as Overtime hands it to the agent: its heading, its id, the result, then where its work is. */
+const HELPER_RESULT = /^(?:\d+\. Helper result|- helper) — [^\n]*\n(?:Finished|Cancelled|Stopped|Failed) \((helper_\d{14}_[0-9a-f]+)\): [^\n]*\n/gm;
+/** "learned: nothing new" and the like: no lesson. */
+const NOTHING = /^[("'`*\s]*(nothing( new| else| to (add|report|note)| of note)?|none|no new( lessons?| facts?)?|no lessons?|n\/a)\b[)"'`*.!]*(\s*$|\s+(this time|here|today)\b|\s*[—–:,(-])|^-+$/i;
+
 /**
- * The "learned:" lines in helpers' results, each with the helper it came from: one per line, or a
- * "learned:" heading with bullet lines under it. "Nothing new" and the like are left out.
+ * The "learned:" lines in the helpers' results a turn was handed, each with the helper it came from:
+ * one per line, or a "learned:" heading with bullet lines under it. Only from a result as Overtime
+ * delivers it (anything else in the turn, a message from another agent say, isn't a helper's lesson);
+ * the caller keeps only helpers the agent really started. "Nothing new" and the like are left out.
  */
-export function learnedLines(text: string): string[] {
-  const out: string[] = [];
-  const lines = text.split("\n");
-  for (let n = 0; n < lines.length; n++) {
-    const m = /^\s*(?:[-*]\s*)?\**learned\**\s*:\**\s*(.*)$/i.exec(lines[n]);
-    if (!m) continue;
-    const items = m[1].trim() ? [m[1].trim()] : [];
-    // A heading: the bullet lines right under it are the items.
-    if (!items.length) for (let k = n + 1; k < lines.length && /^\s*[-*]\s+\S/.test(lines[k]); k++) items.push(lines[k].replace(/^\s*[-*]\s+/, "").trim());
-    const before = text.slice(0, lines.slice(0, n).join("\n").length);
-    const helper = [...before.matchAll(/helper_\d{14}_[0-9a-f]+/g)].at(-1)?.[0];
-    for (const item of items) {
-      if (/^(nothing( new)?|none|n\/a|-)\.?$/i.test(item)) continue;
-      out.push(`${item}${helper ? ` (from ${helper})` : ""}`);
+export function learnedLines(text: string): { helper: string; text: string }[] {
+  const out: { helper: string; text: string }[] = [];
+  const results = [...text.matchAll(HELPER_RESULT)];
+  for (const [i, m] of results.entries()) {
+    const start = m.index! + m[0].length;
+    // To where Overtime says where its work is, or the next helper's result, whichever comes first.
+    const next = results[i + 1]?.index ?? text.length;
+    const where = text.indexOf("\n\nIts work is in ", start);
+    const lines = text.slice(start, where >= 0 && where < next ? where : next).split("\n");
+    for (let n = 0; n < lines.length; n++) {
+      const l = /^\s*(?:[-*]\s*)?\**learned\**\s*:\**\s*(.*)$/i.exec(lines[n]);
+      if (!l) continue;
+      const items = l[1].trim() ? [l[1].trim()] : [];
+      // A heading: the bullet lines right under it are the items.
+      if (!items.length) for (let k = n + 1; k < lines.length && /^\s*[-*]\s+\S/.test(lines[k]); k++) items.push(lines[k].replace(/^\s*[-*]\s+/, "").trim());
+      for (const item of items) if (!NOTHING.test(item)) out.push({ helper: m[1], text: item });
     }
   }
   return out;
@@ -281,6 +291,8 @@ export async function unreadChunk(agentName: string, cursor: string | null, maxC
   const ids = await runsAfter(agentName, cursor);
   const parts: string[] = [];
   const learned: string[] = [];
+  // Only lessons from helpers this agent really started.
+  const helpers = new Set(((await readJson<{ id: string }[]>(join(paths.meta(agentName), "helpers.json"), [])) ?? []).map((h) => h.id));
   const turns: TurnRecord[] = [];
   let size = 0;
   let last: string | null = null;
@@ -295,7 +307,7 @@ export async function unreadChunk(agentName: string, cursor: string | null, maxC
     const text = renderTurn(t, { ids: true });
     if (size + text.length > maxChars && turns.length) break;
     parts.push(text);
-    learned.push(...t.learned.map((l) => `- ${l} (run ${t.id})`));
+    learned.push(...t.learned.filter((l) => helpers.has(l.helper)).map((l) => `- ${l.text} (from ${l.helper}, run ${t.id})`));
     turns.push(t);
     size += text.length;
     last = t.id;

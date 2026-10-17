@@ -14,7 +14,7 @@ settings.customBackends.gemini = settings.customBackends.fake;
 writeFileSync(settingsFile, JSON.stringify(settings));
 // Claude's own memories live under its config folder: a scratch one here, never the person's.
 process.env.CLAUDE_CONFIG_DIR = mkdtempSync(join(tmpdir(), "overtime-claude-"));
-const { Runtime, reflectDue, REFLECT_CHUNK_CHARS, REFLECT_IDLE_MS, REFLECT_PASSES_PER_DAY, REFLECT_BACKOFF_MS } = await import("../src/daemon/runtime.js");
+const { Runtime, reflectDue, reflectEnabled, REFLECT_CHUNK_CHARS, REFLECT_IDLE_MS, REFLECT_PASSES_PER_DAY, REFLECT_BACKOFF_MS } = await import("../src/daemon/runtime.js");
 const { loadAgent, setSettings, updateState } = await import("../src/agent/agent.js");
 const { paths } = await import("../src/paths.js");
 const { isolationMeta, CLAUDE_BUILTINS_OFF } = await import("../src/acp/session.js");
@@ -203,16 +203,19 @@ describe("when a reflect pass is due", () => {
     // Never more than 4 hours.
     expect(reflectDue(stopped(9, 4 * 3600_000), big, today, now)).toBeTruthy();
   });
-  it("on by default; never when turned off with OVERTIME_REFLECT=0", () => {
-    const due = () => reflectDue({ ...base, compactedSinceReflect: true }, { turns: 40, chars: REFLECT_CHUNK_CHARS * 3, newest: ago(6 * 3600_000) }, today, now);
-    expect(process.env.OVERTIME_REFLECT).toBeUndefined();
-    expect(due()).toBeTruthy();
-    process.env.OVERTIME_REFLECT = "0";
-    try {
-      expect(due()).toBeNull();
-    } finally {
-      delete process.env.OVERTIME_REFLECT;
-    }
+
+  it("not while the person may still be talking to it: even a full chunk or a compaction waits for a few minutes of idle", () => {
+    const fresh = { turns: 40, chars: REFLECT_CHUNK_CHARS * 3, newest: ago(60_000) };
+    expect(reflectDue(base, fresh, today, now, 5 * 60_000)).toBeNull();
+    expect(reflectDue({ ...base, compactedSinceReflect: true }, fresh, today, now, 5 * 60_000)).toBeNull();
+    expect(reflectDue(base, { ...fresh, newest: ago(5 * 60_000) }, today, now, 5 * 60_000)).toBe("40 turns not reflected yet");
+  });
+
+  it("on by default; off by the agent's setting or the global one (kept across restarts), or OVERTIME_REFLECT=0", () => {
+    expect(reflectEnabled({ reflect: true }, {})).toBe(true);
+    expect(reflectEnabled({ reflect: false }, {})).toBe(false);
+    expect(reflectEnabled({ reflect: true }, { OVERTIME_REFLECT: "0" })).toBe(false);
+    expect(reflectEnabled({ reflect: true }, { OVERTIME_REFLECT: "1" })).toBe(true);
   });
 });
 
@@ -308,7 +311,7 @@ describe("memory in a running agent", () => {
     expect(seen).toContain("# AGENT.md (read-only: never edit it)\n\n# fake");
     expect(seen).toContain("# INDEX.md (read-only)\n\n# Index");
     expect(seen).toContain(`- render (its own, ${join(dir, "skills", "render", "SKILL.md")}): how to render a shot`);
-    expect(seen).toContain("Change nothing outside");
+    expect(seen).toContain(`You can change only ${dir}/memory/`);
     // No boilerplate from the turns: not the reply reminder, not the time line.
     const digest = seen.slice(seen.indexOf("# What refl did"));
     expect(digest).not.toContain("Reply with send to new messages");
@@ -398,9 +401,68 @@ describe("memory in a running agent", () => {
     expect(existsSync(join(paths.agent("rem"), ".gemini"))).toBe(false);
   });
 
+  it("a pass that fails for a passing reason or a usage limit only waits: nothing passed over, no limit recorded, the agent not paused", async () => {
+    await rt.create("rfail");
+    await tell("rfail", "Your job is testing.");
+    const st = async () => (await loadAgent("rfail")).state;
+    const cursor = (await st()).reflectCursor;
+    const limits = () => (existsSync(join(home, "limits.json")) ? readFileSync(join(home, "limits.json"), "utf8") : "");
+    for (const how of ["overloaded", "limit", "overloaded", "limit"]) {
+      writeFileSync(join(notes, "reflect-fail"), how);
+      await (rt as any).reflect("rfail", "test", new AbortController());
+      expect(existsSync(join(notes, "reflect-fail"))).toBe(false);
+      expect((await st()).reflectFailures ?? 0).toBe(0);
+      expect((await st()).status).toBe("asleep");
+    }
+    const s1 = await st();
+    expect(s1.reflectStops).toBe(4);
+    expect(s1.reflectCursor ?? null).toBe(cursor ?? null);
+    expect(limits()).not.toContain("rejected");
+    expect(await (rt as any).blocked("rfail")).toBeFalsy();
+    expect(lines.some((l) => l.includes("[rfail] reflect pass couldn't run now (tried again later)"))).toBe(true);
+    // A real failure counts; three in a row pass that part over.
+    for (let n = 1; n <= 3; n++) {
+      writeFileSync(join(notes, "reflect-fail"), "fatal");
+      await (rt as any).reflect("rfail", "test", new AbortController());
+    }
+    expect((await st()).reflectCursor).not.toBe(s1.reflectCursor);
+    expect(lines.some((l) => l.includes("[rfail] reflect pass failed 3 times"))).toBe(true);
+  });
+
+  it("isn't due while offline or turned off, and sets no cursor while off; runs on the agent's reflectModel when it has one", async () => {
+    await rt.create("roff");
+    await tell("roff", "Your job is testing.");
+    await updateState("roff", { compactedSinceReflect: true, reflectCursor: undefined as any });
+    const trigger = async () => (rt as any).reflectTrigger(await loadAgent("roff"), new Date());
+    await rt.setAgentSettings("roff", { reflect: false });
+    expect((await loadAgent("roff")).settings.reflect).toBe(false);
+    expect(await trigger()).toBeNull();
+    expect((await loadAgent("roff")).state.reflectCursor).toBeUndefined();
+    await rt.setAgentSettings("roff", { reflect: true });
+    expect((await loadAgent("roff")).settings.reflect).toBeUndefined();
+    (rt as any).offlineSince = new Date().toISOString();
+    try {
+      expect(await trigger()).toBeNull();
+    } finally {
+      (rt as any).offlineSince = null;
+    }
+    expect(await trigger()).toMatch(/its session was compacted/);
+    // Its own model for reflect passes, kept in its settings like the others.
+    await rt.setAgentSettings("roff", { reflectModel: "small-model" });
+    expect(readFileSync(join(paths.agent("roff"), "AGENT.md"), "utf8")).toContain("reflectModel: small-model");
+    await (rt as any).reflect("roff", "test", new AbortController());
+    expect(readFileSync(join(notes, "reflect-seen-roff.txt"), "utf8").split("\n")[2]).toBe("model: small-model");
+  });
+
+  it("keeps a helper's first result when it was sent back for learned lines and never called done again", async () => {
+    await tell("rem", "SPAWN_DONE_ONCE");
+    const h = await until(async () => (await rt.store("rem").helpers()).find((x) => x.task.startsWith("DONE_ONCE") && x.status !== "running"), 60_000, "helper done");
+    expect(h.result).toBe(`wrote ${join(h.workdir, "result.txt")}`);
+  });
+
   it("lets a helper read the agent's memory but not write it, and asks it to report what it learned", async () => {
     await tell("rem", "SPAWN_MEMWRITE");
-    const h = await until(async () => (await rt.store("rem").helpers()).find((x) => x.status !== "running"), 60_000, "helper done");
+    const h = await until(async () => (await rt.store("rem").helpers()).find((x) => x.task.startsWith("WRITE_PARENT_MEMORY") && x.status !== "running"), 60_000, "helper done");
     const got = readFileSync(join(h.workdir, ".parent-memory"), "utf8");
     expect(got).toContain("read:- [Phone first](phone.md)");
     if (sandboxAvailable().ok) {

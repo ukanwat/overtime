@@ -1197,6 +1197,13 @@ export class App implements Component {
     this.say(next === "private" ? `${a.name} is private now: other agents can't see it or message it.` : `${a.name} is public now: other agents can see it and message it.`, "ok");
   }
 
+  private async toggleReflect(on: boolean): Promise<void> {
+    const a = this.needAgent();
+    if (!a) return;
+    await this.c.call("set", { name: a.name, reflect: !on });
+    this.say(on ? `Reflect passes are off for ${a.name}.` : `Reflect passes are on for ${a.name}.`, "ok");
+  }
+
   private async toggleStop(): Promise<void> {
     const a = this.needAgent();
     if (!a) return;
@@ -1387,6 +1394,16 @@ export class App implements Component {
         note: (d?.visibility ?? "public") === "public" ? "they see it and can message it (Enter: make private)" : "hidden from them (Enter: make public)",
         stay: true,
         run: () => this.toggleVisibility(d?.visibility ?? "public"),
+      },
+      { label: "Memory", heading: true },
+      {
+        label: "Reflect passes",
+        key: "reflect",
+        // An older background process doesn't say: shown as the default.
+        value: (d?.reflect ?? true) ? "on" : "off",
+        note: (d?.reflect ?? true) ? `on ${d?.reflectModel ?? "its own model"}, while it's idle (Enter: turn off)` : "its memory is kept only by its own turns (Enter: turn on)",
+        stay: true,
+        run: () => this.toggleReflect(d?.reflect ?? true),
       },
       { label: "Work", heading: true },
       { label: "Workspace", field: "workspace", value: tilde(d?.workspace ?? a.dir), note: d && !d.workspaceIsDefault ? "where its work lives" : "its own folder" },

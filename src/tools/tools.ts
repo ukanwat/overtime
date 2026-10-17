@@ -298,12 +298,13 @@ Messages, answers and finished helpers always wake you early.`,
         inputSchema: { result: z.string() },
       },
       safe(async ({ result }) => {
-        // The learned lines are what outlives the helper: without them, it's asked once to add them.
+        // The learned lines are what outlives the helper: without them, it's asked once to add them. This
+        // result stands meanwhile, so it isn't lost if no second done comes (it stops, or runs out of time).
+        ctx.result = result;
         if (!/^\s*(?:[-*]\s*)?\**learned\**\s*:/im.test(result) && !ctx.learnedAsked) {
           ctx.learnedAsked = true;
           return fail('Your result has no learned lines. Add them at the end: one line for each thing the agent should remember next time, each starting "learned: ", or the one line "learned: nothing new". Then call done again with the whole result.');
         }
-        ctx.result = result;
         // Asked once per result: a later result (after a note) is asked again.
         ctx.learnedAsked = false;
         return ok("Thanks. End your turn now.");
