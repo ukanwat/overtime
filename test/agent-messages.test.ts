@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { fakeHome, here, until } from "./helpers.js";
 
 fakeHome();
 const { Runtime, AGENT_MESSAGES_PER_DAY } = await import("../src/daemon/runtime.js");
-const { loadAgent, setSettings } = await import("../src/agent/agent.js");
+const { loadAgent, setSettings, publicAgents } = await import("../src/agent/agent.js");
 const { paths } = await import("../src/paths.js");
 const { ControlServer } = await import("../src/daemon/control.js");
 
@@ -130,10 +130,37 @@ describe("agents messaging each other", () => {
     expect((await cli(["set", "ann", "visibility=public"])).code).toBe(0);
     expect((await loadAgent("ann")).settings.visibility).toBeUndefined();
     expect((await cli(["settings", "ann"])).out).toMatch(/visibility\s+public/);
+    // With the settings block gone, the file starts with its title again, not a blank line.
+    expect(readFileSync(file("ann", "AGENT.md"), "utf8")).toMatch(/^# /);
     const bad = await cli(["set", "ann", "visibility=secret"]);
     expect(bad.code).not.toBe(0);
     expect(bad.out).toContain("isn't a visibility");
   }, 90_000);
+
+  it("lists the settings you can change, all of them, after a key that isn't one", async () => {
+    const r = await cli(["set", "ann", "colour=red"]);
+    expect(r.code).not.toBe(0);
+    expect(r.out).toContain('There\'s no setting "colour"');
+    for (const k of ["backend", "model", "budget", "tokens", "workspace", "visibility", "protect"]) expect(r.out).toContain(k);
+  }, 60_000);
+
+  it("says there's no such agent when asked for the messages of one that doesn't exist", async () => {
+    const r = await cli(["messages", "zz"]);
+    expect(r.code).not.toBe(0);
+    expect(r.out).toContain('No agent called "zz"');
+    expect(r.out).not.toContain("No messages with zz");
+  }, 60_000);
+
+  it("shows each agent's job in the list as plain text, without markdown", async () => {
+    const md = file("bob", "AGENT.md");
+    const before = readFileSync(md, "utf8");
+    try {
+      writeFileSync(md, "# bob\n\n**Role:** Keeps the [docs](https://example.com) in `docs/` tidy.\n**Goal:** none\n");
+      expect(publicAgents().find((a) => a.name === "bob")?.job).toBe("Role: Keeps the docs in docs/ tidy.");
+    } finally {
+      writeFileSync(md, before);
+    }
+  });
 
   it("keeps a private agent's folder unreadable to other agents (macOS), never to itself", async () => {
     await tell("ann", `READ_FILE ${file("cat", "AGENT.md")}`, "ann reads cat");
