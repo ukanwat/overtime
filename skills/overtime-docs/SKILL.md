@@ -159,7 +159,7 @@ they type `/`). Load that skill and follow it for that message.
   under about 150 lines (past that you're told, after the turn's request, to consolidate). It's in every
   fresh session's opening, and sent again whenever it changes. Each memory is its own small file with
   front matter: `type` (person, feedback, project or reference), `source` (person, observed,
-  other-agent, web or inferred), `date`, `last-verified` (the last day it was checked and still held). Update or
+  other-agent, web or inferred), `date`, `last-verified`, `quote` (the person's exact words, when it came from them) (the last day it was checked and still held). Update or
   delete a wrong memory; don't add a contradiction. How-tos are skills.
 - A fact that can change (`can-change: true`: a status, version, price, someone's role) ages: unchecked
   for 30 days (project) or 60 (other types), its index line gets "(possibly stale: last verified …)";
