@@ -69,8 +69,6 @@ give it access to, and asks before anything that's yours to decide.
 
 <img src="docs/demos/life.gif" alt="Sam's agents in the Overtime app: job-scout, interview-coach, visa-planner, grad-school, money, side-project and learning. At 9:38 PM Sam asks job-scout if anything is worth applying to; it checks the start date with visa-planner, tailors Sam's CV (opened: a one-page CV) and asks whether to apply to a Stripe Staff role; Sam presses 1. Sam says good night. Overnight interview-coach writes an onsite prep plan (opened), side-project fixes a crash from two 1-star reviews, money closes October with a budget chart (opened). At 7 AM job-scout sends a morning summary of the night. macOS notifications pop in the corner as the reports arrive." width="100%">
 
-<sub>Scripted, like the one at the top: the real app with a made-up person, agents and files.</sub>
-
 - **Job hunt**: finds roles that fit, tailors your CV for each one, tracks every application, and asks before it applies.
 - **Interview coach**: builds a prep plan from the company's recent interviews, writes mock questions, and grades your practice answers.
 - **Visa and immigration**: keeps the timeline and deadlines, prepares and checks the documents, and tells your other agents which dates matter.
