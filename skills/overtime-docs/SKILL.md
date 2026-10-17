@@ -156,21 +156,32 @@ they type `/`). Load that skill and follow it for that message.
 ## Memory
 
 - `memory/MEMORY.md` is the index: one line per memory, `- [Title](file.md) — the rule itself`, kept
-  under about 150 lines (past that you're told to consolidate). It's in every fresh session's opening,
-  and sent again whenever it changes. Each memory is its own small file with front matter: `type`
-  (person, feedback, project or reference), `source` (person, observed, agent or web), `date`,
-  `last-verified`. Update or delete a wrong memory; don't add a contradiction. How-tos are skills.
+  under about 150 lines (past that you're told, after the turn's request, to consolidate). It's in every
+  fresh session's opening, and sent again whenever it changes. Each memory is its own small file with
+  front matter: `type` (person, feedback, project or reference), `source` (person, observed,
+  other-agent or web), `date`, `last-verified` (the last day it was checked and still held). Update or
+  delete a wrong memory; don't add a contradiction. How-tos are skills.
 - Backends' own memory is off (Claude's auto-memory, Codex's memories; Gemini's `save_memory` and Auto
   Memory through `.gemini/settings.json` in your folder). OpenCode has none of its own; only plugins in
-  the person's own config would add one. Claude's old memories for your folder were copied in once.
-- A reflect pass (kind `reflect`, transcripts in `.overtime/runs/reflect_*.jsonl`) runs after a
-  compaction, or after 8 turns at most once a day, while you're idle. It edits only `memory/` and
-  `skills/`, citing run ids. Helpers can read your `memory/` but not write it; they report
-  "learned: …" in done.
+  the person's own config would add one. Claude's old memories for your folder (and your helpers'
+  folders, as `helper-<id>-<name>.md`) were copied in once.
+- A reflect pass (kind `reflect`, transcripts in `.overtime/runs/reflect_*.jsonl`) reads your turns and
+  chats once each, oldest first, from where the last one stopped (`reflectCursor` in
+  `.overtime/state.json`), about 80,000 characters at a time, over as many passes as it takes. It runs
+  while you're idle: when a chunk's worth is unread, after a compaction, or after an hour idle with
+  anything unread; at most 10 passes and a tenth of your daily budget a day. Stopped because work came
+  in, it waits for 30 minutes of idle (doubling, up to 4 hours) before trying again. It runs on your
+  backend and model with none of your MCP servers, sees AGENT.md, INDEX.md and your skills read-only,
+  and can change only `memory/` (enforced by the sandbox, by refusing other edits and commands, and by
+  undoing its own changes elsewhere, never anyone else's). What it thinks a skill or AGENT.md lacks
+  becomes a memory whose index line ends "(for skill <name>)", "(for a new skill)" or "(for AGENT.md)":
+  put it there and delete the memory. Helpers can read your `memory/` but not write it; they end done
+  with "learned: …" lines (or "learned: nothing new"), which the reflect pass reads.
 - Your folder is a git repository Overtime commits to (as "Overtime <overtime@localhost>") after each
-  turn ("turn <runId>: why") and reflect pass ("reflect <date> (why), <runId>"): only `memory/`,
-  `skills/`, AGENT.md and INDEX.md. `git log -p memory/` shows the history. If your folder was already
-  a git repository of your own, Overtime doesn't commit to it.
+  turn and reflect pass: only `memory/`, `skills/`, AGENT.md and INDEX.md. Each message says what
+  changed ("memory: added a.md, edited MEMORY.md (turn <runId>)"), with the index lines added and
+  removed in its body. `git log -p memory/` shows the history. If your folder was already a git
+  repository of your own, Overtime doesn't commit to it.
 
 ## How sessions work
 

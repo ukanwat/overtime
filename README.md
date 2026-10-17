@@ -96,11 +96,14 @@ the agent decides to keep:
 - Everything else (notes, data, decisions, scripts, archives) is organised by the agent, the way
   a senior keeps their own desk.
 
-**It learns, and you can see what it learned.** Besides what the agent saves itself, Overtime now
-and then runs a short *reflect pass* for it: after its backend compacts the session, or after 8 turns
-and at most once a day, while it's idle. The pass reads what the agent did since the last one and
-makes small edits to `memory/` and `skills/` (what it was corrected on, what it worked out, what's
-gone stale), each citing the run it came from. It counts toward the budget and says nothing to you.
+**It learns, and you can see what it learned.** Besides what the agent saves itself, Overtime runs a
+short *reflect pass* for it while it's idle. Each pass reads the next part of what the agent did, oldest
+first, from where the last pass stopped, so every turn is read once: when enough has piled up, after its
+backend compacts the session, or after an hour idle (at most 10 passes and a tenth of its budget a day).
+It notes what the agent was corrected on, what it worked out and what's gone stale, as small edits to
+`memory/`, each citing the run it came from. It can change nothing else: AGENT.md and skills are shown
+to it read-only, and what it thinks they lack becomes a memory for the agent to fold in. It counts
+toward the budget and says nothing to you.
 The agent's folder is a git repository: after every turn and reflect pass Overtime commits `memory/`,
 `skills/`, `AGENT.md` and `INDEX.md` as "Overtime", so `git log -p memory/` in the folder shows what
 changed and `git revert` undoes it. A folder that is already a git repository of the agent's own is
