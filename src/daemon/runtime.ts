@@ -21,7 +21,7 @@ import { AcpSession } from "../acp/session.js";
 import { promptWasSent, runTurn, sessionPreamble, TurnIncompleteError, UsageLimitError, type TurnResult } from "../runtime/turn.js";
 import { blockedUntil, gotThroughAt, limitInfo, LIMIT_RECHECK_MS, rejectedLimits, usageToday, type TurnUsage } from "../runtime/usage.js";
 import { reflectInstructions, workingInstructions } from "../runtime/instructions.js";
-import { commitHistory, ensureHistory, importClaudeMemory, importHelperClaudeMemory, inHistoryRepo, memoryOverCap, memoryText } from "../agent/memory.js";
+import { importClaudeMemory, importHelperClaudeMemory, memoryFingerprint, memoryOverCap, memoryText } from "../agent/memory.js";
 import { recentTurns, runIds, runTime, unreadChunk, unreadVolume } from "../agent/runlog.js";
 import { StepBoundary } from "../runtime/boundary.js";
 import { MonitorRunner, reapStaleMonitors } from "./monitors.js";
@@ -369,7 +369,7 @@ export class Runtime extends EventEmitter implements ToolHost {
       return;
     }
     // The main turn starts once the pass has actually stopped (a few seconds at most): until then its
-    // session can still write memory/, and its partial work is committed on its own, before the turn's.
+    // session can still write memory/.
     const run = (reflecting?.done ?? Promise.resolve())
       .then(() => this.runMain(agent, reason))
       .catch((e) => {
@@ -794,34 +794,9 @@ export class Runtime extends EventEmitter implements ToolHost {
       if (this.mainAborts.get(agentName) === turnCtl) this.mainAborts.delete(agentName);
       if (this.boundaries.get(agentName) === boundary) this.boundaries.delete(agentName);
       this.tools.close(ctx.token);
-      // Whatever the turn changed in memory/, skills/, AGENT.md and INDEX.md goes into the folder's history.
-      await this.commit(agentName, `turn ${runId}`, { body: `Why it was awake: ${reason.split("\n")[0].slice(0, 200)}` });
       this.emit("turnEnd", { agent: agentName, kind: "main" });
       await this.refreshNextWake(agentName).catch(() => {});
       this.changed(agentName, "state");
-    }
-  }
-
-  /**
-   * Commit the agent's memory/, skills/, AGENT.md and INDEX.md to its folder's history. A folder that is a
-   * git repository of the agent's own isn't committed to: noted once.
-   */
-  private async commit(agentName: string, tag: string, opts: { body?: string; only?: string[] } = {}): Promise<void> {
-    try {
-      const dir = paths.agent(agentName);
-      const h = await ensureHistory(dir);
-      if (!h.ok) {
-        const a = await loadAgent(agentName);
-        if (a.state.historyOff !== h.why) {
-          await updateState(agentName, { historyOff: h.why });
-          this.log(`[${agentName}] its folder's history isn't kept by Overtime: ${h.why}`);
-        }
-        return;
-      }
-      const id = await commitHistory(dir, tag, opts);
-      if (id) this.log(`[${agentName}] committed ${id} (${tag})${opts.body ? `: ${opts.body.split("\n")[0].slice(0, 120)}` : ""}`);
-    } catch (e: any) {
-      this.log(`[${agentName}] history commit failed: ${String(e?.message ?? e).split("\n")[0]}`);
     }
   }
 
@@ -890,6 +865,7 @@ export class Runtime extends EventEmitter implements ToolHost {
     ].join("\n\n---\n\n");
     const { ctx, mcp } = this.tools.open({ agent: agentName, kind: "reflect", depth: 0 });
     const runId = newId("reflect");
+    const before = await memoryFingerprint(agent.dir);
     let reply = "";
     let ok = false;
     let transient = false;
@@ -940,16 +916,13 @@ export class Runtime extends EventEmitter implements ToolHost {
       await updateState(agentName, { reflectStops: (st.reflectStops ?? 0) + 1, reflectStoppedAt: now, reflectFailures: skip ? 0 : failures, ...(skip ? { reflectCursor: chunk.last } : {}) });
       if (stopped) this.log(`[${agentName}] reflect pass stopped: its main session has work`);
       if (skip) this.log(`[${agentName}] reflect pass failed ${failures} times on its turns ${first} to ${last} UTC; passed over them`);
-      // What it had already changed is kept, in its own commit, so the next turn's commit is only its own.
-      await this.commit(agentName, `reflect ${runId}, stopped partway`, { body: `It was reading its turns ${first} to ${last} UTC.`, only: ["memory"] });
       return;
     }
     await updateState(agentName, { reflectCursor: chunk.last, lastReflectAt: now, turnsSinceReflect: 0, compactedSinceReflect: false, reflectStops: 0, reflectStoppedAt: null, reflectFailures: 0 });
-    const before = await exec("git", ["-C", agent.dir, "rev-parse", "--short", "HEAD"]).then((r) => r.stdout.trim(), () => "");
     const said = reply.trim().split("\n").filter(Boolean).at(-1) ?? "";
-    await this.commit(agentName, `reflect ${runId}`, { body: `Reflect pass on ${localDate(new Date())} (${trigger}), over its turns ${first} to ${last} UTC.${said ? `\n\n${said.slice(0, 500)}` : ""}`, only: ["memory"] });
-    const after = await exec("git", ["-C", agent.dir, "rev-parse", "--short", "HEAD"]).then((r) => r.stdout.trim(), () => "");
-    await this.store(agentName).addReport(`Reflect pass: ${after && after !== before ? `updated its memory (commit ${after}; see git log in its folder)` : "nothing to change"}.`);
+    const changed = (await memoryFingerprint(agent.dir)) !== before;
+    this.log(`[${agentName}] reflect pass over its turns ${first} to ${last} UTC (${trigger}): ${changed ? said.slice(0, 300) || "changed its memory" : "nothing to change"}`);
+    await this.store(agentName).addReport(`Reflect pass: ${changed ? `updated its memory${said ? `: ${said.slice(0, 300)}` : ""}` : "nothing to change"}.`);
     this.changed(agentName, "state");
   }
 
@@ -1352,8 +1325,7 @@ export class Runtime extends EventEmitter implements ToolHost {
   /** A folder of its own for each helper: a git worktree of the workspace, or a copy of a small workspace. */
   private async prepareWorkdir(agentName: string, rec: HelperRecord, workspace: string): Promise<{ branch?: string; note: string }> {
     await mkdir(join(rec.workdir, ".."), { recursive: true });
-    // The agent's own folder is a git repository for its history only: a helper gets a copy of it, not a worktree.
-    if ((await isGitRepo(workspace)) && !(await inHistoryRepo(workspace))) {
+    if (await isGitRepo(workspace)) {
       const branch = `overtime/${agentName}/${rec.id}`;
       try {
         await exec("git", ["-C", workspace, "worktree", "add", "-b", branch, rec.workdir], { timeout: 120_000 });
@@ -1363,7 +1335,7 @@ export class Runtime extends EventEmitter implements ToolHost {
       }
     }
     if (existsSync(workspace)) {
-      const exclude = [paths.meta(agentName), ...((await inHistoryRepo(workspace)) ? [join(workspace, ".git")] : [])];
+      const exclude = [paths.meta(agentName)];
       const size = await measure(workspace, exclude, COPY_MAX_FILES, COPY_MAX_BYTES);
       if (size.ok) {
         // Entry by entry: the workspace may be the agent's own folder, which holds the helper's folder too.

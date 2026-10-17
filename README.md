@@ -99,15 +99,14 @@ the agent decides to keep:
 **It learns, and you can see what it learned.** Besides what the agent saves itself, Overtime runs a
 short *reflect pass* for it while it's idle. Each pass reads the next part of what the agent did, oldest
 first, from where the last pass stopped, so every turn is read once: when enough has piled up, after its
-backend compacts the session, or after an hour idle (at most 10 passes and a tenth of its budget a day).
+backend compacts the session, or after an hour idle, never within a few minutes of a turn or while
+offline (at most 10 passes and a tenth of its budget a day).
 It notes what the agent was corrected on, what it worked out and what's gone stale, as small edits to
 `memory/`, each citing the run it came from. It can change nothing else: AGENT.md and skills are shown
 to it read-only, and what it thinks they lack becomes a memory for the agent to fold in. It counts
-toward the budget and says nothing to you.
-The agent's folder is a git repository: after every turn and reflect pass Overtime commits `memory/`,
-`skills/`, `AGENT.md` and `INDEX.md` as "Overtime", so `git log -p memory/` in the folder shows what
-changed and `git revert` undoes it. A folder that is already a git repository of the agent's own is
-left alone.
+toward the budget and says nothing to you. It runs on the agent's own model unless you give it another
+(`overtime set <name> reflectModel=…`), and `overtime set <name> reflect=off` (or `"reflect": false` in
+settings.json, for every agent) turns it off.
 
 **It manages its own time.** When a stretch of work is done, it decides when to wake next, between
 one minute and three days ahead. It can wake on a schedule ("every day at 9") or on events: a

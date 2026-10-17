@@ -97,8 +97,6 @@ export interface AgentState {
   reflectFailures?: number;
   /** Reflect passes started today (the person's local day), against the daily cap. */
   reflectDay?: { day: string; passes: number };
-  /** Why Overtime doesn't commit its folder's history, noted once (the folder is a git repository of its own). */
-  historyOff?: string;
 }
 
 export interface Agent {
