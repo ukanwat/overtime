@@ -1,12 +1,15 @@
 # The README's demos
 
-Every GIF in the README is a real recording: real agents on Claude, driven through the real app and
-CLI by [VHS](https://github.com/charmbracelet/vhs). Nothing is mocked. Each demo has a scratch
+The README's GIFs are recorded from the real app and CLI by [VHS](https://github.com/charmbracelet/vhs).
+The hero, `team`, is scripted: [`team/team.ts`](team/team.ts) feeds the real app seven made-up agents
+and a timeline of their messages through the same fake daemon the tests use, so it runs no model and
+costs nothing. The other five are real recordings: real agents on Claude, nothing mocked. Each of those has a scratch
 Overtime home under `/tmp/ot-demo-<name>`, with its own background process and its own small budget, so
 recording never touches `~/overtime`, your agents or the daemon they run in.
 
 | Demo | Shows | Agent | Takes |
 |---|---|---|---|
+| [`team`](team) | Scripted: one message to pm, and a team plans, builds, reviews, tests, handles an incident on the canary, asks you one question and ships | pm, backend, frontend, qa, reviewer, on-call, release | ~1 min |
 | [`brief`](brief) | Make an agent in the app, brief it once: it fixes a failing test, commits, reports and schedules itself | keeper | ~3 min |
 | [`watch`](watch) | An agent watching a log sleeps for free; a checkout breaks and it wakes, fixes it and reports | on-call | ~4 min |
 | [`helpers`](helpers) | One brief becomes three helpers reviewing a repo in parallel, merged into one review | reviewer | ~6 min |
@@ -61,6 +64,11 @@ Real runs differ every time. Before committing a GIF, watch it once for:
 
 - **Nothing personal.** The claude backend knows your account and an agent may mention your name or
   email in a message. If it shows, record that demo again.
+- **team:** scripted, so it plays the same every time, but the clock is real: record it well before
+  midnight so the day doesn't turn over mid-demo. pm's opening shows your message and its plan; qa shows
+  `working · 2 helpers`, the failing `theme-toggle.spec.ts` and its report; on-call's incident report;
+  release's question with `2` chosen; it ends on pm's report with every agent asleep. Story time runs
+  20 times faster than the clock, so message times span about half an hour.
 - **brief:** the card shows the workspace as `/tmp/ot-demo-brief/weather`; the agent says it fixed the
   Fahrenheit conversion (+23 → +32) and the tests pass; the header ends on `asleep · wakes …` with its
   next check; settings (Tab) show claude, the model, the $3 budget and the workspace.

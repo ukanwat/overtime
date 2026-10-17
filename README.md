@@ -15,7 +15,12 @@
 </p>
 
 <p align="center">
-  <img src="docs/demos/brief.gif" alt="Making an agent called keeper in the Overtime app: it's pointed at a small repo and told to keep its tests green. It finds a wrong constant in the Fahrenheit conversion, fixes it, commits, reports, and goes to sleep until its next check." width="100%">
+  <img src="docs/demos/team.gif" alt="Seven agents in the Overtime app: pm, backend, frontend, qa, reviewer, on-call and release. One message to pm asks for dark mode and a billing export by tonight. pm plans and messages the others, who start working with helpers; qa catches a failing test and frontend fixes it; on-call is woken by an error spike on the canary, rolls it back and reports; release asks whether to ship to 100% or a 10% canary first, and the answer is 2; it ships, pm reports 7 PRs merged, 1 incident handled and 41 tests added, and everyone goes back to sleep." width="100%">
+</p>
+
+<p align="center">
+  <sub>A scripted demo of a team of agents working together: the real app, with made-up agents and messages.
+  The recordings further down are real runs.</sub>
 </p>
 
 <p align="center">
@@ -56,7 +61,9 @@ run Overtime asks whether to start it when you log in.
 
 ### Brief it once
 
-The GIF at the top is a real run. One message gives an agent its job. It writes that down in its own
+<img src="docs/demos/brief.gif" alt="Making an agent called keeper in the Overtime app: it's pointed at a small repo and told to keep its tests green. It finds a wrong constant in the Fahrenheit conversion, fixes it, commits, reports, and goes to sleep until its next check." width="100%">
+
+This one is a real run, like every GIF below. One message gives an agent its job. It writes that down in its own
 `AGENT.md`, finds the failing test, fixes the bug, commits, tells you what it changed, and sets its
 own next wake-up. You see its messages and what it's doing right now, not a scroll of tool calls.
 

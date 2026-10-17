@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Sets up and records the README's demos for real: real agents on Claude, in scratch homes under
-# /tmp/ot-demo-<name>, driven through the real app and CLI by VHS.
+# /tmp/ot-demo-<name>, driven through the real app and CLI by VHS. The one exception is team, the
+# README's hero: a scripted scenario in the real app (team/team.ts) that runs no model and costs nothing.
 #
 #   docs/demos/record-all.sh                     every demo, on haiku
 #   docs/demos/record-all.sh watch ask           just these
@@ -18,7 +19,7 @@
 set -euo pipefail
 DEMOS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$DEMOS/../.." && pwd)"
-ALL=(brief watch helpers ask cli)
+ALL=(team brief watch helpers ask cli)
 MODEL=haiku
 YES=""
 NAMES=()
@@ -45,12 +46,13 @@ unset OVERTIME_AGENT
 
 # What each demo runs, from its setup and tape: agent turns, helper sessions, and the daily budget its
 # home caps every agent at (so the most it could ever spend).
-turns() { case "$1" in brief) echo 1 ;; watch) echo 2 ;; helpers) echo 2 ;; ask) echo 2 ;; cli) echo 3 ;; esac; }
+turns() { case "$1" in team) echo 0 ;; brief) echo 1 ;; watch) echo 2 ;; helpers) echo 2 ;; ask) echo 2 ;; cli) echo 3 ;; esac; }
 helpers() { case "$1" in helpers) echo 3 ;; *) echo 0 ;; esac; }
-cap() { case "$1" in brief | watch | ask) echo 3 ;; helpers) echo 4 ;; cli) echo 2 ;; esac; }
+cap() { case "$1" in team) echo 0 ;; brief | watch | ask) echo 3 ;; helpers) echo 4 ;; cli) echo 2 ;; esac; }
 T=0 H=0 C=0
 echo "◆ About to record ${#NAMES[@]} demo(s) for real, on claude · $MODEL:"
 for n in "${NAMES[@]}"; do
+  [ "$n" = team ] && { printf "    %-8s scripted, no model: free\n" "$n"; continue; }
   printf "    %-8s %s agent turn(s)%s, capped at \$%s\n" "$n" "$(turns "$n")" "$( [ "$(helpers "$n")" -gt 0 ] && echo " + $(helpers "$n") helper sessions" || true)" "$(cap "$n")"
   T=$((T + $(turns "$n"))) H=$((H + $(helpers "$n"))) C=$((C + $(cap "$n")))
 done
@@ -67,9 +69,12 @@ if [ -n "$lo" ]; then
 else
   est="more than on sonnet (not measured)"
 fi
-echo "  $T agent turns and $H helper sessions in all: $est at API prices, never more than \$$C (the budgets)."
-echo "  On a Claude subscription they count toward its usage window instead, shared with your other agents."
-if [ -z "$YES" ]; then
+if [ "$S" -gt 0 ]; then
+  echo "  $T agent turns and $H helper sessions in all: $est at API prices, never more than \$$C (the budgets)."
+  echo "  On a Claude subscription they count toward its usage window instead, shared with your other agents."
+fi
+# Nothing to spend (just the scripted demo): nothing to ask.
+if [ -z "$YES" ] && [ "$S" -gt 0 ]; then
   if [ ! -t 0 ]; then echo "✗ Not a terminal to ask in; rerun with --yes to go ahead." >&2; exit 1; fi
   read -r -p "  Go ahead? (y/N) " ok
   case "$ok" in y* | Y*) ;; *) echo "  Nothing recorded."; exit 0 ;; esac
@@ -114,7 +119,7 @@ for n in "${NAMES[@]}"; do
   echo
   echo "◆ $n: setting up /tmp/ot-demo-$n"
   bash "$DEMOS/$n/setup.sh"
-  echo "◆ $n: recording (real model turns, a few minutes)"
+  if [ "$n" = team ]; then echo "◆ $n: recording (scripted, about a minute)"; else echo "◆ $n: recording (real model turns, a few minutes)"; fi
   vhs "$n/$n.tape"
   finish "$n"
   CURRENT=""
