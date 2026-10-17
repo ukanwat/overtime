@@ -1,0 +1,7 @@
+{
+  "name": "greet",
+  "version": "1.4.2",
+  "description": "Friendly greetings for your command line.",
+  "type": "module",
+  "bin": { "greet": "src/cli.js" }
+}
