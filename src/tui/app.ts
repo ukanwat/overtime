@@ -124,12 +124,23 @@ const rowKey = (r: SettingsRow) => r.key ?? r.field ?? r.label;
 
 type McpEntry = { name: string; source: "shared" | "person" | "agent"; enabled: boolean; describe: string; signedIn?: boolean };
 type McpStatus = Record<string, { ok: boolean; tools: string[]; error?: string; needsSignIn?: boolean }>;
-type SettingsOverlay = { kind: "settings"; data: AgentSettingsView | null; extra: any; mcp?: McpEntry[]; mcpStatus?: McpStatus; idx: number; sel?: string; editing?: Field; error?: string };
+/**
+ * The settings step of "+ New agent", before anything is made: only what the person changed, over
+ * the defaults it starts from (and which backends can run here, to say so before it's created).
+ */
+type NewAgentDraft = {
+  name: string;
+  patch: { backend?: string; model?: string | null; dailyBudgetUsd?: number; workspace?: string | null; visibility?: "public" | "private" };
+  defaults?: { backend: string; model: string | null; dailyBudgetUsd: number };
+  status?: { name: string; missing: string | null }[];
+  ready?: Promise<void>;
+};
+type SettingsOverlay = { kind: "settings"; data: AgentSettingsView | null; extra: any; mcp?: McpEntry[]; mcpStatus?: McpStatus; idx: number; sel?: string; editing?: Field; error?: string; draft?: NewAgentDraft };
 type Overlay =
   | null
   | { kind: "help" }
   | SettingsOverlay
-  | { kind: "pick"; title: string; items: PickItem[]; idx: number; loading?: string; back?: boolean }
+  | { kind: "pick"; title: string; items: PickItem[]; idx: number; loading?: string; back?: boolean | SettingsOverlay }
   | { kind: "confirm"; title: string; body: string[]; yes: string; run: () => Promise<void>; danger?: boolean; focus: 0 | 1 };
 
 /**
@@ -694,7 +705,8 @@ export class App implements Component {
       } else {
         this.messages = [];
         this.loadedFor = "";
-        if (this.overlay?.kind === "settings") this.overlay = null;
+        // A new agent's settings step stays open: things happening elsewhere mustn't close it.
+        if (this.overlay?.kind === "settings" && !this.overlay.draft) this.overlay = null;
       }
       if (!this.connected) this.say("Reconnected.", "ok");
       this.connected = true;
@@ -1091,7 +1103,46 @@ export class App implements Component {
     const err = name ? validateName(name) : "Type a name for the agent first.";
     if (err) return this.say(err, "err");
     if (this.agents.some((a) => a.name === name)) return this.say(`There's already an agent called ${name}.`, "err");
-    await this.c.call("new", { name });
+    // Its settings come first, so a default backend or model that won't do can be changed before it's
+    // made. Create is selected: Enter again makes it with the defaults, for anyone who doesn't mind.
+    const o: SettingsOverlay = { kind: "settings", data: null, extra: null, idx: 0, draft: { name, patch: {} } };
+    o.draft!.ready = this.loadDraft(o);
+    const rows = this.settingsRows(o);
+    this.selectSetting(o, rows, rows.findIndex((r) => r.key === "create"));
+    this.show(o);
+  }
+
+  private async loadDraft(o: SettingsOverlay): Promise<void> {
+    const d = o.draft!;
+    // An older background process doesn't say: the rows show "default" and it uses its own.
+    const [defaults, status] = await Promise.all([this.c.call("defaults").catch(() => undefined), this.c.call("backendStatus").catch(() => undefined)]);
+    if (defaults && typeof defaults === "object") d.defaults = cleanDeep(defaults);
+    if (Array.isArray(status)) d.status = cleanDeep(status);
+    this.tui.requestRender();
+  }
+
+  /** The new agent's backend and model as they stand: what was chosen, else the defaults. */
+  private draftRunsOn(d: NewAgentDraft): { name: string; backend: string; model: string | null } {
+    const p = d.patch;
+    return { name: d.name, backend: p.backend ?? d.defaults?.backend ?? "", model: "model" in p ? (p.model ?? null) : p.backend ? null : (d.defaults?.model ?? null) };
+  }
+
+  private async createDraft(o: SettingsOverlay): Promise<void> {
+    const d = o.draft!;
+    await d.ready;
+    const { backend } = this.draftRunsOn(d);
+    const missing = d.status?.find((b) => b.name === backend)?.missing;
+    o.error = missing ? `${d.name} can't run here: ${missing} Or choose another backend above.` : undefined;
+    if (!o.error) {
+      try {
+        await this.c.call("new", { name: d.name, ...d.patch }, 120_000); // checking a model name may start the backend
+      } catch (e) {
+        o.error = friendly(e);
+      }
+    }
+    if (o.error) return this.tui.requestRender();
+    if (this.overlay === o) this.overlay = null;
+    const name = d.name;
     this.input.setValue("");
     this.agents = (await this.get<AgentSummary[]>("agents")) ?? [];
     this.sel = Math.max(0, this.agents.findIndex((a) => a.name === name));
@@ -1315,6 +1366,7 @@ export class App implements Component {
   }
 
   private settingsRows(o: SettingsOverlay): SettingsRow[] {
+    if (o.draft) return this.draftRows(o, o.draft);
     const a = this.agent!;
     const d = o.data;
     const cost = d?.costReported ?? a.costReported;
@@ -1381,6 +1433,34 @@ export class App implements Component {
     return rows;
   }
 
+  /** The new agent's settings step: the same rows as an agent's settings, and Create. */
+  private draftRows(o: SettingsOverlay, d: NewAgentDraft): SettingsRow[] {
+    const p = d.patch;
+    const run = this.draftRunsOn(d);
+    const missing = d.status?.find((b) => b.name === run.backend)?.missing;
+    const budget = p.dailyBudgetUsd ?? d.defaults?.dailyBudgetUsd;
+    const visibility = p.visibility ?? "public";
+    return [
+      { label: "Runs on", heading: true },
+      { label: "Backend", field: "backend", value: run.backend || "default", note: missing ? "not installed" : p.backend ? "" : "the default" },
+      { label: "Model", field: "model", value: run.model ?? "default", note: run.model ? "" : "the backend's choice" },
+      { label: "Budget", heading: true },
+      { label: "Daily budget", field: "budget", value: budget === undefined ? "default" : `$${fmtMoney(budget)} a day`, note: p.dailyBudgetUsd === undefined ? "the default" : "" },
+      {
+        label: "Other agents",
+        key: "visibility",
+        value: visibility,
+        note: visibility === "public" ? "they see it and can message it (Enter: make private)" : "hidden from them (Enter: make public)",
+        stay: true,
+        run: () => void (p.visibility = visibility === "public" ? "private" : "public"),
+      },
+      { label: "Work", heading: true },
+      { label: "Workspace", field: "workspace", value: tilde(p.workspace || paths.agent(d.name)), note: p.workspace ? "where its work lives" : "its own folder" },
+      { label: "", heading: true },
+      { label: `Create ${d.name}`, key: "create", stay: true, run: () => this.createDraft(o) },
+    ];
+  }
+
   private selectSetting(o: SettingsOverlay, rows: SettingsRow[], i: number): void {
     o.idx = i;
     o.sel = rows[i] ? rowKey(rows[i]) : undefined;
@@ -1413,8 +1493,12 @@ export class App implements Component {
     if (row.run) {
       if (!row.stay) this.overlay = null;
       await row.run();
-      if (row.stay && this.overlay === o) await this.loadSettings(o);
+      if (row.stay && this.overlay === o && !o.draft) await this.loadSettings(o);
       return this.tui.requestRender();
+    }
+    if (o.draft) {
+      if (row.field === "backend") return this.showBackendPicker(true, o);
+      if (row.field === "model") return this.showModelPicker(this.draftRunsOn(o.draft), this.draftRunsOn(o.draft).backend, true, o);
     }
     if (row.field === "backend") return this.showBackendPicker(true);
     if (row.field === "model") return this.showModelPicker(this.agent!, o.data?.backend ?? this.agent!.backend, true);
@@ -1422,16 +1506,22 @@ export class App implements Component {
       o.editing = row.field;
       o.error = undefined;
       const d = o.data;
-      const v = row.field === "protect" ? (d?.protectOwn ?? []).map(tilde).join(", ") : row.field === "budget" ? fmtMoney(d?.dailyBudgetUsd ?? this.agent!.budgetUsd) : row.field === "tokens" ? (d?.dailyTokenBudget ? String(d.dailyTokenBudget) : "") : d && !d.workspaceIsDefault ? tilde(d.workspace) : "";
+      const p = o.draft?.patch;
+      const v = p
+        ? row.field === "budget"
+          ? fmtMoney(p.dailyBudgetUsd ?? o.draft!.defaults?.dailyBudgetUsd ?? 0)
+          : p.workspace
+            ? tilde(p.workspace)
+            : ""
+        : row.field === "protect" ? (d?.protectOwn ?? []).map(tilde).join(", ") : row.field === "budget" ? fmtMoney(d?.dailyBudgetUsd ?? this.agent!.budgetUsd) : row.field === "tokens" ? (d?.dailyTokenBudget ? String(d.dailyTokenBudget) : "") : d && !d.workspaceIsDefault ? tilde(d.workspace) : "";
       setText(this.fieldInput, v);
       this.tui.requestRender();
     }
   }
 
   private async saveField(o: SettingsOverlay): Promise<void> {
-    const a = this.agent!;
     const raw = this.fieldInput.getValue().trim();
-    const patch: Record<string, unknown> = { name: a.name };
+    const patch: Record<string, unknown> = {};
     const bad = (msg: string) => {
       o.error = msg;
       this.tui.requestRender();
@@ -1465,7 +1555,15 @@ export class App implements Component {
         patch.workspace = p;
       }
     }
-    await this.c.call("set", patch);
+    if (o.draft) {
+      // Nothing is made yet: kept for when Create is chosen.
+      Object.assign(o.draft.patch, patch);
+      o.editing = undefined;
+      o.error = undefined;
+      return this.tui.requestRender();
+    }
+    const a = this.agent!;
+    await this.c.call("set", { name: a.name, ...patch });
     const label = FIELD_LABEL[o.editing!];
     o.editing = undefined;
     o.error = undefined;
@@ -1474,8 +1572,9 @@ export class App implements Component {
     await this.refresh();
   }
 
-  private async showBackendPicker(fromSettings: boolean): Promise<void> {
-    const a = this.needAgent();
+  /** Choose a backend, then one of its models: for the selected agent, or for the new agent's settings step (draft). */
+  private async showBackendPicker(fromSettings: boolean, draft?: SettingsOverlay): Promise<void> {
+    const a = draft ? this.draftRunsOn(draft.draft!) : this.needAgent();
     if (!a) return;
     let status: { name: string; missing: string | null }[] = [];
     try {
@@ -1493,14 +1592,15 @@ export class App implements Component {
       label: b.name,
       current: b.name === a.backend,
       note: b.missing ? "not installed" : undefined,
-      run: b.missing ? () => this.say(b.missing!, "err") : () => this.showModelPicker(a, b.name, fromSettings),
+      run: b.missing ? () => this.say(b.missing!, "err") : () => this.showModelPicker(a, b.name, fromSettings, draft),
     }));
-    this.show({ kind: "pick", title: `${a.name} runs on`, items, idx: Math.max(0, backends.indexOf(a.backend)), back: fromSettings });
+    this.show({ kind: "pick", title: `${a.name} runs on`, items, idx: Math.max(0, backends.indexOf(a.backend)), back: draft ?? fromSettings });
   }
 
-  private async showModelPicker(a: AgentSummary, backend: string, fromSettings: boolean): Promise<void> {
+  private async showModelPicker(a: { name: string; backend: string; model: string | null }, backend: string, fromSettings: boolean, draft?: SettingsOverlay): Promise<void> {
     const title = `${backend} models for ${a.name}`;
-    this.show({ kind: "pick", title, items: [], idx: 0, loading: `Asking ${backend} which models it offers…`, back: fromSettings });
+    const back = draft ?? fromSettings;
+    this.show({ kind: "pick", title, items: [], idx: 0, loading: `Asking ${backend} which models it offers…`, back });
     let models: { id: string; name: string }[] = [];
     try {
       models = cleanDeep(await this.c.call("models", { backend }, 90_000)) ?? [];
@@ -1510,6 +1610,11 @@ export class App implements Component {
     if (this.overlay?.kind !== "pick" || this.overlay.title !== title) return; // closed meanwhile
     const same = backend === a.backend;
     const apply = (model: string | null) => async () => {
+      if (draft) {
+        Object.assign(draft.draft!.patch, { backend, model });
+        draft.error = undefined;
+        return this.show(draft);
+      }
       await this.c.call("set", { name: a.name, backend, model }, 120_000);
       this.say(`${a.name} will use ${backend} · ${model ?? "its default model"} from its next session.`, "ok");
       await this.refresh();
@@ -1525,7 +1630,7 @@ export class App implements Component {
     }
     if (!models.length) items.push({ label: `${backend} didn't list its models, so it uses its own default.`, info: true });
     const cur = items.findIndex((i) => i.current);
-    this.overlay = { kind: "pick", title, items, idx: cur >= 0 ? cur : 0, back: fromSettings };
+    this.overlay = { kind: "pick", title, items, idx: cur >= 0 ? cur : 0, back };
     this.tui.requestRender();
   }
 
@@ -1554,7 +1659,7 @@ export class App implements Component {
     const closeKey = matchesKey(data, Key.escape) || (o.kind === "settings" && (matchesKey(data, Key.tab) || matchesKey(data, Key.ctrl("p")) || matchesKey(data, Key.left)));
     if (closeKey) {
       this.overlay = null;
-      if (o.kind === "pick" && o.back) return this.showSettings();
+      if (o.kind === "pick" && o.back) return typeof o.back === "object" ? this.show(o.back) : this.showSettings();
       return this.tui.requestRender();
     }
     if (o.kind === "help") {
@@ -1576,6 +1681,8 @@ export class App implements Component {
         const rows = this.settingsRows(o);
         const row = rows[this.settingsIdx(o, rows)];
         if (row) await this.activateSetting(o, row);
+      } else if (o.draft) {
+        // Nothing to wake or stop yet.
       } else if (matchesKey(data, Key.ctrl("r"))) await this.wake();
       else if (matchesKey(data, Key.ctrl("s"))) await this.toggleStop();
       return this.tui.requestRender();
@@ -1718,7 +1825,12 @@ export class App implements Component {
   }
 
   private renderRight(w: number, h: number, x: number, narrow: boolean): Line[] {
-    if (this.onNewRow) return this.renderNew(w, narrow);
+    if (this.onNewRow) {
+      // The new agent's settings step, and its pickers, where its conversation will be.
+      if (!this.overlay) return this.renderNew(w, narrow);
+      const body = this.overlay.kind === "settings" ? this.renderSettings(this.overlay, w, x, TOP, h) : this.renderOverlay(w, h, x, TOP);
+      return body.slice(0, h);
+    }
     const a = this.agent!;
     const head = this.renderAgentHeader(a, w, x, narrow);
     const bodyH = Math.max(1, h - head.length);
@@ -2075,9 +2187,9 @@ export class App implements Component {
   }
 
   private renderSettings(o: SettingsOverlay, w: number, x: number, top: number, h: number): Line[] {
-    const title = `${this.agent?.name ?? ""} · settings`;
+    const title = o.draft ? `New agent · ${o.draft.name}` : `${this.agent?.name ?? ""} · settings`;
     const iw = this.innerW(w);
-    if (!o.data && !o.error) return this.framed(title, ["", muted(`${spinner()} Loading settings…`), ""], [], w, x, top, h);
+    if (!o.data && !o.error && !o.draft) return this.framed(title, ["", muted(`${spinner()} Loading settings…`), ""], [], w, x, top, h);
     const rows = this.settingsRows(o);
     const labelW = 16;
     let valueW = Math.min(30, Math.max(12, ...rows.filter((r) => r.field).map((r) => visibleWidth(r.value ?? "") + 2)));
@@ -2089,7 +2201,7 @@ export class App implements Component {
     const idx = this.settingsIdx(o, rows);
     rows.forEach((r, i) => {
       if (r.heading) {
-        body.push("", muted(r.label.toUpperCase()));
+        body.push("", ...(r.label ? [muted(r.label.toUpperCase())] : []));
         return;
       }
       const on = i === idx;
@@ -2113,7 +2225,7 @@ export class App implements Component {
       line = fit(gutter + line, iw);
       body.push(on && hasTints() ? selected(line, iw) : line);
     });
-    if (o.error && !o.editing) body.push("", "  " + red(o.error));
+    if (o.error && !o.editing) body.push("", ...wrapTextWithAnsi(red(o.error), iw - 2).map((l) => "  " + l));
     body.push("");
     // Keep the selected row in view.
     const bh = Math.max(3, h - 3);
@@ -2232,6 +2344,7 @@ export class App implements Component {
 
   private placeholder(): string {
     const o = this.overlay;
+    if (o?.kind === "settings" && o.draft) return `Esc goes back to the name (${o.draft.name})`;
     if (o) return `Esc closes ${o.kind === "settings" ? "settings" : o.kind === "help" ? "the keys" : o.kind === "confirm" ? "this without changing anything" : "the list"}`;
     if (this.onNewRow) return "Name the new agent, e.g. repo-keeper";
     const a = this.agent;
@@ -2306,7 +2419,7 @@ export class App implements Component {
     let hints: string[];
     const q = !this.onNewRow ? openQuestion(this.messages) : undefined;
     const o = this.overlay;
-    if (o?.kind === "settings") hints = o.editing ? [keyHint("enter", "save"), keyHint("esc", "cancel")] : [keyHint("↑↓", "move"), keyHint("enter", "change"), keyHint("esc", "close")];
+    if (o?.kind === "settings") hints = o.editing ? [keyHint("enter", "save"), keyHint("esc", "cancel")] : [keyHint("↑↓", "move"), keyHint("enter", o.draft && o.sel === "create" ? "create" : "change"), keyHint("esc", o.draft ? "back to the name" : "close")];
     else if (o?.kind === "help") hints = [keyHint("any key", "close")];
     else if (o?.kind === "confirm") hints = [keyHint("←→", "choose"), keyHint("enter", "confirm"), keyHint("esc", "cancel")];
     else if (o) hints = [keyHint("↑↓", "move"), keyHint("enter", "choose"), keyHint("esc", o.kind === "pick" && o.back ? "back" : "close")];

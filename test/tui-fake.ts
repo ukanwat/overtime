@@ -175,10 +175,15 @@ export class FakeClient {
         if (a && params.model !== undefined) a.model = params.model;
         return { ok: true };
       }
+      case "defaults":
+        return { backend: "claude", model: null, dailyBudgetUsd: 10 };
       case "new": {
-        d.agents.push({ name: params.name, status: "new", activity: "waiting for its job", ownStatus: "", pauseReason: null, trouble: null, offlineSince: null, nextWake: null, pausedUntil: null, waiting: 0, unread: 1, helpersRunning: 0, spentUsd: 0, costReported: true, tokensToday: 0, budgetUsd: 10, backend: "claude", model: null, lastError: null, dir: `${home}/${params.name}` });
+        const backend = params.backend ?? "claude";
+        const model = params.model ?? null;
+        const budgetUsd = params.dailyBudgetUsd ?? 10;
+        d.agents.push({ name: params.name, status: "new", activity: "waiting for its job", ownStatus: "", pauseReason: null, trouble: null, offlineSince: null, nextWake: null, pausedUntil: null, waiting: 0, unread: 1, helpersRunning: 0, spentUsd: 0, costReported: true, tokensToday: 0, budgetUsd, backend, model, lastError: null, dir: `${home}/${params.name}` });
         d.messages[params.name] = [{ id: "n1", t: new Date().toISOString(), from: "agent", kind: "message", text: `Hi, I'm ${params.name}. I don't have a job yet.` }];
-        d.settings[params.name] = { backend: "claude", model: null, dailyBudgetUsd: 10, dailyTokenBudget: null, workspace: `${home}/${params.name}`, workspaceIsDefault: true, spentUsd: 0, costReported: true, tokensToday: 0 };
+        d.settings[params.name] = { backend, model, dailyBudgetUsd: budgetUsd, dailyTokenBudget: null, workspace: params.workspace ?? `${home}/${params.name}`, workspaceIsDefault: !params.workspace, visibility: params.visibility ?? "public", spentUsd: 0, costReported: true, tokensToday: 0 };
         return { name: params.name };
       }
       case "stop":
