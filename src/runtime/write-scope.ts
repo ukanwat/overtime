@@ -115,7 +115,12 @@ export class OwnWrites {
   private start = new Map<string, Buffer | null>();
   /** Files already changed during the session when Overtime first heard of the tool: how they were before is unknown. */
   private late = new Set<string>();
-  private readonly startedMs = Date.now();
+  /**
+   * A little before now: Linux stamps a file's change from a clock that lags Date.now() by a few
+   * milliseconds, and some file systems keep times only to the second or two, so a write just after
+   * the start can look older than it. Counting a change from just before the start as late only adds a note.
+   */
+  private readonly startedMs = Date.now() - 2000;
   private readonly dirs: string[];
 
   /**

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fakeHome } from "./helpers.js";
@@ -213,6 +213,9 @@ describe("a session that may change only memory/", () => {
     const own = new OwnWrites([memory], agentDir, [agentMd]);
     writeFileSync(agentMd, "# tampered\n");
     writeFileSync(other, "other, tampered\n");
+    // Linux stamps files from a clock a few milliseconds behind Date.now(): a write just after the
+    // session started can carry a time just before it.
+    utimesSync(other, new Date(), new Date(Date.now() - 5));
     const call = (id: string, path: string, status?: string) => own.see({ sessionUpdate: status ? "tool_call_update" : "tool_call", toolCallId: id, kind: "edit", status, locations: [{ path }] });
     call("1", agentMd);
     call("1", agentMd, "completed");
