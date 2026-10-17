@@ -100,8 +100,9 @@ describe("the message box edits like a text box", () => {
     expect(selected()).toBe("three");
     await keys(K.metaShiftLeft);
     expect(selected()).toBe("two three");
+    // Escape waits a moment for a sequence it may start (see input.ts), so wait for it to land.
     await keys(K.esc);
-    expect(selected()).toBe("");
+    await until(async () => selected() === "", 5_000, "Esc letting go of the selection");
     expect(value()).toBe("one two three");
     await keys(K.optLeft, K.optLeft, K.optLeft, K.shiftCtrlRight);
     expect(selected()).toBe("one");
@@ -186,10 +187,10 @@ describe("the message box edits like a text box", () => {
     const { t, value, selected, keys } = await open();
     t.type("draft");
     await keys(K.shiftLeft, K.esc);
-    expect(selected()).toBe("");
+    await until(async () => selected() === "", 5_000, "Esc letting go of the selection");
     expect(value()).toBe("draft");
     await keys(K.esc);
-    expect(value()).toBe("");
+    await until(async () => value() === "", 5_000, "Esc clearing the message");
   });
 
   it("deletes words and to the line's ends with the usual keys", async () => {
