@@ -4,7 +4,7 @@ import { personOnly, type AgentSummary } from "./daemon/control.js";
 import { AGENT_MARKER } from "./runtime/leftovers.js";
 import { validateName } from "./agent/agent.js";
 import { accent, ago, bold, clean, cleanDeep, fit, friendly, gray, green, italic, money, red, stamp, statusLine, yellow } from "./tui/style.js";
-import { closedLine, headed, humanBytes, openQuestion, questionParts, replyTo, type AgentSettingsView, type Message } from "./tui/types.js";
+import { askedAt, closedLine, headed, humanBytes, questionParts, replyTo, shortQuestion, type AgentSettingsView, type Message } from "./tui/types.js";
 
 const [, , cmd, ...rest] = process.argv;
 
@@ -53,7 +53,7 @@ function HELP(): string {
         ["overtime ls", "list your agents"],
         ['overtime send <name> "<message>"', "message an agent  (--attach <file>, repeatable)"],
         ["overtime messages <name>", "read your messages with an agent"],
-        ["overtime answer <name> <n>[,<n>…] [note]", "answer its open question with option n (or several: 1,3)"],
+        ["overtime answer <name> [<question>] <n>[,<n>…] [note]", "answer its open question with option n (or several: 1,3); with several open, say which (its number or id)"],
         ["overtime stop|start|wake <name>", "stop it, start it again, or wake it now"],
         ["overtime settings <name>", "show its backend, model, budgets and workspace"],
         ["overtime set <name> key=value…", "backend=  model=  budget=  tokens=  workspace=  protect=~/a,~/b"],
@@ -136,19 +136,22 @@ function agentRow(a: AgentSummary): string[] {
 }
 
 /** One message as plain lines, in the same voice as the app: yours marked with a bar, questions as cards. */
-/** How to answer this question from the command line, in its own numbers. */
-function answerHint(name: string, q: Message): string {
+/** How to answer this question from the command line, in its own numbers; which, when several are open. */
+function answerHint(name: string, q: Message, which?: number): string {
   const parts = questionParts(q);
-  if (parts.length > 1) return `Answer with: overtime answer ${name} ${parts.map((_, i) => `<Q${i + 1}>`).join(" ")} ["note"]  (each: option numbers like 1,3, or - to leave it)`;
+  const cmd = `overtime answer ${name}${which ? ` ${which}` : ""}`;
+  if (parts.length > 1) return `Answer with: ${cmd} ${parts.map((_, i) => `<Q${i + 1}>`).join(" ")} ["note"]  (each: option numbers like 1,3, or - to leave it)`;
   const n = q.options?.length;
-  if (!n) return `Answer with: overtime answer ${name} "your answer"`;
-  return `Answer with: overtime answer ${name} <1-${n}>${q.single || n === 1 ? "" : " (or several, like 1,3)"} ["note"]`;
+  if (!n) return `Answer with: ${cmd} "your answer"`;
+  return `Answer with: ${cmd} <1-${n}>${q.single || n === 1 ? "" : " (or several, like 1,3)"} ["note"]`;
 }
 
-function printMessage(name: string, m: Message, open: boolean): void {
+function printMessage(name: string, m: Message, open: boolean, asked: Map<string, Message>): void {
   const time = gray(stamp(m.t));
   if (m.from === "you") {
-    print(`${accent("┃")} ${bold("You")}  ${time}${m.replyTo ? gray("  answered") : ""}`);
+    // An answer says which question it was for, as several can be open and others come in between.
+    const q = m.replyTo ? asked.get(m.replyTo) : undefined;
+    print(`${accent("┃")} ${bold("You")}  ${time}${m.replyTo ? gray(q ? `  answered "${shortQuestion(q, 60)}"` : "  answered") : ""}`);
     for (const l of (m.text || "").split("\n")) if (m.text) print(`${accent("┃")} ${l}`);
     for (const a of m.attachments ?? []) print(`${accent("┃")} ${attachmentLine(a)}`);
     print();
@@ -379,7 +382,7 @@ async function main() {
       }
       case "messages": {
         const name = need(rest[0], "overtime messages <name>");
-        const r = await call<{ messages: Message[]; hasMore: boolean }>("messages", { name, markRead: true, limit: Number(rest[1]) || 50 });
+        const r = await call<{ messages: Message[]; hasMore: boolean; open?: Message[] }>("messages", { name, markRead: true, limit: Number(rest[1]) || 50 });
         const ms = r?.messages ?? [];
         if (!ms.length) {
           // An empty list could also mean there's no such agent: say so, as send and stop do.
@@ -389,16 +392,39 @@ async function main() {
           break;
         }
         if (r.hasMore) print(gray(`(showing the latest ${ms.length}; add a number for more: overtime messages ${name} 200)\n`));
-        const q = openQuestion(ms);
+        // Every open question, however far back: several can be open at once, numbered oldest first.
+        const open = r.open ?? ms.filter((m) => m.kind === "question" && !m.answer);
+        const asked = new Map(ms.filter((m) => m.kind === "question").map((m) => [m.id, m]));
         // A question's withdrawal or dismissal shows on the question itself, as in the app.
-        for (const m of ms) if (!m.closes) printMessage(name, m, m === q);
-        if (q) print(gray(answerHint(name, q)));
+        for (const m of ms) if (!m.closes) printMessage(name, m, open.some((o) => o.id === m.id), asked);
+        if (open.length === 1) print(gray(answerHint(name, open[0])));
+        else if (open.length) {
+          print(yellow(bold(`${open.length} open questions`)));
+          open.forEach((q, i) => print(`  ${accent(bold(String(i + 1)))}  ${shortQuestion(q)} ${gray(`(asked ${askedAt(q.t)})`)}\n     ${gray(answerHint(name, q, i + 1))}`));
+        }
         break;
       }
       case "answer": {
-        const [name, ...args] = rest;
-        const usage = 'Usage: overtime answer <name> <option-number>[,<option-number>…] ["note"]';
-        if (!name || !args.length) fail("Missing an argument.", usage);
+        const [name, ...given] = rest;
+        const usage = 'Usage: overtime answer <name> [<question>] <option-number>[,<option-number>…] ["note"]';
+        if (!name || !given.length) fail("Missing an argument.", usage);
+        // Which open question: by its id, or its number (oldest first, as overtime messages lists them).
+        // With one open it needs no saying, so a lone number stays an option, as it always was.
+        const open = (await call<{ open?: Message[] }>("messages", { name, limit: 1 }))?.open ?? [];
+        const sel = /^#?(\d+)$/.exec(given[0])?.[1];
+        let q = open.find((m) => m.id === given[0]);
+        let named = !!q || (open.length === 1 && given[0] === "#1");
+        if (!q && open.length > 1) {
+          q = sel ? open[Number(sel) - 1] : undefined;
+          if (!q) {
+            const list = open.map((m, i) => `  ${i + 1}  ${shortQuestion(m)} (asked ${askedAt(m.t)})`).join("\n");
+            fail(`${name} has ${open.length} open questions; say which one first:\n${list}`, `Usage: overtime answer ${name} <1-${open.length}> <option-number>… ["note"]`);
+          }
+          named = true;
+        }
+        q ??= open[0];
+        const args = named ? given.slice(1) : given;
+        if (!args.length) fail(q ? `Missing your answer to "${shortQuestion(q)}".` : "Missing an answer.", q ? answerHint(name, q, open.length > 1 ? open.indexOf(q) + 1 : undefined) : usage);
         const num = /^[-+]?(\d+\.?\d*|\.\d+)$/;
         const looksLikePicks = (a: string) => a.split(",").every((x) => num.test(x.trim()));
         // A number that can't be an option (0, -1, 1.5) is a typo, not an answer the agent should act on.
@@ -406,7 +432,6 @@ async function main() {
           const n = Number(x);
           if (!(Number.isInteger(n) && n > 0)) fail(`There is no option ${x.trim()}.`, usage);
         }
-        const q = looksLikePicks(args[0]) || args[0] === "-" ? openQuestion((await call<{ messages: Message[] }>("messages", { name, limit: 50 }))?.messages ?? []) : undefined;
         const parts = q ? questionParts(q) : [];
         // Leading option numbers answer the questions in order (1,3 picks two); "-" leaves one on a card unanswered.
         const picks: number[][] = [];

@@ -68,7 +68,7 @@ import {
   when,
   yellow,
 } from "./style.js";
-import { closedLine, headed, humanBytes, openQuestion, optionLabel, questionParts, replyTo, recommendedOption, type AgentSettingsView, type LiveState, type Message } from "./types.js";
+import { closedLine, headed, humanBytes, openQuestions, optionLabel, questionParts, replyTo, recommendedOption, shortQuestion, type AgentSettingsView, type LiveState, type Message } from "./types.js";
 
 export { clean, cleanDeep, openPlan } from "./style.js";
 export type { LiveState, Message } from "./types.js";
@@ -560,11 +560,23 @@ export class App implements Component {
   flash: { text: string; tone: "ok" | "err" | "info" } | null = null;
   input: Composer;
   /**
-   * Your answer to the open question as you make it, waiting for Enter (so one stray key never answers): the
-   * options picked for each of its questions, your own words for any, which question you're on (a card can
-   * hold several), or 0 pressed to dismiss it.
+   * The selected agent's open questions, oldest first: every one, however far back it was asked. They're
+   * pinned together above the message box, so they never scroll away and nothing replaces another.
    */
-  choosing: { id: string; at: number; picks: number[][]; notes: (string | undefined)[]; dismiss: boolean } | null = null;
+  open: Message[] = [];
+  /**
+   * The open question you've gone to (Tab, a click), or null: the message box is yours, and what you type
+   * there is a message, never an answer. While a question has focus, the box takes your answer to it.
+   */
+  asking: string | null = null;
+  /**
+   * Your answer to each open question as you make it, waiting for Enter (so one stray key never answers): the
+   * options picked for each of its questions, your own words for any, which question you're on (a card can
+   * hold several), or 0 pressed to dismiss it. Kept while you go back to your message or to another question.
+   */
+  private answers = new Map<string, { id: string; at: number; picks: number[][]; notes: (string | undefined)[]; dismiss: boolean }>();
+  /** The message you were writing when you went to the questions, given back when you leave them. */
+  private held: string | null = null;
   fieldInput = new Input({ prompt: "", placeholderStyle: muted });
   pending: PendingAttachment[] = [];
   /** What you'd started writing (and attaching) to each agent, kept while you look at another one. */
@@ -597,7 +609,7 @@ export class App implements Component {
    * Where the view jumps once (an open question when you arrive, or the start of a new message), after
    * which it stays wherever you scroll. Applying it on every frame would pull the view back as you scroll.
    */
-  private anchor: "question" | "last" | null = "question";
+  private anchor: "last" | null = "last";
   private lastTop = 0;
   private loadingOlder: Promise<void> | null = null;
   /** The line each message started on, as last drawn. */
@@ -678,7 +690,7 @@ export class App implements Component {
       this.selName = this.agent?.name ?? null;
       const a = this.onNewRow ? undefined : this.agent;
       if (a) {
-        const r = await this.get<{ messages: Message[]; hasMore: boolean }>("messages", { name: a.name, markRead: true, limit: 300 });
+        const r = await this.get<{ messages: Message[]; hasMore: boolean; open?: Message[] }>("messages", { name: a.name, markRead: true, limit: 300 });
         if (this.agent?.name !== a.name) return;
         let fresh = r?.messages ?? [];
         let more = !!r?.hasMore;
@@ -693,11 +705,15 @@ export class App implements Component {
         }
         if (this.loadedFor !== a.name) {
           this.scroll = Number.MAX_SAFE_INTEGER;
-          this.anchor = "question";
+          this.anchor = "last";
         } else if (this.scroll === Number.MAX_SAFE_INTEGER && fresh.at(-1)?.id !== this.messages.at(-1)?.id) {
           // Something new while you're at the bottom: show it (from its start if it's long), once.
-          this.anchor = openQuestion(fresh)?.id === fresh.at(-1)?.id ? "question" : "last";
+          this.anchor = "last";
         }
+        this.open = r?.open ?? openQuestions(fresh);
+        // A question answered or withdrawn meanwhile (here, in the CLI, by the agent) lets go of its focus and draft.
+        for (const id of this.answers.keys()) if (!this.open.some((q) => q.id === id)) this.answers.delete(id);
+        if (this.asking && !this.open.some((q) => q.id === this.asking)) this.leaveQuestions(false);
         // Older messages you loaded stay: a refresh only brings the latest ones, and dropping the rest
         // would pull the conversation out from under where you're reading.
         const k = this.loadedFor === a.name && fresh.length ? this.messages.findIndex((m) => m.id === fresh[0].id) : -1;
@@ -716,6 +732,7 @@ export class App implements Component {
         if (this.overlay?.kind === "settings" && !this.overlay.editing) await this.loadSettings(this.overlay);
       } else {
         this.messages = [];
+        this.open = [];
         this.loadedFor = "";
         // A new agent's settings step stays open: things happening elsewhere mustn't close it.
         if (this.overlay?.kind === "settings" && !this.overlay.draft) this.overlay = null;
@@ -916,9 +933,11 @@ export class App implements Component {
       this.input.handleInput(data);
       return this.tui.requestRender();
     }
-    // On a card of several questions, Tab and ⇧Tab move between them (→ still opens settings).
-    const card = !this.onNewRow && !this.typing() ? openQuestion(this.messages) : undefined;
-    if (card?.questions?.length && (matchesKey(data, Key.tab) || matchesKey(data, Key.shift("tab")))) return this.moveQuestion(card, matchesKey(data, Key.tab) ? 1 : -1);
+    // The question you've gone to, if any: then the message box takes your answer to it.
+    const q = this.onNewRow ? undefined : this.questionInFocus();
+    // With questions open, Tab goes through them (and a card's own questions), then back to your message;
+    // ⇧Tab the other way. Settings stay on → and Ctrl+P.
+    if (!this.onNewRow && this.open.length && (matchesKey(data, Key.tab) || matchesKey(data, Key.shift("tab")))) return this.tabQuestions(matchesKey(data, Key.tab) ? 1 : -1);
     if (matchesKey(data, Key.tab) || matchesKey(data, Key.ctrl("p"))) return this.showSettings();
     const typing = this.typing();
     // → moves right, into the selected agent's settings (← or Esc comes back), as long as you aren't typing.
@@ -928,9 +947,10 @@ export class App implements Component {
     if (matchesKey(data, Key.escape)) {
       // With text selected, Esc lets go of the selection first; pressed again, it clears the message.
       if (this.input.selection()) this.input.deselect();
+      else if (q && this.choosing?.dismiss) this.choosing.dismiss = false;
+      // On a question, Esc goes back to your message; what you'd picked or written for it stays.
+      else if (q) this.leaveQuestions();
       else if (typing) this.input.setValue("");
-      else if (this.choosing?.dismiss) this.choosing.dismiss = false;
-      else if (this.choosing) this.choosing = null;
       else if (this.linkIdx >= 0) this.linkIdx = -1;
       else if (this.pending.length) this.pending = [];
       return this.tui.requestRender();
@@ -949,8 +969,8 @@ export class App implements Component {
         this.input.handleInput(data);
         return this.tui.requestRender();
       }
-      // While you answer a card of several questions, they move between its questions (Esc lets go).
-      if (card?.questions?.length && this.choosing?.id === card.id) return this.moveQuestion(card, matchesKey(data, Key.up) ? -1 : 1);
+      // On a question, they move between the open questions; down past the newest is your message again.
+      if (q) return this.stepQuestion(matchesKey(data, Key.up) ? -1 : 1);
       return this.select(this.sel + (matchesKey(data, Key.up) ? -1 : 1));
     }
     if (matchesKey(data, Key.pageUp) || matchesKey(data, Key.pageDown)) return this.scrollBy(matchesKey(data, Key.pageUp) ? -PAGE : PAGE);
@@ -958,30 +978,12 @@ export class App implements Component {
       this.pending.pop();
       return this.tui.requestRender();
     }
-    if (!typing && !this.onNewRow && /^[0-9]$/.test(data)) {
-      const q = openQuestion(this.messages);
+    // Number keys pick options only on the question you've gone to (with nothing typed for it yet): in
+    // your message they're just numbers.
+    if (q && !typing && /^[0-9]$/.test(data)) {
       const n = Number(data);
-      const at = q && this.choosing?.id === q.id ? this.choosing.at : 0;
-      const count = q ? questionParts(q)[at]?.options?.length ?? 0 : 0;
-      if (q && (n === 0 || n <= count)) {
-        this.choose(q, n, at);
-        this.scroll = Number.MAX_SAFE_INTEGER;
-        this.anchor = "question"; // bring the question into view, once
-        return this.tui.requestRender();
-      }
-    }
-    if (this.choosing && !typing) {
-      const q = openQuestion(this.messages);
-      if (!q || q.id !== this.choosing.id) this.choosing = null;
-      else if (matchesKey(data, Key.enter)) {
-        if (this.choosing.dismiss) {
-          this.choosing = null;
-          return this.dismiss(q);
-        }
-        // On a card, Enter goes on to the next question; on the last it sends what you've answered.
-        if (this.choosing.at < questionParts(q).length - 1) return this.moveQuestion(q, 1);
-        return this.answer(q);
-      }
+      const at = this.draft(q).at;
+      if (n === 0 || n <= (questionParts(q)[at]?.options?.length ?? 0)) return this.choose(q, n, at);
     }
     // Shift+Enter / Ctrl+J start a new line in the message (checked before Enter, which Ctrl+J resembles).
     // Option+Enter too: many terminals send Shift+Enter exactly like Enter.
@@ -991,6 +993,7 @@ export class App implements Component {
     }
     if (matchesKey(data, Key.enter)) {
       if (this.onNewRow) return this.create();
+      if (q) return this.enterAnswer(q);
       if (typing || this.pending.length) return this.submit();
       if (this.linkIdx >= 0) {
         const t = this.targets()[this.linkIdx];
@@ -1006,7 +1009,9 @@ export class App implements Component {
   select(n: number): void {
     const next = Math.min(Math.max(0, n), this.agents.length);
     if (next !== this.sel) {
-      this.choosing = null;
+      // Your message comes back into the box first, so it's the one kept for this agent.
+      if (this.asking) this.leaveQuestions();
+      this.open = [];
       // A half-written message stays with the agent it was for, never sent to the next one by Enter.
       const text = this.input.getValue();
       if (text || this.pending.length) this.drafts.set(this.selName, { text, pending: this.pending });
@@ -1060,19 +1065,82 @@ export class App implements Component {
     this.say(`Attached ${files.map((f) => f.name).join(", ")}. It goes with your next message.`, "ok");
   }
 
-  /** Your answer to this question as you make it, started when you first pick, move or type. */
+  /** The open question you've gone to, if it's still open. */
+  private questionInFocus(): Message | undefined {
+    return this.asking ? this.open.find((q) => q.id === this.asking) : undefined;
+  }
+
+  /** Your answer to the question you've gone to, as you make it; null in your message. */
+  get choosing(): { id: string; at: number; picks: number[][]; notes: (string | undefined)[]; dismiss: boolean } | null {
+    return this.asking ? (this.answers.get(this.asking) ?? null) : null;
+  }
+
+  /** Your answer to this question as you make it, started when you first go to it. */
   private draft(q: Message): NonNullable<App["choosing"]> {
-    if (this.choosing?.id !== q.id) this.choosing = { id: q.id, at: 0, picks: [], notes: [], dismiss: false };
-    return this.choosing;
+    let d = this.answers.get(q.id);
+    if (!d) this.answers.set(q.id, (d = { id: q.id, at: 0, picks: [], notes: [], dismiss: false }));
+    return d;
+  }
+
+  /** What's in the box goes back where it belongs: your words for the question you're on, or your message. */
+  private stash(): void {
+    const d = this.choosing;
+    if (d) d.notes[d.at] = this.input.getValue() || undefined;
+    else this.held = this.input.getValue();
+  }
+
+  /** Go to an open question (question `at` of a card): the box now takes your answer to it, and its keys are live. */
+  private focusQuestion(q: Message, at?: number): void {
+    this.stash();
+    this.asking = q.id;
+    const d = this.draft(q);
+    if (at != null && at !== d.at) {
+      d.at = Math.min(Math.max(0, at), questionParts(q).length - 1);
+      d.dismiss = false;
+    }
+    this.input.setValue(d.notes[d.at] ?? "");
+    this.tui.requestRender();
+  }
+
+  /** Back to your message, as you left it. What you'd picked or written for the question stays with it (keep). */
+  private leaveQuestions(keep = true): void {
+    if (keep) this.stash();
+    this.asking = null;
+    this.input.setValue(this.held ?? "");
+    this.held = null;
+    this.tui.requestRender();
+  }
+
+  /** Tab: on through a card's questions, then the next open question, then back to your message (⇧Tab: back). */
+  private tabQuestions(dir: 1 | -1): void {
+    const q = this.questionInFocus();
+    if (!q) {
+      const to = dir > 0 ? this.open[0] : this.open.at(-1)!;
+      return this.focusQuestion(to, dir > 0 ? 0 : questionParts(to).length - 1);
+    }
+    const at = this.draft(q).at + dir;
+    if (at >= 0 && at < questionParts(q).length) return this.focusQuestion(q, at);
+    const next = this.open[this.open.indexOf(q) + dir];
+    if (!next) return this.leaveQuestions();
+    this.focusQuestion(next, dir > 0 ? 0 : questionParts(next).length - 1);
+  }
+
+  /** ↑↓ on a question: the open question above or below; below the newest is your message again. */
+  private stepQuestion(dir: 1 | -1): void {
+    const q = this.questionInFocus();
+    if (!q) return;
+    const next = this.open[this.open.indexOf(q) + dir];
+    if (next) this.focusQuestion(next);
+    else if (dir > 0) this.leaveQuestions();
   }
 
   /**
-   * Pick option n of question i on the open card (0: dismiss it), waiting for Enter, as its number key does.
+   * Pick option n of question i on a card (0: dismiss it), waiting for Enter, as its number key does.
    * A question with one answer takes the new pick instead; otherwise each number turns its option on or off.
    */
-  private choose(q: Message, n: number, i = this.choosing?.id === q.id ? this.choosing.at : 0): void {
+  private choose(q: Message, n: number, i = this.draft(q).at): void {
+    if (this.asking !== q.id || this.draft(q).at !== i) this.focusQuestion(q, i);
     const d = this.draft(q);
-    d.at = i;
     d.dismiss = n === 0;
     if (n) {
       const had = d.picks[i] ?? [];
@@ -1083,55 +1151,67 @@ export class App implements Component {
 
   /** On a card of several questions: go to the next (1) or previous (-1) one, keeping what you've answered. */
   private moveQuestion(q: Message, by: number, to?: number): void {
+    this.focusQuestion(q, to ?? this.draft(q).at + by);
+  }
+
+  /** Enter on a question: dismiss it (0), go on to a card's next question, or send your answer. */
+  private async enterAnswer(q: Message): Promise<void> {
     const d = this.draft(q);
-    d.at = Math.min(Math.max(0, to ?? d.at + by), questionParts(q).length - 1);
-    d.dismiss = false;
+    if (d.dismiss) return this.dismiss(q);
+    d.notes[d.at] = this.input.getValue() || undefined;
+    if (d.at < questionParts(q).length - 1) return this.moveQuestion(q, 1);
+    return this.answer(q);
+  }
+
+  /** The question is done with: back to your message, and how many are still open, so none is forgotten. */
+  private async closed(q: Message, said: string): Promise<void> {
+    this.answers.delete(q.id);
+    if (this.asking === q.id) this.leaveQuestions(false);
     this.scroll = Number.MAX_SAFE_INTEGER;
-    this.anchor = "question"; // keep the question you're on in view
-    this.tui.requestRender();
+    await this.refresh();
+    const left = this.open.length;
+    this.say(left ? `${said} · ${left} more open: Tab to answer` : said, "ok");
   }
 
   private async dismiss(q: Message): Promise<void> {
     const a = this.agent;
     if (!a || this.onNewRow) return;
     await this.c.call("dismiss", { name: a.name, questionId: q.id });
-    this.say("Dismissed. It won't wait on an answer.", "ok");
-    await this.refresh();
+    await this.closed(q, `Dismissed "${shortQuestion(q, 40)}". It won't wait on an answer.`);
   }
 
-  /** What to press on the open question, under its card: for the question you're on, if it's a card of several. */
+  /** What to press on the question you're on, under its card. */
   private questionHint(q: Message, at: number): string {
     const parts = questionParts(q);
     const p = parts[at];
     const n = p.options?.length ?? 0;
     const keys = n ? `Press ${n === 1 ? "1" : `1–${n}`} to ${p.single ? "choose" : n === 1 ? "pick it" : "pick one or more"}` : "";
-    if (parts.length < 2) return n ? `${keys} (0 to dismiss), then Enter. Or type a message to answer in your own words.` : "Type a message to answer, or press 0 then Enter to dismiss.";
+    if (parts.length < 2) return n ? `${keys}, or type your answer below. 0 dismisses.` : "Type your answer below. 0 dismisses.";
     const last = at === parts.length - 1;
-    return `Question ${at + 1} of ${parts.length}: ${keys ? `${keys.toLowerCase()}, or type` : "type"} your own answer. ${last ? "Enter sends your answers (any left blank stay unanswered)" : "Enter goes to the next"} · Tab or ↑↓ moves · 0 dismisses all.`;
+    return `Question ${at + 1} of ${parts.length}: ${keys ? `${keys.toLowerCase()}, or type` : "type"} below. ${last ? "Enter sends your answers" : "Enter goes to the next"} · 0 dismisses all.`;
   }
 
-  /** Send your answer to the open question: what you picked on each of its questions, and any words of your own. */
-  private async answer(q: Message, text?: string): Promise<void> {
+  /** Send your answer to a question: what you picked on each of its questions, and any words of your own. */
+  private async answer(q: Message): Promise<void> {
     const a = this.agent;
     if (!a || this.onNewRow) return;
-    const d = this.choosing?.id === q.id ? this.choosing : null;
+    const d = this.answers.get(q.id);
     const parts = questionParts(q);
     const labels = (i: number) => (d?.picks[i] ?? []).map((n) => optionLabel(parts[i].options?.[n - 1] ?? String(n)));
+    const note = (i: number) => d?.notes[i]?.trim() || undefined;
+    const what = `"${shortQuestion(q, 40)}"`;
     if (parts.length > 1) {
-      const replies = parts.map((_, i) => ({ ...(d?.picks[i]?.length ? { choices: d.picks[i] } : {}), ...(d?.notes[i] ? { note: d.notes[i] } : {}) }));
+      const replies = parts.map((_, i) => ({ ...(d?.picks[i]?.length ? { choices: d.picks[i] } : {}), ...(note(i) ? { note: note(i) } : {}) }));
       const done = replies.filter((r) => r.choices || r.note).length;
-      if (!done) return this.say("Nothing answered yet: pick an option or type an answer, or Esc to leave the questions.");
+      if (!done) return this.say("Nothing answered yet: pick an option or type an answer, or Esc to go back to your message.");
       await this.c.call("answer", { name: a.name, questionId: q.id, replies });
-      this.say(done === parts.length ? `Answered all ${parts.length} questions.` : `Answered ${done} of ${parts.length} questions; the rest stay unanswered.`, "ok");
-    } else {
-      const picks = d?.picks[0] ?? [];
-      if (!picks.length && !text) return;
-      await this.c.call("answer", { name: a.name, questionId: q.id, ...(picks.length > 1 ? { choices: picks } : picks.length ? { choice: picks[0] } : {}), ...(text ? { text } : {}) });
-      if (picks.length) this.say(`Answered: ${labels(0).join(", ")}`, "ok");
+      return this.closed(q, done === parts.length ? `Answered all ${parts.length} questions of ${what}.` : `Answered ${done} of ${parts.length} questions of ${what}; the rest stay unanswered.`);
     }
-    this.choosing = null;
-    this.scroll = Number.MAX_SAFE_INTEGER;
-    await this.refresh();
+    const picks = d?.picks[0] ?? [];
+    const text = note(0);
+    if (!picks.length && !text) return this.say("Pick an option or type your answer first.");
+    await this.c.call("answer", { name: a.name, questionId: q.id, ...(picks.length > 1 ? { choices: picks } : picks.length ? { choice: picks[0] } : {}), ...(text ? { text } : {}) });
+    await this.closed(q, `Answered ${what}: ${[...labels(0), ...(text ? [text] : [])].join(", ")}`);
   }
 
   private async submit(): Promise<void> {
@@ -1152,16 +1232,8 @@ export class App implements Component {
     this.pending = [];
     this.tui.requestRender();
     try {
-      // With a question open and no files, what you type answers it, as its card says.
-      // On a card of several, your words answer the question you're on, and Enter goes on to the next.
-      const q = !sent.length ? openQuestion(this.messages) : undefined;
-      if (q?.questions?.length) {
-        const d = this.draft(q);
-        d.notes[d.at] = text;
-        if (d.at < q.questions.length - 1) return this.moveQuestion(q, 1);
-        await this.answer(q);
-      } else if (q) await this.answer(q, text);
-      else await this.c.call("send", sent.length ? { name: a.name, text, attachments: sent.map((p) => p.path) } : { name: a.name, text });
+      // Always a message, even with questions open: you answer one by going to it (Tab, or a click).
+      await this.c.call("send", sent.length ? { name: a.name, text, attachments: sent.map((p) => p.path) } : { name: a.name, text });
     } catch (e) {
       // Put it back, so nothing typed is ever lost to an error.
       this.input.setValue(text);
@@ -1972,7 +2044,16 @@ export class App implements Component {
     let body: Line[];
     if (this.overlay?.kind === "settings") body = this.renderSettings(this.overlay, w, x, TOP + head.length, bodyH);
     else if (this.overlay) body = this.renderOverlay(w, bodyH, x, TOP + head.length);
-    else body = this.renderMessages(a, w, bodyH, x, TOP + head.length);
+    else {
+      // Open questions pinned at the end, above the message box: the conversation scrolls above them.
+      const pinned = this.renderQuestions(w, Math.max(0, Math.min(bodyH - 4, Math.floor(bodyH * 0.7))));
+      const msgH = bodyH - pinned.lines.length;
+      body = [...this.renderMessages(a, w, msgH, x, TOP + head.length).slice(0, msgH), ...pinned.lines];
+      while (body.length < bodyH) body.splice(msgH, 0, "");
+      const top = TOP + head.length + bodyH - pinned.lines.length;
+      for (const h of pinned.hits) this.hits.push({ row: top + h.line, x0: x + (h.x0 ?? 0), x1: Math.min(x + w, x + (h.x1 ?? w)), act: h.act });
+      pinned.lines.forEach((_, i) => this.textCols.set(top + i, [x + 4, x + w]));
+    }
     return [...head, ...body.slice(0, bodyH)];
   }
 
@@ -2025,6 +2106,95 @@ export class App implements Component {
     return lines;
   }
 
+  /**
+   * The open questions, pinned together just above the message box, newest last: one line each, and the one
+   * you've gone to opened up with its options. At most maxH rows, so the conversation always keeps some room:
+   * a long question's details give way first (they're in the conversation), then the other questions' lines.
+   */
+  private renderQuestions(w: number, maxH: number): { lines: string[]; hits: { line: number; x0?: number; x1?: number; act: () => void }[] } {
+    const open = this.open;
+    if (!open.length || maxH < 2) return { lines: [], hits: [] };
+    const inner = Math.max(12, w - 6);
+    const focus = this.questionInFocus();
+    const line = (s: string) => `  ${yellow("┃")} ${s}`;
+    const wrap = (s: string, width: number) => (s.trim() ? wrapTextWithAnsi(s, Math.max(8, width)) : [""]);
+    type Row = { s: string; act?: () => void; x0?: number; x1?: number; detail?: boolean };
+    // One line for a question you aren't on: what it asks, its options or how many questions, when.
+    const row = (q: Message): Row => {
+      const parts = questionParts(q);
+      const d = this.answers.get(q.id);
+      // An answer you've started (and left with Esc): marked up front, where a long line can't cut it off.
+      const begun = d && (d.picks.some((p) => p?.length) || d.notes.some((n) => n?.trim())) ? ` ${accent("✎")}` : "";
+      const what = parts.length > 1 ? `${parts.length} questions` : (q.options ?? []).map(optionLabel).join(" / ");
+      return { s: line(spread(`${yellow("?")}${begun} ${shortQuestion(q, 200)}${what ? muted(`  · ${what}`) : ""}`, muted(stamp(q.t)) + " ", w - 5)), act: () => this.focusQuestion(q) };
+    };
+    // The one you're on: its options live (numbers, clicks), the question of a card you're on opened up.
+    const opened = (q: Message): Row[] => {
+      const rows: Row[] = [];
+      const d = this.draft(q);
+      const parts = questionParts(q);
+      const card = parts.length > 1;
+      const hq = headed(q, "A question for you");
+      const ind = card ? "  " : "";
+      rows.push({ s: line(spread(`${yellow(bold("▸ ?"))} ${bold(card ? q.title?.trim() || `${parts.length} questions for you` : hq.title)}`, muted(stamp(q.t)) + " ", w - 5)) });
+      if (!card && hq.body) {
+        // Its details, briefly: the whole of them is in the conversation, where it was asked.
+        const more = wrap(hq.body.replace(/\s+/g, " "), inner - 6);
+        more.slice(0, 2).forEach((l, i) => rows.push({ s: line(`  ${muted(i === 1 && more.length > 2 ? cut(l, inner - 8) + "…" : l)}`), detail: true }));
+      }
+      parts.forEach((p, i) => {
+        const cur = i === d.at;
+        const picks = d.picks[i] ?? [];
+        if (card) {
+          const done = !cur && (picks.length || d.notes[i]?.trim()) ? `  ${accent("✓")}` : "";
+          const head = cur ? `${yellow(bold(`▸ Q${i + 1}`))}  ${bold(p.text)}` : `${muted(`  Q${i + 1}`)}  ${p.text}`;
+          // A question you aren't on stays one line; a click goes to it.
+          (cur ? wrap(head + done, inner - 4) : [head + done]).forEach((l) => rows.push({ s: line(l), act: () => this.moveQuestion(q, 0, i) }));
+          if (!cur) return;
+        }
+        const rec = recommendedOption(p.options, p.recommendation);
+        if (p.why) for (const l of wrap(muted(p.why), inner - 6 - ind.length)) rows.push({ s: line(`  ${ind}${l}`), detail: true });
+        // A recommendation that names an option is marked on it; anything else gets its own line.
+        if (p.recommendation && rec < 0) for (const l of wrap(`${bold("I'd suggest:")} ${p.recommendation}`, inner - 6 - ind.length)) rows.push({ s: line(`  ${ind}${l}`), detail: true });
+        const last = Math.max(0, ...picks);
+        (p.options ?? []).forEach((o, k) => {
+          const n = k + 1;
+          const on = picks.includes(n);
+          const label = optionLabel(o);
+          const num = on ? inverse(bold(yellow(` ${n} `))) : inverse(accent(` ${n} `));
+          // Picks are ticked too, so which are on shows before Enter, even without colour.
+          const shown = `${num} ${on ? bold(label) : label}${on ? ` ${yellow("✓")}` : ""}`;
+          const hint = on && !card && !d.dismiss && n === last ? `  ${yellow("← Enter to answer")}` : "";
+          // A click picks the option, like its number key; Enter answers. Only where it's written.
+          rows.push({ s: line(`  ${ind}${shown}${k === rec ? muted("  · suggested") : ""}${hint}`), act: () => this.choose(q, n, i), x0: 6 + ind.length, x1: 6 + ind.length + visibleWidth(shown) });
+        });
+        const own = d.notes[i]?.trim();
+        if (own && !cur) rows.push({ s: line(`  ${ind}${accent("✎")} ${cut(own, inner - 8)}`) });
+      });
+      const what = card ? "Dismiss these questions" : "Dismiss this question";
+      const shown = `${d.dismiss ? inverse(bold(yellow(" 0 "))) : muted(" 0 ")} ${d.dismiss ? bold(what) : muted(what)}`;
+      rows.push({ s: line(`  ${shown}${d.dismiss ? `  ${yellow("← Enter to dismiss")}` : ""}`), act: () => this.choose(q, 0), x0: 6, x1: 6 + visibleWidth(shown) });
+      rows.push({ s: line(muted(cut(this.questionHint(q, d.at), inner - 2))), detail: true });
+      return rows;
+    };
+    const label = `${open.length === 1 ? "A question" : `${open.length} questions`} for you${focus ? "" : " · Tab to answer"}`;
+    const head: Row = { s: `${faint("──")} ${yellow(label)} ${faint("─".repeat(Math.max(0, w - visibleWidth(label) - 4)))}` };
+    const at = focus ? open.indexOf(focus) : open.length;
+    let above = open.slice(0, at).map(row);
+    let card = focus ? opened(focus) : [];
+    let below = focus ? open.slice(at + 1).map(row) : [];
+    const size = () => 1 + above.length + card.length + below.length;
+    // Too tall: details first, then the other questions fold into one line each side, then the card's top.
+    if (size() > maxH) card = card.filter((r) => !r.detail);
+    const fold = (rows: Row[], word: string): Row[] => (rows.length > 1 ? [{ s: line(muted(`${word} ${rows.length} more open question${rows.length === 1 ? "" : "s"}`)) }] : rows);
+    if (size() > maxH && focus) [above, below] = [fold(above, "↑"), fold(below, "↓")];
+    if (size() > maxH && !focus) above = [...fold(above.slice(0, above.length - (maxH - 2)), "↑"), ...above.slice(-(maxH - 2))];
+    if (size() > maxH) card = [card[0], ...card.slice(card.length - Math.max(0, maxH - 2 - above.length - below.length))];
+    const rows = [head, ...above, ...card, ...below].slice(0, maxH);
+    const hits = rows.flatMap((r, i) => (r.act ? [{ line: i, x0: r.x0, x1: r.x1, act: r.act }] : []));
+    return { lines: rows.map((r) => r.s), hits };
+  }
+
   /** The DM: the agent's words plain, yours on a tinted panel with a bar, questions and alerts as cards. */
   private renderMessages(a: AgentSummary, w: number, h: number, x: number, top: number): Line[] {
     const body: Line[] = [];
@@ -2032,13 +2202,10 @@ export class App implements Component {
     const inner = Math.max(12, w - 6);
     const wrap = (s: string, width = inner) => (s.trim() ? wrapTextWithAnsi(s, Math.max(8, width)) : [""]);
     const paras = (s: string, width = inner) => s.split("\n").flatMap((p) => wrap(p, width));
-    const q = openQuestion(this.messages);
     let t = 0;
     let lastDay = "";
     let prev: Message | undefined;
     let lastStart = 0;
-    let questionStart = -1;
-    let questionEnd = -1;
 
     this.linkLine = -1;
     this.msgLine.clear();
@@ -2065,16 +2232,18 @@ export class App implements Component {
         // column as every other message's rule (two in), so the left edges of the conversation line up.
         const row = (s: string) => "  " + accent("┃") + (hasTints() ? panel(" " + s, w - 4) : " " + s);
         if (prev && body.at(-1) !== "") body.push("");
-        body.push(row(spread(m.replyTo ? muted("answered") : "", muted(stamp(m.t)) + " ", w - 5)));
+        // An answer says which question it was for: several can be open, and others may have come in between.
+        const asked = m.replyTo ? this.messages.find((x) => x.id === m.replyTo) : undefined;
+        const answered = asked ? `answered ${cut(`"${shortQuestion(asked)}"`, Math.max(10, w - 25))}` : "answered";
+        body.push(row(spread(m.replyTo ? muted(answered) : "", muted(stamp(m.t)) + " ", w - 5)));
         // The words one space past the bar, as in every other kind of message.
         if (m.text) for (const l of paras(m.text, w - 7)) body.push(row(l));
         t = this.pushExtras(m, body, bodyHits, w - 2, t, row);
         body.push(row(""), "");
       } else if (m.kind === "question") {
-        const open = q?.id === m.id;
+        const open = !m.answer;
         const line = (s: string) => `  ${open ? yellow("┃") : faint("┃")} ${s}`;
         if (body.length && body.at(-1) !== "") body.push("");
-        if (open) questionStart = body.length;
         const hq = headed(m, "A question for you");
         const parts = questionParts(m);
         const card = parts.length > 1;
@@ -2134,60 +2303,24 @@ export class App implements Component {
           prev = m;
           continue;
         }
-        const draft = open && this.choosing?.id === m.id ? this.choosing : null;
-        const at = draft?.at ?? 0;
-        for (const l of paras(`${open ? yellow(bold("?")) : muted("?")} ${open ? bold(title) : muted(title)}  ${muted(stamp(m.t))}`, inner - 4)) body.push(line(l));
+        // Still open: what was asked, read-only, where it was asked. You answer it in the stack pinned above
+        // the message box, so it never scrolls away; once answered, this is where the answer shows.
+        for (const l of paras(`${yellow("?")} ${bold(title)}  ${muted(stamp(m.t))}`, inner - 4)) body.push(line(l));
         if (!card && hq.body) for (const l of markdownLines(hq.body, inner - 4)) body.push(line(linkify(l, m.links)));
         parts.forEach((p, i) => {
-          // The question you're on: its numbers are live and it's marked; the others wait, quieter.
-          const cur = open && i === at;
-          const picks = draft?.picks[i] ?? [];
-          const rec = recommendedOption(p.options, p.recommendation);
           if (card) {
             body.push(line(""));
-            const head = cur ? `${yellow(bold(`▸ Q${i + 1}`))}  ${bold(p.text)}` : `${muted(`  Q${i + 1}`)}  ${open ? p.text : muted(p.text)}`;
-            const done = !cur && (picks.length || draft?.notes[i]) ? `  ${accent("✓")}` : "";
-            // A click on a question goes to it.
-            if (open) bodyHits.push({ line: body.length, act: () => this.moveQuestion(m, 0, i) });
-            for (const l of paras(head + done, inner - 4)) body.push(line(l));
+            for (const l of paras(`${muted(`Q${i + 1}`)}  ${p.text}`, inner - 4)) body.push(line(l));
           }
           if (p.why) for (const l of paras(muted(p.why), inner - 4 - ind.length)) body.push(line(ind + l));
-          // A recommendation that names an option is marked on it; anything else gets its own line.
-          if (p.recommendation && rec < 0) for (const l of paras(`${bold("I'd suggest:")} ${p.recommendation}`, inner - 4 - ind.length)) body.push(line(ind + l));
+          if (p.recommendation) for (const l of paras(`${bold("I'd suggest:")} ${p.recommendation}`, inner - 4 - ind.length)) body.push(line(ind + l));
           if (p.options?.length) {
             if (!card) body.push(line(""));
-            const last = Math.max(0, ...picks);
-            p.options.forEach((o, k) => {
-              const n = k + 1;
-              const on = picks.includes(n);
-              const label = optionLabel(o);
-              const tag = k === rec ? muted("  · suggested") : "";
-              if (open) {
-                const num = on ? inverse(bold(yellow(` ${n} `))) : cur ? inverse(accent(` ${n} `)) : muted(` ${n} `);
-                // Picks are ticked too, so which are on shows before Enter, even without colour.
-                const shown = `${num} ${on ? bold(label) : cur ? label : muted(label)}${on ? ` ${yellow("✓")}` : ""}`;
-                // A click picks the option, like its number key; Enter answers. Only where it's written.
-                bodyHits.push({ line: body.length, x0: 4 + ind.length, x1: 4 + ind.length + visibleWidth(shown), act: () => this.choose(m, n, i) });
-                const hint = on && !card && !draft?.dismiss && n === last ? `  ${yellow("← Enter to answer, Esc to cancel")}` : "";
-                body.push(line(`${ind}${shown}${tag}${hint}`));
-              } else body.push(line(muted(`${ind}${n}  ${label}`)));
-            });
+            p.options.forEach((o, k) => body.push(line(muted(`${ind}${k + 1}  ${optionLabel(o)}`))));
           }
-          const own = draft?.notes[i];
-          if (own) for (const l of paras(`${accent("✎")} ${own}`, inner - 4 - ind.length)) body.push(line(ind + l));
-          if (cur && card && at < parts.length - 1) questionEnd = body.length;
         });
-        if (open) {
-          if (card) body.push(line(""));
-          const picked = !!draft?.dismiss;
-          const what = card ? "Dismiss these questions" : "Dismiss this question";
-          const shown = `${picked ? inverse(bold(yellow(" 0 "))) : muted(" 0 ")} ${picked ? bold(what) : muted(what)}`;
-          bodyHits.push({ line: body.length, x0: 4, x1: 4 + visibleWidth(shown), act: () => this.choose(m, 0) });
-          body.push(line(`${shown}${picked ? `  ${yellow("← Enter to dismiss, Esc to cancel")}` : ""}`));
-          if (!card || at === parts.length - 1) questionEnd = body.length;
-          body.push(line(""));
-          for (const l of paras(muted(this.questionHint(m, at)), inner - 4)) body.push(line(l));
-        }
+        body.push(line(""));
+        body.push(line(yellow(`↓ Waiting for your answer, pinned below${this.asking === m.id ? "" : " · Tab to answer"}`)));
         t = this.pushExtras(m, body, bodyHits, w, t, line);
         body.push("");
       } else if (m.kind === "agent-message") {
@@ -2259,10 +2392,8 @@ export class App implements Component {
     if (this.scroll !== Number.MAX_SAFE_INTEGER) s = Math.min(this.scroll, maxScroll);
     else if (live) s = maxScroll;
     else if (this.anchor) {
-      // A one-time jump: the open question from its top, or a long new message from its start.
-      // A question taller than the view: its end, so its options and Dismiss show (the last row may be the "newer below" hint).
-      const question = questionEnd - (questionStart - 1) > h - 1 ? questionEnd - (h - 1) : questionStart - 1;
-      const target = this.anchor === "question" && questionStart >= 0 ? question : body.length - lastStart > h ? lastStart - 1 : maxScroll;
+      // A one-time jump: a long new message from its start. (Open questions need none: they're pinned below.)
+      const target = body.length - lastStart > h ? lastStart - 1 : maxScroll;
       s = Math.min(maxScroll, Math.max(0, target));
       this.anchor = null;
       if (s < maxScroll) this.scroll = s; // from here on, your scrolling decides
@@ -2449,7 +2580,7 @@ export class App implements Component {
         "",
         muted("MOVING AROUND"),
         ...row("↑ ↓", "move between agents, and to + New agent"),
-        ...row("→ or Tab", "open the selected agent's settings"),
+        ...row("→ or Ctrl+P", "open the selected agent's settings (Tab too, when no question is open)"),
         ...row("← or Esc", "close a panel"),
         ...row("⇧↑ ⇧↓", "scroll the messages (Option+↑↓, PgUp PgDn and the mouse wheel work too)"),
         "",
@@ -2458,8 +2589,13 @@ export class App implements Component {
         ...row("⌥/⇧ Enter", "a new line in the message (Ctrl+J works too); pasted text keeps its lines"),
         ...row("⇧ arrows", "select in the message, by word with ⌥ too; or drag, double-click a word, Ctrl+A twice for all"),
         ...row("Ctrl+C Ctrl+X", "copy or cut what's selected in the message; typing replaces it; Ctrl+Z undoes"),
-        ...row("1–9, Enter", "pick options of the open question (several, unless it takes one), then answer"),
-        ...row("Tab ↑↓", "move between the questions on a card of several; Enter on the last sends them"),
+        "",
+        muted("QUESTIONS (pinned above the message box)"),
+        ...row("Tab ⇧Tab", "go to the open questions, through a card's questions, and back to your message"),
+        ...row("↑ ↓", "on a question: the one above or below; below the newest is your message"),
+        ...row("1–9, Enter", "pick its options (several, unless it takes one), or type your answer, then Enter"),
+        ...row("0, Enter", "dismiss it"),
+        ...row("Esc", "back to your message; what you picked stays, for when you come back"),
         ...row("drag a file", "attach it to your next message"),
         ...row("Ctrl+L", "step through links and files; Enter opens one"),
         "",
@@ -2538,19 +2674,22 @@ export class App implements Component {
     if (this.onNewRow) return "Name the new agent, e.g. repo-keeper";
     const a = this.agent;
     if (!a) return "";
-    const q = openQuestion(this.messages);
-    if (q?.questions?.length) {
-      const at = this.choosing?.id === q.id ? this.choosing.at : 0;
-      return `Answer question ${at + 1} of ${q.questions.length} in your own words${q.questions[at]?.options?.length ? ", or press its numbers" : ""}`;
+    // On a question, the box takes your answer to it, and says so.
+    const q = this.questionInFocus();
+    const d = this.choosing;
+    if (q && d) {
+      const parts = questionParts(q);
+      const p = parts[d.at];
+      const n = p?.options?.length ?? 0;
+      if (parts.length > 1) return `Your answer to Q${d.at + 1} of "${shortQuestion(q, 40)}"${n ? `, or press ${n === 1 ? "1" : `1–${n}`}` : ""}`;
+      if (d.picks[0]?.length) return `Enter answers with ${d.picks[0].length === 1 ? "the option" : "the options"} you picked; or add a few words`;
+      return `Your answer to "${shortQuestion(q, 40)}"${n ? `, or press ${n === 1 ? "1" : `1–${n}`} to ${p.single || n === 1 ? "choose" : "pick"}` : ""}`;
     }
-    if (q?.options?.length) {
-      const picks = this.choosing?.id === q.id ? this.choosing.picks[0] ?? [] : [];
-      if (picks.length) return `Enter answers with ${picks.length === 1 ? "the option" : "the options"} you picked; Esc cancels`;
-      return `Press ${q.options.length === 1 ? "1" : `1–${q.options.length}`} to ${q.single || q.options.length === 1 ? "choose" : "pick one or more"}, or type a message`;
-    }
+    // Your message, always: an open question waits pinned above, until you go to it.
+    const tab = this.open.length ? `  ·  Tab to answer ${this.open.length === 1 ? "its question" : `its ${this.open.length} questions`}` : "";
     if (a.status === "new") return `Tell ${a.name} what it's for…`;
-    if (a.status === "stopped") return `Message ${a.name} (stopped; it reads this when started)`;
-    return `Message ${a.name}  ·  drag files here to attach`;
+    if (a.status === "stopped") return `Message ${a.name} (stopped; it reads this when started)${tab}`;
+    return `Message ${a.name}${tab || "  ·  drag files here to attach"}`;
   }
 
   private renderChips(w: number, row: number, x0: number): string {
@@ -2584,7 +2723,8 @@ export class App implements Component {
     const empty = !this.input.getText();
     const typed = empty || !active ? null : this.input.body(inner);
     const body = typed ? typed.text : [active ? `\x1b[7m \x1b[0m${muted(fit(this.placeholder(), inner - 1))}` : muted(fit(this.placeholder(), inner))];
-    const prompt = active ? accent("›") : muted("›");
+    // Answering a question: a yellow ? where the › is, so it's clear the box is taking an answer, not a message.
+    const prompt = !active ? muted("›") : this.asking ? yellow(bold("?")) : accent("›");
     // The / menu sits under what you're typing, inside the box.
     const lines = [...body.map((l, n) => `${n === 0 ? prompt : " "} ${l}`), ...(typed?.menu.length ? ["", ...typed.menu.map((l) => `  ${l}`)] : [])];
     // A long message scrolls inside the box: say how much of it is out of view, above and below.
@@ -2614,7 +2754,7 @@ export class App implements Component {
       return ` ${icon} ${f.tone === "err" ? red(f.text) : f.text}`;
     }
     let hints: string[];
-    const q = !this.onNewRow ? openQuestion(this.messages) : undefined;
+    const q = !this.onNewRow ? this.questionInFocus() : undefined;
     const o = this.overlay;
     if (o?.kind === "settings") hints = o.editing ? [keyHint("enter", "save"), keyHint("esc", "cancel")] : [keyHint("↑↓", "move"), keyHint("enter", o.draft && o.sel === "create" ? "create" : "change"), keyHint("esc", o.draft ? "back to the name" : "close")];
     else if (o?.kind === "help") hints = [keyHint("any key", "close")];
@@ -2622,15 +2762,22 @@ export class App implements Component {
     else if (o) hints = [keyHint("↑↓", "move"), keyHint("enter", "choose"), keyHint("esc", o.kind === "pick" && o.back ? "back" : "close")];
     else if (this.onNewRow) hints = [keyHint("enter", "create"), keyHint("↑↓", "agents"), keyHint("?", "keys")];
     else if (this.input.selection()) hints = [keyHint("^C", "copy"), keyHint("^X", "cut"), keyHint("type", "replace"), keyHint("esc", "deselect")];
-    else if (this.typing() || this.pending.length) hints = [keyHint("enter", "send"), keyHint("⌥/⇧ enter", "new line"), keyHint("esc", "clear")];
-    else if (q?.questions?.length) {
-      // A card of several questions: the keys for the one you're on, and how to get to the others.
-      const at = this.choosing?.id === q.id ? this.choosing.at : 0;
-      const n = q.questions[at]?.options?.length ?? 0;
-      const last = at === q.questions.length - 1;
-      hints = [n ? keyHint(n === 1 ? "1" : `1–${n}`, q.questions[at].single ? "choose" : "pick") : "", keyHint("tab ↑↓", "question"), keyHint("enter", last ? "send answers" : "next"), this.choosing?.id === q.id ? keyHint("esc", "cancel") : keyHint("→", "settings"), keyHint("?", "keys")].filter(Boolean);
-    } else if (this.choosing) hints = [keyHint("enter", "answer"), keyHint(q?.options?.length ? `1–${q.options.length}` : "1–9", q?.single ? "change" : "pick more"), keyHint("esc", "cancel")];
-    else hints = [q?.options?.length ? keyHint(`1–${q.options.length}`, q.single || q.options.length === 1 ? "choose" : "pick") : "", keyHint("↑↓", "agents"), keyHint("→", "settings"), keyHint("⇧↑↓", "scroll"), this.targets().length ? keyHint("^L", "links") : "", keyHint("?", "keys")].filter(Boolean);
+    else if (q) {
+      // On a question: its keys, how to get to the others, and the way back to your message.
+      const parts = questionParts(q);
+      const at = this.choosing?.at ?? 0;
+      const n = parts[at]?.options?.length ?? 0;
+      const last = at === parts.length - 1;
+      hints = [
+        n && !this.typing() ? keyHint(n === 1 ? "1" : `1–${n}`, parts[at].single ? "choose" : "pick") : "",
+        keyHint("enter", parts.length > 1 ? (last ? "send answers" : "next") : "answer"),
+        this.open.length > 1 ? keyHint("↑↓", "question") : "",
+        // Tab past the last question is your message again, as Esc is: said once.
+        (parts.length > 1 && !last) || this.open.at(-1) !== q ? keyHint("tab", parts.length > 1 && !last ? "next" : "next question") : "",
+        keyHint("esc", "back to message"),
+      ].filter(Boolean);
+    } else if (this.typing() || this.pending.length) hints = [keyHint("enter", "send"), keyHint("⌥/⇧ enter", "new line"), keyHint("esc", "clear")];
+    else hints = [this.open.length ? keyHint("tab", this.open.length === 1 ? "answer question" : `answer ${this.open.length} questions`) : "", keyHint("↑↓", "agents"), keyHint("→", "settings"), keyHint("⇧↑↓", "scroll"), this.targets().length ? keyHint("^L", "links") : "", keyHint("?", "keys")].filter(Boolean);
     const left = this.agent && !this.onNewRow ? muted(` ${this.agent.backend}${this.agent.model ? ` · ${this.agent.model}` : ""}`) : "";
     while (hints.length > 1 && visibleWidth(hints.join(sep)) + visibleWidth(left) + 3 > w) hints.pop();
     return spread(left, hints.join(sep) + " ", w);

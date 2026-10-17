@@ -7,6 +7,7 @@ fakeHome();
 const { Runtime } = await import("../src/daemon/runtime.js");
 const { ControlServer } = await import("../src/daemon/control.js");
 const { paths } = await import("../src/paths.js");
+const { askedAt } = await import("../src/store/types.js");
 
 // No agent ever runs here: each is stopped, so answers wait in its inbox to be read back.
 const rt = new Runtime(() => {});
@@ -43,7 +44,7 @@ beforeAll(async () => {
   control = new ControlServer(rt, () => {}, () => {});
   await control.start();
   control.open();
-  for (const n of ["ann", "bob"]) await agent(n);
+  for (const n of ["ann", "bob", "cat"]) await agent(n);
 });
 afterAll(async () => {
   await control.stop();
@@ -59,7 +60,8 @@ describe("answering questions", () => {
     expect(a.choice).toBe(2);
     expect(a.note).toBe("arm64 first");
     const item = await lastInbox("ann");
-    expect(item.text).toBe("2. Linux; 3. Windows — arm64 first");
+    // It names the question it answers, and when that was asked: the agent kept working meanwhile.
+    expect(item.text).toBe(`Answer to your question "Which platforms?" (asked ${askedAt(q.t)}): 2. Linux; 3. Windows — arm64 first`);
     expect(item.data).toMatchObject({ question: "Which platforms?", answers: [{ question: "Which platforms?", chosen: ["Linux", "Windows"], note: "arm64 first" }] });
   });
 
@@ -69,7 +71,7 @@ describe("answering questions", () => {
     const a = (await rt.store("ann").message(q.id))!.answer!;
     expect(a.choice).toBe(1);
     expect(a.choices).toBeUndefined();
-    expect((await lastInbox("ann")).text).toBe("1. Merge");
+    expect((await lastInbox("ann")).text).toBe(`Answer to your question "Merge it?" (asked ${askedAt(q.t)}): 1. Merge`);
   });
 
   it("refuses several picks on a question that takes one, and options that aren't there", async () => {
@@ -85,7 +87,7 @@ describe("answering questions", () => {
     const a = (await rt.store("ann").message(q.id))!.answer!;
     expect(a.replies).toEqual([{ choices: [1, 3] }, {}, { note: "Ana and Bo" }]);
     const item = await lastInbox("ann");
-    expect(item.text).toBe("Q1. Which platforms?\n→ 1. macOS; 3. Windows\nQ2. Which version?\n→ (left unanswered)\nQ3. Who to credit?\n→ Ana and Bo");
+    expect(item.text).toBe(`Answers to your questions "Before I cut the 2.0 release" (asked ${askedAt(q.t)}):\nQ1. Which platforms?\n→ 1. macOS; 3. Windows\nQ2. Which version?\n→ (left unanswered)\nQ3. Who to credit?\n→ Ana and Bo`);
     expect(item.data).toMatchObject({ question: "Before I cut the 2.0 release", answers: [{ chosen: ["macOS", "Windows"] }, { chosen: [] }, { chosen: [], note: "Ana and Bo" }] });
     // One decision per question answered, for earned autonomy.
     const ds = (await rt.store("ann").decisions()).filter((d) => d.threadId === q.id);
@@ -97,7 +99,7 @@ describe("answering questions", () => {
     await expect(rt.answer("ann", q.id, undefined, undefined, [{}, {}, {}])).rejects.toThrow("Pick an option or write an answer.");
     await expect(rt.answer("ann", q.id, undefined, undefined, [{}, { choices: [1, 2] }])).rejects.toThrow("Question 2 takes one option.");
     await rt.dismissQuestion("ann", q.id);
-    expect((await lastInbox("ann")).text).toContain("The person dismissed your questions without answering");
+    expect((await lastInbox("ann")).text).toContain(`The person dismissed your questions "Before I cut the 2.0 release" (asked ${askedAt(q.t)}) without answering`);
   });
 
   it("withdraws a whole card at once, with its why", async () => {
@@ -158,5 +160,46 @@ describe("overtime answer and messages", () => {
     expect(r.out).toContain("✕ bob withdrew this: you gave me full access");
     expect(r.out).toContain("✕ bob withdrew this question (no longer needed)");
     expect(r.out).not.toContain("Withdrawn");
+  }, 60_000);
+
+  it("with several questions open, lists them all and answers the one you name; with one left, a number is an option again", async () => {
+    const one = await ask("cat", { text: "Which Node versions?", options: ["18 and 20", "20 and 22"] });
+    const two = await ask("cat", { text: "Merge the dependency fix?", options: ["Merge it", "Wait"], single: true });
+    const ms = await cli(["messages", "cat"]);
+    expect(ms.out).toContain("2 open questions");
+    expect(ms.out).toContain("1  Which Node versions?");
+    expect(ms.out).toContain("Answer with: overtime answer cat 2 <1-2>");
+    // Both open cards show their numbers to pick: the older one isn't hidden behind the newer.
+    expect(ms.out.match(/Pick (any|one):/g)).toHaveLength(2);
+    // Which one isn't guessed.
+    let r = await cli(["answer", "cat", "1,2"]);
+    expect(r.code).not.toBe(0);
+    expect(r.out).toContain("cat has 2 open questions; say which one first");
+    expect((await rt.store("cat").openQuestions()).length).toBe(2);
+    // The second of two, by its number; then the first by its id.
+    r = await cli(["answer", "cat", "2", "1"]);
+    expect(r.out).toContain("Answered.");
+    expect((await rt.store("cat").message(two.id))!.answer).toMatchObject({ choice: 1 });
+    expect((await rt.store("cat").message(one.id))!.answer).toBeUndefined();
+    expect((await lastInbox("cat")).text).toBe(`Answer to your question "Merge the dependency fix?" (asked ${askedAt(two.t)}): 1. Merge it`);
+    r = await cli(["answer", "cat", "2", "only CI"]);
+    expect(r.out).toContain("Answered.");
+    expect((await rt.store("cat").message(one.id))!.answer).toMatchObject({ choice: 2, note: "only CI" });
+    // What each answer was for, in the conversation.
+    const after = await cli(["messages", "cat"]);
+    expect(after.out).toContain('answered "Merge the dependency fix?"');
+    expect(after.out).toContain('answered "Which Node versions?"');
+    expect(after.out).not.toContain("open questions");
+  }, 60_000);
+
+  it("takes a question's id or #1 before the answer", async () => {
+    const q = await ask("cat", { text: "Ship it?", options: ["Yes", "No"] });
+    let r = await cli(["answer", "cat", q.id, "2"]);
+    expect(r.out).toContain("Answered.");
+    expect((await rt.store("cat").message(q.id))!.answer).toMatchObject({ choice: 2 });
+    const q2 = await ask("cat", { text: "Tag it?", options: ["Yes", "No"] });
+    r = await cli(["answer", "cat", "#1", "1"]);
+    expect(r.out).toContain("Answered.");
+    expect((await rt.store("cat").message(q2.id))!.answer).toMatchObject({ choice: 1 });
   }, 60_000);
 });

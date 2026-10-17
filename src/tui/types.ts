@@ -1,6 +1,6 @@
 /** Shapes the app and the command line read from the daemon. Everything in them is agent-written text, cleaned before display. */
 import type { Answer, QuestionPart } from "../store/types.js";
-export { questionParts, replyTo, type Answer, type QuestionPart, type Reply } from "../store/types.js";
+export { askedAt, questionParts, replyTo, shortQuestion, type Answer, type QuestionPart, type Reply } from "../store/types.js";
 
 export interface Attachment {
   name: string;
@@ -78,7 +78,6 @@ export interface LiveState {
   done?: boolean;
 }
 
-/** The newest question still waiting for an answer. */
 /** An option's own words, without any numbering the agent put in front ("3 — Borrowed Sun" -> "Borrowed Sun"). */
 export function optionLabel(o: string): string {
   return o.replace(/^\s*(\d{1,2}|[a-zA-Z])\s*[—–\-.):]\s+/, "").trim() || o;
@@ -94,12 +93,9 @@ export function recommendedOption(options: string[] | undefined, recommendation:
   });
 }
 
-export function openQuestion(messages: Message[]): Message | undefined {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m.kind === "question" && !m.answer) return m;
-  }
-  return undefined;
+/** The questions still waiting for an answer, oldest first: several can be open at once. */
+export function openQuestions(messages: Message[]): Message[] {
+  return messages.filter((m) => m.kind === "question" && !m.answer);
 }
 
 export function humanBytes(n: number | undefined): string {

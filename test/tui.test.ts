@@ -96,16 +96,20 @@ describe("terminal app, against a real daemon", () => {
     await until(async () => existsSync(f) && readFileSync(f, "utf8").includes('load your \\"overtime-docs\\" skill'), 30_000, "skill note delivered");
   });
 
-  it("shows a question inline; a number picks an option and Enter answers", async () => {
+  it("pins a question above the message box; Tab goes to it, a number picks an option and Enter answers", async () => {
     t.type("PASS ASK");
     t.press(KEY.enter);
     await seen("Bridge or ferry?", 40_000);
+    await seen("A question for you · Tab to answer");
+    t.press(KEY.tab);
     await seen("Press 1–2 to pick one or more");
     t.press("1");
-    await seen("Enter to answer, Esc to cancel"); // one key alone never answers
+    await seen("Enter to answer"); // one key alone never answers
     t.press(KEY.enter);
-    await seen("Answered: Bridge");
+    await seen("Answered");
     await seen("✓ 1  Bridge  · your answer");
+    // Back to your message: the box is a message box again.
+    await seen("Message alpha");
   });
 
   it("opens links with the keyboard", async () => {
@@ -213,8 +217,10 @@ describe("terminal app, with a scripted daemon", () => {
     const { t, seen } = await open();
     await seen("Merge the dependency fix?");
     const s = await t.screen();
-    expect(s).toContain("1  Merge it");
-    expect(s).toContain("Press 1–3 to pick one or more, or type a message");
+    // Pinned above the message box, which stays yours.
+    expect(s).toContain("A question for you · Tab to answer");
+    expect(s).toMatch(/┃ \? Merge the dependency fix\? +· Merge it \/ Wait for 1\.35 \/ Close it/);
+    expect(s).toContain("Message repo-keeper  ·  Tab to answer its question");
     expect(s).toContain(" ● repo-keeper");
   });
 
@@ -785,11 +791,15 @@ describe("terminal app, with a scripted daemon", () => {
     await seen("hidden from them");
   });
 
-  it("picks an option with a click and answers with Enter, like its number key", async () => {
+  it("goes to a question with a click, picks an option with a click and answers with Enter, like its number key", async () => {
     const { t, c, seen } = await open();
-    await seen("Merge the dependency fix?");
-    const lines = (await t.screen()).split("\n");
-    const y = lines.findIndex((l) => l.includes("2  Wait for 1.35"));
+    await seen("A question for you");
+    let lines = (await t.screen()).split("\n");
+    const pin = lines.findLastIndex((l) => l.includes("? Merge the dependency fix?"));
+    click(t, lines[pin].indexOf("Merge the"), pin);
+    await seen("Dismiss this question");
+    lines = (await t.screen()).split("\n");
+    const y = lines.findLastIndex((l) => l.includes("2  Wait for 1.35"));
     // Beside the option, past its words: nothing.
     click(t, lines[y].indexOf("Wait for 1.35") + 30, y);
     await sleep(200);
@@ -805,6 +815,12 @@ describe("terminal app, with a scripted daemon", () => {
   it("lets you pick several options of a question with their number keys, ticked, then answers with Enter", async () => {
     const { t, c, seen } = await open();
     await seen("Merge the dependency fix?");
+    // In your message, a number is just a number.
+    t.press("1");
+    await seen("› 1");
+    t.press(KEY.esc);
+    t.press(KEY.tab);
+    await seen("Dismiss this question");
     t.press("1");
     t.press("3");
     await seen("Close it ✓");
@@ -821,7 +837,7 @@ describe("terminal app, with a scripted daemon", () => {
     expect(c.calls.some((k) => k.method === "answer")).toBe(false);
     t.press(KEY.enter);
     await until(async () => c.calls.some((k) => k.method === "answer" && k.params.choices?.join() === "1,3"), 5_000, "answered with both");
-    await seen("Answered: Merge it, Close it");
+    await seen('Answered "Merge the dependency fix?": Merge it, Close it');
   });
 
   it("takes one option where the question says so: a second number replaces the first", async () => {
@@ -829,7 +845,9 @@ describe("terminal app, with a scripted daemon", () => {
     const q = c.data.messages["repo-keeper"].find((m: any) => m.id === "m5");
     q.single = true;
     const { t, seen } = await open(120, 36, c);
-    await seen("Press 1–3 to choose, or type a message");
+    await seen("Merge the dependency fix?");
+    t.press(KEY.tab);
+    await seen("Press 1–3 to choose");
     t.press("1");
     await seen("Merge it ✓");
     t.press("2");
@@ -837,6 +855,114 @@ describe("terminal app, with a scripted daemon", () => {
     expect(await t.screen()).not.toContain("Merge it ✓");
     t.press(KEY.enter);
     await until(async () => c.calls.some((k) => k.method === "answer" && k.params.choice === 2 && !k.params.choices), 5_000, "answered with 2");
+  });
+
+  /** repo-keeper with two open questions (the dependency fix, then Node versions), and it kept working after both. */
+  function twoOpen() {
+    const c = new FakeClient();
+    const iso = (m: number) => new Date(Date.now() - m * 60000).toISOString();
+    c.data.messages["repo-keeper"].push(
+      { id: "q2", t: iso(5), from: "agent", kind: "question", text: "Which Node versions should CI test?", options: ["18 and 20", "20 and 22", "All three"] },
+      { id: "m7", t: iso(2), from: "agent", kind: "message", text: "Meanwhile I'm updating the lockfile and rerunning the flaky suite." },
+    );
+    c.data.agents[0].waiting = 2;
+    return c;
+  }
+  const pinned = async (t: TestTerminal) => {
+    const lines = (await t.screen()).split("\n");
+    const from = lines.findIndex((l) => /── (A question|\d questions) for you/.test(l));
+    return from < 0 ? [] : lines.slice(from, lines.findIndex((l, i) => i > from && l.includes("╭")));
+  };
+
+  it("pins every open question together at the end, newest last, and keeps them in view as you scroll back", async () => {
+    const { t, seen } = await open(110, 24, twoOpen());
+    await seen("2 questions for you · Tab to answer");
+    let p = await pinned(t);
+    expect(p).toHaveLength(3);
+    expect(p[1]).toContain("? Merge the dependency fix?");
+    expect(p[2]).toContain("? Which Node versions should CI test?");
+    // Below the newest message: the agent carried on after asking, and the questions sit after that.
+    const s = await t.screen();
+    expect(s.indexOf("Meanwhile I'm updating the lockfile")).toBeLessThan(s.lastIndexOf("? Which Node versions"));
+    // In the conversation, where it was asked, each one says it waits below.
+    expect(s).toContain("↓ Waiting for your answer, pinned below");
+    for (let i = 0; i < 4; i++) t.press(KEY.pgup);
+    await seen("newer below");
+    p = await pinned(t);
+    expect(p[1]).toContain("? Merge the dependency fix?");
+    expect(p[2]).toContain("? Which Node versions should CI test?");
+    // Calm: nothing in the stack moves by itself.
+    const before = await t.screen();
+    await sleep(600);
+    expect(await t.screen()).toBe(before);
+  });
+
+  it("sends what you type as a message while questions are open, never as an answer", async () => {
+    const { t, c, seen } = await open(110, 24, twoOpen());
+    await seen("Tab to answer its 2 questions");
+    t.type("1");
+    t.type(" more thing: how is the lockfile going?");
+    t.press(KEY.enter);
+    await until(async () => c.calls.some((k) => k.method === "send"), 5_000, "sent");
+    expect(c.calls.find((k) => k.method === "send")!.params).toEqual({ name: "repo-keeper", text: "1 more thing: how is the lockfile going?" });
+    expect(c.calls.some((k) => k.method === "answer")).toBe(false);
+    await seen("1 more thing: how is the lockfile going?");
+    expect((await pinned(t)).length).toBe(3); // both still open, still pinned
+  });
+
+  it("answers the second of two: Tab, ↓, a number and Enter; the first stays pinned", async () => {
+    const { t, c, seen } = await open(110, 24, twoOpen());
+    await seen("2 questions for you");
+    t.press(KEY.tab);
+    await seen("▸ ? Merge the dependency fix?");
+    expect(await t.screen()).toContain('Your answer to "Merge the dependency fix?"');
+    t.press(KEY.down);
+    await seen("▸ ? Which Node versions should CI test?");
+    t.press("2");
+    await seen("20 and 22 ✓");
+    t.press(KEY.enter);
+    await until(async () => c.calls.some((k) => k.method === "answer"), 5_000, "answered");
+    expect(c.calls.find((k) => k.method === "answer")!.params).toEqual({ name: "repo-keeper", questionId: "q2", choice: 2 });
+    await seen('Answered "Which Node versions should CI test?": 20 and 22 · 1 more open: Tab to answer');
+    const p = await pinned(t);
+    expect(p[0]).toContain("A question for you");
+    expect(p[1]).toContain("? Merge the dependency fix?");
+    expect(p.join("\n")).not.toContain("Which Node versions");
+    // The box is your message again.
+    expect(await t.screen()).toContain("Message repo-keeper  ·  Tab to answer its question");
+  });
+
+  it("goes back to your message with Esc, as you left it, keeping what you picked for the question", async () => {
+    const { t, c, seen } = await open(110, 24, twoOpen());
+    await seen("2 questions for you");
+    t.type("half a thought");
+    t.press(KEY.tab);
+    await seen("▸ ? Merge the dependency fix?");
+    expect(await t.screen()).not.toContain("half a thought");
+    t.press("3");
+    t.type("x");
+    await seen("? x");
+    t.press(KEY.esc);
+    await seen("› half a thought");
+    // Not sent, not answered; the started answer is marked on its line.
+    expect(c.calls.some((k) => k.method === "send" || k.method === "answer")).toBe(false);
+    expect((await pinned(t))[1]).toContain("✎");
+    t.press(KEY.tab);
+    await seen("Close it ✓");
+    await seen("? x");
+    // Tab on through the questions, and past the newest back to your message.
+    t.press(KEY.tab);
+    await seen("▸ ? Which Node versions");
+    t.press(KEY.tab);
+    await seen("› half a thought");
+  });
+
+  it("says in the conversation what each answer was for", async () => {
+    const { t, seen } = await open();
+    await seen("Merge the dependency fix?");
+    t.press(KEY.down);
+    await seen('answered "Night or dusk for the first screenshots?"');
+    expect(await t.screen()).toContain("✓ 2  Dusk  · your answer");
   });
 
   /** repo-keeper's open question as a card of three, the last without options. */
@@ -855,10 +981,13 @@ describe("terminal app, with a scripted daemon", () => {
     return c;
   }
 
-  it("shows several questions on one card and answers them in turn: Tab or ↑↓ to move, Enter on the last sends all", async () => {
+  it("shows several questions on one card and answers them in turn: Tab to move, Enter on the last sends all", async () => {
     const c = cardClient();
     const { t, seen } = await open(110, 40, c);
     await seen("Before I cut the 2.0 release");
+    expect(await t.screen()).toContain("· 3 questions");
+    t.press(KEY.tab);
+    await seen("▸ Q1");
     let s = await t.screen();
     expect(s).toContain("▸ Q1  Which platforms should the release build for?");
     expect(s).toMatch(/ {2}Q2 {2}Bump to 2\.0\.0 or ship as 1\.9\.0\?/);
@@ -876,11 +1005,13 @@ describe("terminal app, with a scripted daemon", () => {
     t.press("1"); // takes one: 1 replaces 2
     await seen("2.0.0: the config format changed ✓");
     expect(await t.screen()).not.toContain("keep it minor ✓");
-    // ↑↓ move between the questions while you answer, not between agents.
-    t.press(KEY.up);
+    // ⇧Tab goes back; ↑↓ stay on the questions (there's only this one open), never moving between agents.
+    t.press("\x1b[Z");
     await seen("▸ Q1");
+    t.press(KEY.up);
+    await sleep(100);
     expect(await t.screen()).toContain("repo-keeper  ●");
-    t.press(KEY.down);
+    t.press(KEY.tab);
     await seen("▸ Q2");
     // Enter before the last question goes on to the next one.
     t.press(KEY.enter);
@@ -892,7 +1023,7 @@ describe("terminal app, with a scripted daemon", () => {
     t.press(KEY.enter);
     await until(async () => c.calls.some((k) => k.method === "answer"), 5_000, "answered");
     expect(c.calls.find((k) => k.method === "answer")!.params).toEqual({ name: "repo-keeper", questionId: "card", replies: [{ choices: [1, 3] }, { choices: [1] }, { note: "Ana and Bo" }] });
-    await seen("Answered all 3 questions.");
+    await seen('Answered all 3 questions of "Before I cut the 2.0 release".');
   });
 
   it("sends only the questions you answered on a card, and says the rest stay unanswered", async () => {
@@ -901,11 +1032,12 @@ describe("terminal app, with a scripted daemon", () => {
     await seen("Before I cut the 2.0 release");
     t.press(KEY.tab);
     t.press(KEY.tab);
+    t.press(KEY.tab);
     await seen("▸ Q3");
     // Nothing picked yet: Enter on the last sends nothing.
     t.press(KEY.enter);
     await seen("Nothing answered yet");
-    t.press(KEY.up);
+    t.press("\x1b[Z");
     await seen("▸ Q2");
     t.press("2");
     t.press(KEY.tab);
@@ -913,13 +1045,15 @@ describe("terminal app, with a scripted daemon", () => {
     t.press(KEY.enter);
     await until(async () => c.calls.some((k) => k.method === "answer"), 5_000, "answered");
     expect(c.calls.find((k) => k.method === "answer")!.params.replies).toEqual([{}, { choices: [2] }, {}]);
-    await seen("Answered 1 of 3 questions; the rest stay unanswered.");
+    await seen("Answered 1 of 3 questions of");
+    await seen("the rest stay unanswered.");
   });
 
   it("dismisses a whole card with 0 then Enter", async () => {
     const c = cardClient();
     const { t, seen } = await open(110, 40, c);
     await seen("Before I cut the 2.0 release");
+    t.press(KEY.tab);
     t.press("0");
     await seen("Enter to dismiss");
     t.press(KEY.enter);
@@ -941,11 +1075,13 @@ describe("terminal app, with a scripted daemon", () => {
     expect(s).not.toContain("Dismiss these questions");
   });
 
-  it("keeps the options and Dismiss in view when it opens on a question taller than the screen", async () => {
+  it("keeps the options and Dismiss in view on a question taller than the screen", async () => {
     const c = new FakeClient();
     const q = c.data.messages["repo-keeper"].find((m: any) => m.id === "m5");
     q.text += "\n\n" + Array.from({ length: 30 }, (_, i) => `Detail ${i} about the bump.`).join("\n\n");
     const { t, seen } = await open(120, 30, c);
+    await seen("A question for you");
+    t.press(KEY.tab);
     await seen("Dismiss this question");
     const s = await t.screen();
     expect(s).toContain("1  Merge it");
@@ -993,6 +1129,8 @@ describe("terminal app, with a scripted daemon", () => {
 
   it("scrolls when you click the 'newer below' or 'lines above' hint, never acting on the line under it", async () => {
     const { t, c, seen } = await open(120, 22);
+    await seen("lines above");
+    t.press(KEY.pgup);
     await seen("newer below");
     let s = (await t.screen()).split("\n");
     click(t, 60, s.findIndex((l) => l.includes("newer below")));
@@ -1179,7 +1317,7 @@ describe("terminal app, with a scripted daemon", () => {
   it("never puts a panel's clicks on the message box or footer in a short terminal", async () => {
     const { t, app } = await open(100, 9);
     await sleep(300);
-    t.press(KEY.tab);
+    t.press("\x1b[C"); // → settings
     await sleep(300);
     // 9 rows: the message box (one row when short) and the footer are the last two.
     expect((app as any).hits.length).toBeGreaterThan(0);

@@ -115,7 +115,7 @@ describe("an agent can't act as the person", () => {
     const r = await cli(["answer", "b", "4"]);
     expect(r.code).not.toBe(0);
     expect(r.out).toContain("There is no option 4. b's question has 2.");
-    expect(r.out).toContain('Usage: overtime answer <name> <option-number>[,<option-number>…] ["note"]');
+    expect(r.out).toContain('Usage: overtime answer <name> [<question>] <option-number>[,<option-number>…] ["note"]');
     expect((await rt.store("b").openQuestions()).length).toBe(1);
     expect((await cli(["answer", "b", "2"])).code).toBe(0);
     expect((await rt.store("b").openQuestions()).length).toBe(0);
