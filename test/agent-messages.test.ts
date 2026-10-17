@@ -90,6 +90,13 @@ describe("agents messaging each other", () => {
     expect(read("ann", ".message-result")).toMatch(/^ERROR .*no agent called "cat"/);
   });
 
+  it("says an agent exists but hasn't been set up yet, rather than that there's no such agent; a private one stays unknown", async () => {
+    await rt.create("dan");
+    await expect(rt.messageAgent("ann", "dan", "hi")).rejects.toThrow(`dan exists but hasn't been set up yet: the person hasn't given it its job, so it can't take messages. Agents you can message: bob.`);
+    await setSettings("dan", { visibility: "private" });
+    await expect(rt.messageAgent("ann", "dan", "hi")).rejects.toThrow(`There's no agent called "dan". Agents you can message: bob.`);
+  });
+
   it("keeps a message for a stopped agent until it's started", async () => {
     await rt.stopAgent("bob");
     rmSync(file("bob", ".agent-inbox"), { force: true });

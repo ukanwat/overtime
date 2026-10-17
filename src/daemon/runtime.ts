@@ -7,7 +7,7 @@ import { execFile } from "node:child_process";
 import { isAbsolute, join, sep } from "node:path";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
-import { createAgent, effectiveSettings, hasIdentity, listAgents, loadAgent, publicAgents, restoreSettings, updateState, type Agent, type AgentState } from "../agent/agent.js";
+import { createAgent, effectiveSettings, hasIdentity, listAgents, loadAgent, publicAgents, publicButNew, restoreSettings, updateState, type Agent, type AgentState } from "../agent/agent.js";
 import { newId, readJson, writeJson } from "../fsutil.js";
 import { paths } from "../paths.js";
 import { loadSettings, saveSettings } from "../settings.js";
@@ -1311,8 +1311,10 @@ export class Runtime extends EventEmitter implements ToolHost {
     if (to === from) throw new Error("That's you: message another agent.");
     const listed = publicAgents().map((a) => a.name);
     if (!listed.includes(from)) throw new Error("Only public agents can message other agents.");
+    const others = listed.filter((n) => n !== from).join(", ") || "none";
+    if (!listed.includes(to) && publicButNew(to)) throw new Error(`${to} exists but hasn't been set up yet: the person hasn't given it its job, so it can't take messages. Agents you can message: ${others}.`);
     // A private agent is answered exactly like one that doesn't exist.
-    if (!listed.includes(to)) throw new Error(`There's no agent called "${to}". Agents you can message: ${listed.filter((n) => n !== from).join(", ") || "none"}.`);
+    if (!listed.includes(to)) throw new Error(`There's no agent called "${to}". Agents you can message: ${others}.`);
     const pair = [from, to].sort().join(" and ");
     const over = await withLock("agent-messages", async () => {
       const file = join(paths.agentsDir(), "..", "agent-messages.json");
