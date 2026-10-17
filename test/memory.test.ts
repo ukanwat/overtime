@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,7 +21,6 @@ const { isolationEnv, codexMemoriesOff, geminiMemoryOff } = await import("../src
 const mem = await import("../src/agent/memory.js");
 const { sandboxAvailable } = await import("../src/runtime/sandbox.js");
 
-const git = (dir: string, ...args: string[]) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" });
 const scratch = () => mkdtempSync(join(tmpdir(), "overtime-mem-"));
 
 /** What a run told the agent: its prompt, from Overtime's own record of the run. */
@@ -119,48 +117,6 @@ describe("the index and its cap", () => {
     expect(mem.memoryOverCap(long)).toContain(`over the ${mem.MEMORY_CAP_LINES}-line cap. Before this turn ends, merge overlapping memories`);
     expect(mem.memoryText("- [A](a.md) — b")).toBe("- [A](a.md) — b");
     expect(mem.memoryOverCap("- [A](a.md) — b")).toBe("");
-  });
-});
-
-describe("history", () => {
-  it("makes the folder a repository and commits only memory/, skills/, AGENT.md, INDEX.md and its .gitignore, as Overtime", async () => {
-    const dir = scratch();
-    writeFileSync(join(dir, "AGENT.md"), "# a\n");
-    mkdirSync(join(dir, "memory"));
-    writeFileSync(join(dir, "memory", "MEMORY.md"), "- [A](a.md) — b\n");
-    writeFileSync(join(dir, "draft.txt"), "not history\n");
-    mkdirSync(join(dir, ".overtime"));
-    writeFileSync(join(dir, ".overtime", "state.json"), "{}");
-    const id = await mem.commitHistory(dir, "turn main_1", { body: "Why it was awake: a test" });
-    expect(id).toBeTruthy();
-    // The message says what changed, then what started it; the body has the rules that came and went.
-    expect(git(dir, "log", "--format=%an <%ae>|%s").trim()).toBe("Overtime <overtime@localhost>|added .gitignore, AGENT.md; memory: added MEMORY.md (turn main_1)");
-    expect(git(dir, "log", "-1", "--format=%b").trim()).toBe("Why it was awake: a test\n\nAdded: [A](a.md) — b");
-    expect(git(dir, "show", "--name-only", "--format=", "HEAD").trim().split("\n").sort()).toEqual([".gitignore", "AGENT.md", "memory/MEMORY.md"]);
-    expect(readFileSync(join(dir, ".gitignore"), "utf8")).toContain(".overtime/");
-    // Only what isn't history shows as untracked: not its own .gitignore.
-    expect(git(dir, "status", "--porcelain").trim()).toBe("?? draft.txt");
-    // Nothing changed: no commit. A deletion is committed too.
-    expect(await mem.commitHistory(dir, "turn main_2")).toBeNull();
-    execFileSync("rm", [join(dir, "memory", "MEMORY.md")]);
-    writeFileSync(join(dir, "memory", "b.md"), "b\n");
-    mkdirSync(join(dir, "skills", "deploy"), { recursive: true });
-    writeFileSync(join(dir, "skills", "deploy", "SKILL.md"), "---\nname: deploy\n---\n");
-    writeFileSync(join(dir, "AGENT.md"), "# a\n\nMore.\n");
-    expect(await mem.commitHistory(dir, "turn main_3")).toBeTruthy();
-    expect(git(dir, "show", "--name-status", "--format=", "HEAD").trim().split("\n")).toContain("D\tmemory/MEMORY.md");
-    expect(git(dir, "log", "-1", "--format=%s").trim()).toBe("edited AGENT.md; memory: added b.md, removed MEMORY.md; skill deploy: added SKILL.md (turn main_3)");
-    expect(git(dir, "log", "-1", "--format=%b").trim()).toBe("Removed: [A](a.md) — b");
-    expect(await mem.inHistoryRepo(dir)).toBe(true);
-  });
-
-  it("leaves a folder that is already a git repository of the agent's own alone", async () => {
-    const dir = scratch();
-    git(dir, "init", "-q");
-    writeFileSync(join(dir, "AGENT.md"), "# a\n");
-    expect(await mem.ensureHistory(dir)).toEqual({ ok: false, why: "the folder is a git repository of its own" });
-    expect(await mem.commitHistory(dir, "turn x")).toBeNull();
-    expect(await mem.inHistoryRepo(dir)).toBe(false);
   });
 });
 
@@ -262,20 +218,13 @@ describe("memory in a running agent", () => {
     expect(third).toContain("if you were corrected or worked out how to do something, save it: a how-to as a skill, anything else as a memory (memory/).");
   });
 
-  it("commits memory/, skills/, AGENT.md, INDEX.md and .gitignore after each turn, and nothing else", async () => {
+  it("keeps no history of its own in the agent's folder: no git repository, no .gitignore", async () => {
     const dir = paths.agent("rem");
-    const log = git(dir, "log", "--format=%an|%s|%b");
-    // What changed, then the turn; why it was awake in the body.
-    expect(log).toMatch(/^Overtime\|added \.gitignore, AGENT\.md, INDEX\.md; memory: added MEMORY\.md, phone\.md \(turn main_\S+\)\|Why it was awake: the person sent you your first message/m);
-    expect(log).toMatch(/^Overtime\|memory: edited MEMORY\.md \(turn main_\S+\)\|Why it was awake: the person sent you a message\n\nAdded: \[Short\]\(short\.md\) — keep replies short/m);
-    const files = git(dir, "ls-files").trim().split("\n");
-    expect(files).toEqual(expect.arrayContaining(["AGENT.md", "INDEX.md", "memory/MEMORY.md", "memory/phone.md"]));
-    // The fake wrote notes/ and its own files in the folder: none of that is history.
-    expect(files.every((f) => /^(AGENT\.md|INDEX\.md|\.gitignore|memory\/|skills\/)/.test(f))).toBe(true);
-    expect(git(dir, "status", "--porcelain", "--", "memory", "AGENT.md", "INDEX.md").trim()).toBe("");
+    expect(existsSync(join(dir, ".git"))).toBe(false);
+    expect(existsSync(join(dir, ".gitignore"))).toBe(false);
   });
 
-  it("runs a reflect pass only when due and idle: it may change memory/ alone, sees its rules and skills, reads on from a cursor, quietly, and is committed", async () => {
+  it("runs a reflect pass only when due and idle: it may change memory/ alone, sees its rules and skills, reads on from a cursor, quietly", async () => {
     await rt.create("refl");
     await tell("refl", "Your job is testing.");
     await tell("refl", "REFLECT_TAMPER you forgot to check the render");
@@ -325,13 +274,11 @@ describe("memory in a running agent", () => {
       expect(existsSync(join(dir, "notes-outside-memory.txt"))).toBe(false);
     } else expect(lines.some((l) => l.includes("[refl/reflect] changed") && l.includes("AGENT.md") && l.includes("put it back"))).toBe(true);
     expect(readFileSync(join(dir, "skills", "render", "SKILL.md"), "utf8")).toContain("1. Render.");
-    const last = git(dir, "log", "-1", "--format=%an|%s").trim();
-    expect(last).toMatch(/^Overtime\|memory: added MEMORY\.md, reflected\.md \(reflect reflect_\S+\)$/);
-    expect(git(dir, "log", "-1", "--format=%b")).toMatch(/^Reflect pass on \d{4}-\d\d-\d\d \(its session was compacted; 2 turns not reflected yet\), over its turns .* UTC\.\n\nreflected: added reflected\.md\n\nAdded: \[Check renders\]/);
-    expect(git(dir, "show", "--name-only", "--format=", "HEAD").trim().split("\n").sort()).toEqual(["memory/MEMORY.md", "memory/reflected.md"]);
+    expect(readdirSync(join(dir, "memory")).sort()).toEqual(["MEMORY.md", "reflected.md"]);
+    expect(lines.some((l) => /\[refl\] reflect pass over its turns .* UTC \(its session was compacted; 2 turns not reflected yet\): reflected: added reflected\.md/.test(l))).toBe(true);
     // Nothing to the person: no message, one quiet activity line.
     expect((await rt.store("refl").messages()).length).toBe(messages);
-    expect((await rt.store("refl").reports()).at(-1)!.text).toMatch(/^Reflect pass: updated its memory \(commit \w+/);
+    expect((await rt.store("refl").reports()).at(-1)!.text).toBe("Reflect pass: updated its memory: reflected: added reflected.md.");
     // It counts toward the budget, and toward the day's passes.
     const usage = readFileSync(join(paths.meta("refl"), "usage.jsonl"), "utf8");
     expect(usage).toContain('"kind":"reflect"');
@@ -390,7 +337,7 @@ describe("memory in a running agent", () => {
     await rt.create("comp");
     await tell("comp", "Your job is testing.");
     await tell("comp", "COMPACT please");
-    await until(async () => lines.some((l) => l.includes("[comp] committed") && l.includes("reflect") && l.includes("its session was compacted")), 40_000, "a reflect pass after compaction");
+    await until(async () => lines.some((l) => l.includes("[comp] reflect pass over its turns") && l.includes("its session was compacted")), 40_000, "a reflect pass after compaction");
     expect((await loadAgent("comp")).state.compactedSinceReflect).toBe(false);
   });
 
@@ -469,7 +416,7 @@ describe("memory in a running agent", () => {
       expect(got).toContain("denied");
       expect(existsSync(join(paths.agent("rem"), "memory", "from-helper.md"))).toBe(false);
     }
-    // A helper of an agent whose workspace is its folder gets a copy, not a worktree of the history.
+    // A helper of an agent whose workspace is its folder (not a git repository) gets a copy.
     expect(h.branch).toBeUndefined();
     expect(existsSync(join(h.workdir, "notes"))).toBe(true);
     const run = readdirSync(join(paths.meta("rem"), "runs")).find((f) => f.startsWith("helper_"))!;

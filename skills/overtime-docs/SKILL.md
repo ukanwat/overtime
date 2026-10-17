@@ -170,19 +170,17 @@ they type `/`). Load that skill and follow it for that message.
   `.overtime/state.json`), about 80,000 characters at a time, over as many passes as it takes. It runs
   while you're idle: when a chunk's worth is unread, after a compaction, or after an hour idle with
   anything unread; at most 10 passes and a tenth of your daily budget a day. Stopped because work came
-  in, it waits for 30 minutes of idle (doubling, up to 4 hours) before trying again. It runs on your
-  backend and model with none of your MCP servers, sees AGENT.md, INDEX.md and your skills read-only,
+  in, or by an overload, a usage limit or being offline, it waits for 30 minutes of idle (doubling, up
+  to 4 hours) before trying again; a limit it hits is never recorded against your own turns. It never
+  starts within 5 minutes of a turn. It runs on your backend, on your model or the person's
+  `reflectModel` setting, with none of your MCP servers, sees AGENT.md, INDEX.md and your skills read-only,
   and can change only `memory/` (enforced by the sandbox, by refusing other edits and commands, and by
   undoing its own changes elsewhere, never anyone else's). What it thinks a skill or AGENT.md lacks
   becomes a memory whose index line ends "(for skill <name>)", "(for a new skill)" or "(for AGENT.md)":
   put it there and delete the memory. Helpers can read your `memory/` but not write it; they end done
   with "learned: …" lines (or "learned: nothing new"), which the reflect pass reads.
-  The person can turn reflect passes off for every agent by starting the daemon with `OVERTIME_REFLECT=0`.
-- Your folder is a git repository Overtime commits to (as "Overtime <overtime@localhost>") after each
-  turn and reflect pass: only `memory/`, `skills/`, AGENT.md and INDEX.md. Each message says what
-  changed ("memory: added a.md, edited MEMORY.md (turn <runId>)"), with the index lines added and
-  removed in its body. `git log -p memory/` shows the history. If your folder was already a git
-  repository of your own, Overtime doesn't commit to it.
+  The person turns reflect passes off with `overtime set <name> reflect=off`, for every agent with
+  `"reflect": false` in settings.json, or for a run of the daemon with `OVERTIME_REFLECT=0`.
 
 ## How sessions work
 
