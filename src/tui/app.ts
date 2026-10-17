@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import {
   Editor,
   Markdown,
+  decodeKittyPrintable,
   type MarkdownTheme,
   getKeybindings,
   Input,
@@ -24,6 +25,8 @@ import {
   type TuiMouseEventResult,
   type AutocompleteItem,
   type AutocompleteProvider,
+  type KeyId,
+  type Keybinding,
   fuzzyFilter,
 } from "@earendil-works/pi-tui";
 import { ensureDaemon, isDaemonGone, type DaemonClient } from "../daemon/client.js";
@@ -182,15 +185,264 @@ export function markdownLines(text: string, width: number): string[] {
 }
 
 
+/** A place in the message box's text: a line, and a position in it (as the editor counts, UTF-16 units). */
+export interface Pos {
+  line: number;
+  col: number;
+}
+
+const isBefore = (a: Pos, b: Pos) => a.line < b.line || (a.line === b.line && a.col < b.col);
+
+/**
+ * Keys that select as they move, and the move each makes. Terminals send Shift+Option+← in several
+ * ways: xterm's modifier code, ESC before Shift+← (macOS Terminal with "Use Option as Meta key"), or
+ * Shift+Ctrl+← in others. Cmd+Shift+← only arrives from terminals that report Cmd (kitty's protocol).
+ */
+const SELECT_MOVES: { keys: KeyId[]; raw?: string[]; move: "left" | "right" | "up" | "down" | "wordLeft" | "wordRight" | "lineStart" | "lineEnd" }[] = [
+  { keys: ["shift+left"], move: "left" },
+  { keys: ["shift+right"], move: "right" },
+  { keys: ["shift+up"], move: "up" },
+  { keys: ["shift+down"], move: "down" },
+  { keys: ["shift+alt+left", "shift+ctrl+left"], raw: ["\x1b\x1b[1;2D"], move: "wordLeft" },
+  { keys: ["shift+alt+right", "shift+ctrl+right"], raw: ["\x1b\x1b[1;2C"], move: "wordRight" },
+  { keys: ["shift+home", "shift+super+left"], move: "lineStart" },
+  { keys: ["shift+end", "shift+super+right"], move: "lineEnd" },
+];
+
+/** Keys that delete: with text selected, each deletes just the selection. */
+const DELETES: Keybinding[] = ["tui.editor.deleteCharBackward", "tui.editor.deleteCharForward", "tui.editor.deleteWordBackward", "tui.editor.deleteWordForward", "tui.editor.deleteToLineStart", "tui.editor.deleteToLineEnd"];
+
 /**
  * The message box: a multi-line editor. Enter sends; Shift+Enter or Ctrl+J starts a new line; a pasted
  * block keeps its line breaks (a long one shows as a "[paste #1 +40 lines]" marker and is sent in full).
  * It draws no border of its own: the app frames it.
+ *
+ * Text in it can be selected like in any text box (the editor itself has only a cursor): Shift with the
+ * arrows, the mouse, or Ctrl+A twice. What's selected is the text between `anchor` and the cursor;
+ * typing or pasting replaces it and the delete keys delete it.
  */
 class Composer extends Editor {
   /** Lines scrolled out of the box above and below, as last drawn (the editor shows them on its borders). */
   above = 0;
   below = 0;
+  /** Where the selection started; the cursor is its other end. Null: nothing is selected. */
+  anchor: Pos | null = null;
+  /** The key before this one, so a second Ctrl+A in a row can select everything. */
+  private lastKey = "";
+
+  /** The editor's own state and helpers, which it keeps private. */
+  private get ed(): any {
+    return this;
+  }
+  private get lines(): string[] {
+    return this.ed.state.lines;
+  }
+
+  cursorPos(): Pos {
+    const c = this.getCursor();
+    return { line: c.line, col: c.col };
+  }
+
+  private setCursor(p: Pos): void {
+    this.ed.state.cursorLine = p.line;
+    this.ed.setCursorCol(p.col);
+    this.ed.lastAction = null;
+  }
+
+  /** The selected range, start first; null when nothing (or nothing but an empty range) is selected. */
+  selection(): { start: Pos; end: Pos } | null {
+    const a = this.anchor;
+    if (!a || a.line >= this.lines.length) return null;
+    const anchor = { line: a.line, col: Math.min(a.col, this.lines[a.line].length) };
+    const cursor = this.cursorPos();
+    if (anchor.line === cursor.line && anchor.col === cursor.col) return null;
+    return isBefore(anchor, cursor) ? { start: anchor, end: cursor } : { start: cursor, end: anchor };
+  }
+
+  /** The selected text, with pasted blocks in full ("" when nothing is selected). */
+  selectedText(): string {
+    const s = this.selection();
+    if (!s) return "";
+    const text = this.lines
+      .slice(s.start.line, s.end.line + 1)
+      .map((l, i, all) => l.slice(i === 0 ? s.start.col : 0, i === all.length - 1 ? s.end.col : undefined))
+      .join("\n");
+    return this.ed.expandPasteMarkers(text);
+  }
+
+  /** Select from one place to another (the cursor goes to `to`). */
+  select(from: Pos, to: Pos): void {
+    this.setCursor(to);
+    this.anchor = from.line === to.line && from.col === to.col ? null : from;
+  }
+
+  selectAll(): void {
+    const last = this.lines.length - 1;
+    this.select({ line: 0, col: 0 }, { line: last, col: this.lines[last].length });
+  }
+
+  deselect(): void {
+    this.anchor = null;
+  }
+
+  /** Delete the selected text (undoably); false when nothing was selected. */
+  deleteSelection(): boolean {
+    const s = this.selection();
+    this.anchor = null;
+    if (!s) return false;
+    this.ed.exitHistoryBrowsing();
+    this.ed.pushUndoSnapshot();
+    const lines = this.lines;
+    lines.splice(s.start.line, s.end.line - s.start.line + 1, lines[s.start.line].slice(0, s.start.col) + lines[s.end.line].slice(s.end.col));
+    this.setCursor(s.start);
+    this.onChange?.(this.getText());
+    return true;
+  }
+
+  /**
+   * The place under a point of the box: `row` counts the text's rows from the first one in view (above
+   * or below the box reaches the rows out of view, so dragging past an edge scrolls), `x` is the column
+   * from the text's left edge. Past the end of a row is the end of it.
+   */
+  posAt(row: number, x: number): Pos {
+    const rows: { logicalLine: number; startCol: number; length: number }[] = this.ed.buildVisualLineMap(this.ed.lastWidth);
+    const i = this.ed.scrollOffset + row;
+    if (!rows.length || i < 0) return { line: 0, col: 0 };
+    if (i >= rows.length) {
+      const last = this.lines.length - 1;
+      return { line: last, col: this.lines[last].length };
+    }
+    const r = rows[i];
+    const chunk = this.lines[r.logicalLine].slice(r.startCol, r.startCol + r.length);
+    let col = 0;
+    let at = chunk.length;
+    for (const g of this.ed.segment(chunk, "grapheme")) {
+      const next = col + visibleWidth(g.segment);
+      if (x < next) {
+        at = g.index;
+        break;
+      }
+      col = next;
+    }
+    // A row that wraps onto the next one ends where the next starts: past its end is its last character.
+    const wraps = rows[i + 1]?.logicalLine === r.logicalLine;
+    if (wraps && at === chunk.length && chunk.length) at = [...this.ed.segment(chunk, "grapheme")].pop().index;
+    return { line: r.logicalLine, col: r.startCol + at };
+  }
+
+  /** The place one character on from p, on its line (p itself at the line's end). */
+  after(p: Pos): Pos {
+    const line = this.lines[p.line] ?? "";
+    for (const g of this.ed.segment(line, "grapheme")) if (g.index >= p.col) return { line: p.line, col: g.index + g.segment.length };
+    return { line: p.line, col: line.length };
+  }
+
+  /**
+   * The word at p, like a double-click in the conversation picks it: paths and dashed-words stay whole.
+   * Between words, the space or mark there.
+   */
+  wordAt(p: Pos): { start: Pos; end: Pos } {
+    const line = this.lines[p.line] ?? "";
+    const segs: { start: number; end: number; word: boolean; joiner: boolean }[] = [];
+    for (const s of this.ed.segment(line, "word")) {
+      const joiner = s.segment === "/" || s.segment === "-";
+      segs.push({ start: s.index, end: s.index + s.segment.length, word: s.isWordLike !== false || joiner, joiner });
+    }
+    let i = segs.findIndex((s) => p.col >= s.start && p.col < s.end);
+    if (i < 0) i = segs.length - 1;
+    if (i < 0) return { start: p, end: p };
+    const join = (a: (typeof segs)[number], b: (typeof segs)[number]) => a.word && b.word && (a.joiner || b.joiner);
+    let a = i;
+    let b = i;
+    while (a > 0 && join(segs[a - 1], segs[a])) a--;
+    while (b < segs.length - 1 && join(segs[b], segs[b + 1])) b++;
+    return { start: { line: p.line, col: segs[a].start }, end: { line: p.line, col: segs[b].end } };
+  }
+
+  setText(text: string): void {
+    this.anchor = null;
+    super.setText(text);
+  }
+
+  handleInput(data: string): void {
+    const kb = getKeybindings();
+    const last = this.lastKey;
+    this.lastKey = data;
+    const sel = SELECT_MOVES.find((m) => m.raw?.includes(data) || m.keys.some((k) => matchesKey(data, k)));
+    if (sel) {
+      const from = this.anchor ?? this.cursorPos();
+      this.moveCursorBy(sel.move);
+      const to = this.cursorPos();
+      this.anchor = from.line === to.line && from.col === to.col ? null : from;
+      return;
+    }
+    // Ctrl+A goes to the start of the line, as in a shell; pressed again straight away, it selects everything.
+    if (matchesKey(data, "ctrl+a") && last === data) return this.selectAll();
+    if (matchesKey(data, "super+a")) return this.selectAll();
+    const s = this.selection();
+    if (!s) {
+      this.anchor = null;
+      return super.handleInput(data);
+    }
+    if (DELETES.some((id) => kb.matches(data, id)) || matchesKey(data, "shift+backspace") || matchesKey(data, "shift+delete")) {
+      this.deleteSelection();
+      return;
+    }
+    // ← and → close the selection at its start or end, like a text box does.
+    if (kb.matches(data, "tui.editor.cursorLeft") || kb.matches(data, "tui.editor.cursorRight")) {
+      this.anchor = null;
+      this.setCursor(kb.matches(data, "tui.editor.cursorLeft") ? s.start : s.end);
+      return;
+    }
+    // Typing, pasting or a new line replaces what's selected. Undo brings it back in one step.
+    const typed = data.includes("\x1b[200~") || data === "\n" || decodeKittyPrintable(data) !== undefined || (data.charCodeAt(0) >= 32 && !data.startsWith("\x1b") && data !== "\x7f");
+    if (!typed) {
+      this.anchor = null;
+      return super.handleInput(data);
+    }
+    this.deleteSelection();
+    const undo = this.ed.undoStack;
+    const steps = undo.length;
+    super.handleInput(data);
+    while (undo.length > steps) undo.pop();
+  }
+
+  private moveCursorBy(move: (typeof SELECT_MOVES)[number]["move"]): void {
+    const ed = this.ed;
+    if (move === "left") ed.moveCursor(0, -1);
+    else if (move === "right") ed.moveCursor(0, 1);
+    // Up on the first row and down on the last go to the start and end, as in a text box.
+    else if (move === "up") ed.isOnFirstVisualLine() ? this.setCursor({ line: 0, col: 0 }) : ed.moveCursor(-1, 0);
+    else if (move === "down") ed.isOnLastVisualLine() ? this.setCursor({ line: this.lines.length - 1, col: this.lines[this.lines.length - 1].length }) : ed.moveCursor(1, 0);
+    else if (move === "wordLeft") ed.moveWordBackwards();
+    else if (move === "wordRight") ed.moveWordForwards();
+    else if (move === "lineStart") ed.moveToLineStart();
+    else ed.moveToLineEnd();
+  }
+
+  /** The editor's rows, with what's selected shown inverted (and no cursor while anything is, as in a text box). */
+  render(width: number): string[] {
+    const out = super.render(width);
+    const s = this.selection();
+    if (!s) return out;
+    const ed = this.ed;
+    const rows: { logicalLine: number; startCol: number; length: number }[] = ed.buildVisualLineMap(ed.lastWidth);
+    for (let i = 0; i < ed.renderedVisibleLineCount; i++) {
+      const r = rows[ed.scrollOffset + i];
+      if (!r) continue;
+      const text = this.lines[r.logicalLine].slice(r.startCol, r.startCol + r.length);
+      const L = r.logicalLine;
+      const inside = L >= s.start.line && L <= s.end.line;
+      const from = !inside ? 0 : L === s.start.line ? Math.max(0, Math.min(text.length, s.start.col - r.startCol)) : 0;
+      const to = !inside ? 0 : L === s.end.line ? Math.max(0, Math.min(text.length, s.end.col - r.startCol)) : text.length;
+      // A line break that's selected shows as one selected space at the end of its line.
+      const lastRow = rows[ed.scrollOffset + i + 1]?.logicalLine !== L;
+      const nl = inside && L < s.end.line && lastRow ? "\x1b[7m \x1b[27m" : "";
+      const line = from < to ? text.slice(0, from) + "\x1b[7m" + text.slice(from, to) + "\x1b[27m" + text.slice(to) + nl : text + nl;
+      out[1 + i] = line + " ".repeat(Math.max(0, width - visibleWidth(line)));
+    }
+    return out;
+  }
   protected renderTopBorder(_width: number, hidden: number): string {
     this.above = hidden;
     return "";
@@ -278,6 +530,14 @@ export class App implements Component {
   private hits: Hit[] = [];
   /** Screen rows the two panes take (from the top edge down to the message box), as last drawn. */
   private paneRows = 0;
+  /**
+   * Where the message box was drawn: its screen rows, and its text's first row, row count and left
+   * column. A mouse press there is the box's (it places the cursor and selects text in it), never the
+   * screen's, so a selection there can't run into the conversation or pick up the box's frame.
+   */
+  private box = { top: 0, bottom: -1, textTop: 0, textRows: 0, textX: 0 };
+  /** A mouse press in the message box being dragged: where it was pressed. */
+  private boxPress: Pos | null = null;
   private width = 0;
   /** Per screen row of the right pane, the columns its text is in: past a message's bar, inside a panel's frame. */
   private textCols = new Map<number, [number, number]>();
@@ -306,6 +566,9 @@ export class App implements Component {
   /** The selected agent's name (null: the "+ New agent" row). */
   private selName: string | null = null;
   private images = new Map<string, { b64: string; w: number; h: number } | null>();
+
+  /** Put text on the system clipboard (tests replace this); true if it got there. */
+  clipboard: (text: string) => Promise<boolean> | boolean = (text) => copyText(text, (seq) => this.term.write(seq));
 
   constructor(public c: DaemonClient, private readonly tui: TuiAltScreen, private readonly term: Terminal, private readonly onQuit: () => void, private readonly opener: (t: string) => string | void = openTarget) {
     this.input = new Composer(tui as any, {
@@ -490,6 +753,8 @@ export class App implements Component {
       else this.scrollBy(d * 3);
       return { handled: true };
     }
+    const box = this.boxMouse(ev);
+    if (box) return box;
     if (ev.type !== "click" || ev.button !== "left") return undefined;
     const hit = this.hits.find((h) => h.row === ev.screenY && ev.screenX >= h.x0 && ev.screenX < h.x1);
     if (!hit) return undefined;
@@ -497,12 +762,78 @@ export class App implements Component {
     return { handled: true };
   }
 
+  /**
+   * The mouse in the message box, as in a text box: a press places the cursor, a drag selects (copied on
+   * release, like a selection in the conversation), a double-click selects a word and a triple-click its
+   * line. A press anywhere else lets go of what's selected in the box.
+   */
+  private boxMouse(ev: TuiMouseEvent): TuiMouseEventResult | undefined {
+    const b = this.box;
+    // The / menu's rows are below the text: those aren't the text's.
+    const rows = this.input.isShowingAutocomplete() ? b.textTop + b.textRows - 1 : b.bottom;
+    const inBox = !this.overlay && ev.button === "left" && ev.screenY >= b.top && ev.screenY <= rows;
+    const at = () => this.input.posAt(ev.screenY - b.textTop, Math.max(0, ev.screenX - b.textX));
+    if (ev.type === "press") {
+      if (!inBox) {
+        if (this.input.anchor) {
+          this.input.deselect();
+          this.tui.requestRender();
+        }
+        return undefined;
+      }
+      this.boxPress = at();
+      this.input.select(this.boxPress, this.boxPress);
+      return { handled: true };
+    }
+    if (ev.type === "drag" && this.boxPress) {
+      // Like a selection on the screen, it takes in both the character pressed on and the one under the pointer.
+      const p = at();
+      const forward = !isBefore(p, this.boxPress);
+      this.input.select(forward ? this.boxPress : this.input.after(this.boxPress), forward ? this.input.after(p) : p);
+      return { handled: true };
+    }
+    if (ev.type === "release" && this.boxPress) {
+      this.boxPress = null;
+      this.copySelected();
+      return { handled: true };
+    }
+    if (ev.type === "click" && inBox) {
+      const p = at();
+      if (ev.clickCount === 2) {
+        const w = this.input.wordAt(p);
+        this.input.select(w.start, w.end);
+        this.copySelected();
+      } else if (ev.clickCount === 3) {
+        const line = this.input.getLines()[p.line] ?? "";
+        this.input.select({ line: p.line, col: 0 }, { line: p.line, col: line.length });
+        this.copySelected();
+      }
+      return { handled: true };
+    }
+    return undefined;
+  }
+
+  /** Copy what's selected in the message box, if anything, and say so as a selection on the screen does. */
+  private copySelected(): boolean {
+    const text = this.input.selectedText();
+    if (!text) return false;
+    void Promise.resolve(this.clipboard(text)).then(
+      (ok) => this.tui.flash(ok ? "Copied!" : "Copy failed"),
+      () => this.tui.flash("Copy failed"),
+    );
+    return true;
+  }
+
   private typing(): boolean {
     return this.input.getText().length > 0;
   }
 
   private async onKey(data: string): Promise<void> {
-    if (matchesKey(data, Key.ctrl("c"))) return this.quit();
+    // Ctrl+C copies what's selected in the message box (Cmd+C is the terminal's own); with nothing selected it quits.
+    if (matchesKey(data, Key.ctrl("c")) || matchesKey(data, Key.super("c"))) {
+      if (!this.overlay && this.copySelected()) return;
+      return matchesKey(data, Key.ctrl("c")) ? this.quit() : undefined;
+    }
     // A drag and drop of files pastes their paths: those become attachments, not text.
     if (data.startsWith("\x1b[200~") && !this.overlay && !this.onNewRow) {
       const files = pastedFiles(data.slice(6).replace(/\x1b\[201~[\s\S]*$/, ""));
@@ -516,6 +847,11 @@ export class App implements Component {
     if (matchesKey(data, Key.ctrl("t"))) return this.showBackendPicker(false);
     if (matchesKey(data, Key.ctrl("l"))) return this.nextLink();
     if (matchesKey(data, Key.ctrl("o"))) return this.agent && !this.onNewRow ? this.openLink(this.agent.dir) : undefined;
+    // Ctrl+X cuts what's selected in the message box.
+    if ((matchesKey(data, Key.ctrl("x")) || matchesKey(data, Key.super("x"))) && this.copySelected()) {
+      this.input.deleteSelection();
+      return this.tui.requestRender();
+    }
     // The / menu is open: its keys (move, choose, close) go to it.
     if (this.input.isShowingAutocomplete() && [Key.up, Key.down, Key.enter, Key.tab, Key.escape].some((k) => matchesKey(data, k))) {
       this.input.handleInput(data);
@@ -528,13 +864,20 @@ export class App implements Component {
     if (!typing && data === "?") return this.show({ kind: "help" });
 
     if (matchesKey(data, Key.escape)) {
-      if (typing) this.input.setValue("");
+      // With text selected, Esc lets go of the selection first; pressed again, it clears the message.
+      if (this.input.selection()) this.input.deselect();
+      else if (typing) this.input.setValue("");
       else if (this.choosing) this.choosing = null;
       else if (this.linkIdx >= 0) this.linkIdx = -1;
       else if (this.pending.length) this.pending = [];
       return this.tui.requestRender();
     }
     // Shift+↑↓ (or Option+↑↓) scroll the messages a few lines; plain ↑↓ move between agents.
+    // In a message of several lines, Shift+↑↓ select through its lines instead, as in a text box.
+    if ((matchesKey(data, Key.shift("up")) || matchesKey(data, Key.shift("down"))) && this.input.getLines().length > 1) {
+      this.input.handleInput(data);
+      return this.tui.requestRender();
+    }
     if (matchesKey(data, Key.shift("up")) || matchesKey(data, Key.alt("up"))) return this.scrollBy(-3);
     if (matchesKey(data, Key.shift("down")) || matchesKey(data, Key.alt("down"))) return this.scrollBy(3);
     if (matchesKey(data, Key.up) || matchesKey(data, Key.down)) {
@@ -1209,10 +1552,11 @@ export class App implements Component {
    * Where a mouse selection that starts at (x, y) may reach: the rows of the pane it started in, and on
    * each row only the columns that pane's text is in. So a copy from the conversation never picks up the
    * agent list, the divider or a message's bar, and one from the agent list stays in the list.
-   * A selection that starts below the panes (the message box, the footer) is left as it is.
+   * A selection that starts below the panes (the attachments, the footer) stays on its row. The message
+   * box has its own selection (boxMouse), so the screen's never starts there.
    */
   selectionArea(x: number, y: number): { top: number; bottom: number; cols: (row: number) => [number, number] } | null {
-    if (y >= this.paneRows) return null;
+    if (y >= this.paneRows) return { top: y, bottom: y, cols: () => [0, this.width] };
     if (this.leftW > 0 && x < this.leftW) return { top: 0, bottom: this.paneRows - 1, cols: () => [0, this.leftW] };
     const x0 = this.leftW > 0 ? this.leftW + 1 : 0;
     return { top: 0, bottom: this.paneRows - 1, cols: (row) => this.textCols.get(row) ?? [x0, this.width] };
@@ -1245,6 +1589,10 @@ export class App implements Component {
       out.push(typeof r === "string" ? lp + fit(r, rightW) : lp + "    " + r.image);
     }
     if (chipsH) out.push(this.renderChips(width, TOP + bodyH));
+    const b = this.box;
+    b.top = out.length;
+    b.bottom = out.length + composerH - 1;
+    b.textTop += b.top;
     out.push(...composer);
     out.push(fit(this.renderFooter(width), width));
     return out;
@@ -1717,6 +2065,8 @@ export class App implements Component {
         muted("MESSAGES"),
         ...row("type, Enter", "write a message and send it"),
         ...row("⌥/⇧ Enter", "a new line in the message (Ctrl+J works too); pasted text keeps its lines"),
+        ...row("⇧ arrows", "select in the message, by word with ⌥ too; or drag, double-click a word, Ctrl+A twice for all"),
+        ...row("Ctrl+C Ctrl+X", "copy or cut what's selected in the message; typing replaces it; Ctrl+Z undoes"),
         ...row("1–9", "answer the open question with that option"),
         ...row("drag a file", "attach it to your next message"),
         ...row("Ctrl+L", "step through links and files; Enter opens one"),
@@ -1727,7 +2077,7 @@ export class App implements Component {
         ...row("Ctrl+S", "stop or start the agent"),
         ...row("Ctrl+T", "change its backend and model"),
         ...row("Ctrl+O", "open its folder"),
-        ...row("Ctrl+C", "quit (your agents keep running)"),
+        ...row("Ctrl+C", "quit (your agents keep running), when nothing in the message is selected"),
         "",
       ];
       return this.framed("Keys", body.slice(0, Math.max(3, h - 3)), [], w, x, top, h);
@@ -1839,7 +2189,13 @@ export class App implements Component {
     // A long message scrolls inside the box: say how much of it is out of view, above and below.
     const up = typed?.above ? muted(`↑ ${typed.above} more`) : "";
     const down = typed?.below ? muted(`↓ ${typed.below} more`) : "";
-    if (!roomy) return [...(up ? [`  ${up}`] : []), ...lines, ...(down ? [`  ${down}`] : [])].map((l) => fit(" " + l, w));
+    // Where the text sits in the box (rows from the box's top, the column it starts at), for the mouse.
+    const at = (textTop: number, textX: number) => Object.assign(this.box, { textTop, textX, textRows: body.length });
+    if (!roomy) {
+      at(up ? 1 : 0, 3);
+      return [...(up ? [`  ${up}`] : []), ...lines, ...(down ? [`  ${down}`] : [])].map((l) => fit(" " + l, w));
+    }
+    at(1, 4);
     // Like Grok CLI: a filled block on a tint, no border. Without tints, a quiet rounded border.
     if (hasTints()) return [element(up && `    ${up}`, w), ...lines.map((l) => element(`  ${l}`, w)), element(down && `    ${down}`, w)];
     const c = active && this.typing() ? accent : faint;
@@ -1864,6 +2220,7 @@ export class App implements Component {
     else if (o?.kind === "confirm") hints = [keyHint("←→", "choose"), keyHint("enter", "confirm"), keyHint("esc", "cancel")];
     else if (o) hints = [keyHint("↑↓", "move"), keyHint("enter", "choose"), keyHint("esc", o.kind === "pick" && o.back ? "back" : "close")];
     else if (this.onNewRow) hints = [keyHint("enter", "create"), keyHint("↑↓", "agents"), keyHint("?", "keys")];
+    else if (this.input.selection()) hints = [keyHint("^C", "copy"), keyHint("^X", "cut"), keyHint("type", "replace"), keyHint("esc", "deselect")];
     else if (this.typing() || this.pending.length) hints = [keyHint("enter", "send"), keyHint("⌥/⇧ enter", "new line"), keyHint("esc", "clear")];
     else if (this.choosing) hints = [keyHint("enter", "answer"), keyHint("1–9", "change"), keyHint("esc", "cancel")];
     else hints = [q?.options?.length ? keyHint(`1–${q.options.length}`, "choose") : "", keyHint("↑↓", "agents"), keyHint("→", "settings"), keyHint("⇧↑↓", "scroll"), this.targets().length ? keyHint("^L", "links") : "", keyHint("?", "keys")].filter(Boolean);
@@ -1939,6 +2296,8 @@ export interface AppOptions {
   reconnect?: () => Promise<DaemonClient>;
   /** Mouse clicks and wheel. On by default in a real terminal. */
   mouse?: boolean;
+  /** How text is put on the system clipboard (tests replace this). */
+  clipboard?: (text: string) => Promise<boolean> | boolean;
 }
 
 export async function runApp(o: AppOptions = {}): Promise<{ app: App; tui: TuiAltScreen; stop: () => void }> {
@@ -1951,8 +2310,16 @@ export async function runApp(o: AppOptions = {}): Promise<{ app: App; tui: TuiAl
   // the app, so Home and End move the cursor in the message box.
   const kb = getKeybindings();
   const off = ["pageUp", "pageDown", "top", "bottom", "previousPrompt", "nextPrompt", "search"].map((k) => [`tui.altScreen.${k}`, []]);
-  kb.setUserBindings({ ...kb.getUserBindings(), ...Object.fromEntries(off) } as any);
-  const tui = new TuiAltScreen(term, false, undefined, { openUrl: (url) => app.openLink(url), copyOnSelect: true, copySelection: (text) => copyText(text, (seq) => term.write(seq)), mouse: o.mouse ?? !o.terminal });
+  // The message box's editing keys, as in a Mac text box too: Ctrl+Z undoes, and Cmd with ← → Backspace
+  // (from terminals that report Cmd) goes to or deletes to the line's ends.
+  const editing = {
+    "tui.editor.undo": ["ctrl+-", "ctrl+z", "super+z"],
+    "tui.editor.cursorLineStart": ["home", "ctrl+home", "ctrl+a", "super+left"],
+    "tui.editor.cursorLineEnd": ["end", "ctrl+end", "ctrl+e", "super+right"],
+    "tui.editor.deleteToLineStart": ["ctrl+u", "super+backspace"],
+  };
+  kb.setUserBindings({ ...kb.getUserBindings(), ...Object.fromEntries(off), ...editing } as any);
+  const tui = new TuiAltScreen(term, false, undefined, { openUrl: (url) => app.openLink(url), copyOnSelect: true, copySelection: async (text) => app.clipboard(text), mouse: o.mouse ?? !o.terminal });
   const timers: NodeJS.Timeout[] = [];
   let quitting = false;
   const app = new App(c, tui, term, () => {
@@ -1960,6 +2327,7 @@ export async function runApp(o: AppOptions = {}): Promise<{ app: App; tui: TuiAl
     for (const t of timers) clearInterval(t);
     (o.onQuit ?? (() => process.exit(0)))();
   }, opener);
+  if (o.clipboard) app.clipboard = o.clipboard;
   keepSelectionInPane(tui, app);
   tui.addChild(app);
   tui.setFocus(app);
