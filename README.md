@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/demos/team.gif" alt="Seven agents in the Overtime app: pm, backend, frontend, qa, reviewer, on-call and release. One message to pm asks for dark mode and a billing export by tonight. pm plans and messages the others, who start working with helpers; qa catches a failing test and frontend fixes it; the person asks qa how dark mode looks and gets an answer; on-call is woken by an error spike on the canary, rolls it back and reports with a chart and a postmortem, which are opened; release asks whether to ship to 100% or a 10% canary first, and the answer is 2; it ships, pm reports 7 PRs merged, 1 incident handled and 41 tests added, and everyone goes back to sleep. macOS notifications pop in the corner for the reports and the question." width="100%">
+  <img src="https://github.com/ukanwat/overtime/releases/download/media/team.gif" alt="Seven agents in the Overtime app: pm, backend, frontend, qa, reviewer, on-call and release. One message to pm asks for dark mode and a billing export by tonight. pm plans and messages the others, who start working with helpers; qa catches a failing test and frontend fixes it; the person asks qa how dark mode looks and gets an answer; on-call is woken by an error spike on the canary, rolls it back and reports with a chart and a postmortem, which are opened; release asks whether to ship to 100% or a 10% canary first, and the answer is 2; it ships, pm reports 7 PRs merged, 1 incident handled and 41 tests added, and everyone goes back to sleep. macOS notifications pop in the corner for the reports and the question." width="100%">
 </p>
 
 <p align="center">

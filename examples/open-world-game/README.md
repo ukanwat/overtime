@@ -29,7 +29,7 @@ a real game engine, and no human help.
 </p>
 
 <p align="center">
-  <img src="docs/media/film.gif" alt="Eight shots from one run: arrival over open water, the entry screen and its menu, walking, driving, the map, the city from the air" width="100%">
+  <img src="https://github.com/ukanwat/overtime/releases/download/media/film.gif" alt="Eight shots from one run: arrival over open water, the entry screen and its menu, walking, driving, the map, the city from the air" width="100%">
 </p>
 
 One agent. One Unreal Engine editor, driven live over MCP. A fierce brief, a shelf of production

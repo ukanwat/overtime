@@ -244,9 +244,9 @@ The README's demo is scripted (the real app with made-up agents). These are real
 Claude, recorded as they happened. How they're made, and how to record them again, is in
 [`docs/demos`](demos).
 
-- [Brief it once](demos/brief.gif): a new agent is told to keep a repo's tests green; it fixes the bug, commits, reports and schedules its next check.
-- [It wakes itself](demos/watch.gif): an agent watching a log is asleep with the app closed; a checkout breaks, and it's already fixing it.
-- [It builds its own team](demos/helpers.gif): one review split across three helpers in parallel, merged into one report.
-- [It asks, and keeps going](demos/ask.gif): the one decision that's yours, with options and a recommendation, answered with one key.
-- [From the shell](demos/cli.gif): `ls`, `send`, `messages`, `set`, and a correction saved as a memory.
-- [One person's agents overnight](demos/life.gif) (scripted): a trip, a house hunt, money and a side project, through one evening and night.
+- [Brief it once](https://github.com/ukanwat/overtime/releases/download/media/brief.gif): a new agent is told to keep a repo's tests green; it fixes the bug, commits, reports and schedules its next check.
+- [It wakes itself](https://github.com/ukanwat/overtime/releases/download/media/watch.gif): an agent watching a log is asleep with the app closed; a checkout breaks, and it's already fixing it.
+- [It builds its own team](https://github.com/ukanwat/overtime/releases/download/media/helpers.gif): one review split across three helpers in parallel, merged into one report.
+- [It asks, and keeps going](https://github.com/ukanwat/overtime/releases/download/media/ask.gif): the one decision that's yours, with options and a recommendation, answered with one key.
+- [From the shell](https://github.com/ukanwat/overtime/releases/download/media/cli.gif): `ls`, `send`, `messages`, `set`, and a correction saved as a memory.
+- [One person's agents overnight](https://github.com/ukanwat/overtime/releases/download/media/life.gif) (scripted): a trip, a house hunt, money and a side project, through one evening and night.
