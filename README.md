@@ -65,17 +65,13 @@ give it access to, and asks before anything that's yours to decide.
 - **release**: cuts the release, writes the changelog and notes, canaries it, and asks before it reaches everyone.
 - **research**: reads papers, docs or competitors on a schedule, and reports with sources only when something is worth knowing.
 
-**For your life and career**
+**For your life**
 
-<img src="docs/demos/life.gif" alt="Sam's agents in the Overtime app: job-scout, interview-coach, visa-planner, grad-school, money, side-project and learning. At 9:38 PM Sam asks job-scout if anything is worth applying to; it checks the start date with visa-planner, tailors Sam's CV (opened: a one-page CV) and asks whether to apply to a Stripe Staff role; Sam presses 1. Sam says good night. Overnight interview-coach writes an onsite prep plan (opened), side-project fixes a crash from two 1-star reviews, money closes October with a budget chart (opened). At 7 AM job-scout sends a morning summary of the night. macOS notifications pop in the corner as the reports arrive." width="100%">
-
-- **Job hunt**: finds roles that fit, tailors your CV for each one, tracks every application, and asks before it applies.
-- **Interview coach**: builds a prep plan from the company's recent interviews, writes mock questions, and grades your practice answers.
-- **Visa and immigration**: keeps the timeline and deadlines, prepares and checks the documents, and tells your other agents which dates matter.
-- **Grad school**: drafts and tightens a statement of purpose per program, and keeps every deadline.
+- **Trips**: watches fares and stays for the dates you give it, builds the itinerary, and asks before it books.
+- **House hunt**: checks new listings each morning, compares them against what you want, and lines up viewings.
 - **Money**: closes each month from the statements you export: spending against your budget, and subscriptions you no longer use.
+- **Learning**: a short daily drill for a language or skill, adjusted to how you did yesterday.
 - **Side project**: ships your weekend app, watches its reviews and crash reports, and fixes and resubmits while you sleep.
-- **A creative project**: for a short film, turns the script into a shot list and schedule, tracks locations and gear, and keeps the edit notes.
 
 ## What it's like
 
