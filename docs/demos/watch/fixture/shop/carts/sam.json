@@ -1,0 +1,1 @@
+{ "customer": "sam", "coupon": "WELCOME10", "items": [{ "sku": "mug", "cents": 1450, "qty": 2 }, { "sku": "tea", "cents": 899, "qty": 1 }] }

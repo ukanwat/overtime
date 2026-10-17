@@ -1,0 +1,8 @@
+{
+  "name": "weather",
+  "version": "0.3.0",
+  "description": "Turns a forecast into one line you can read at a glance.",
+  "type": "module",
+  "bin": { "weather": "src/cli.js" },
+  "scripts": { "test": "node --test" }
+}

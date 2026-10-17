@@ -1,0 +1,8 @@
+{
+  "name": "notes-api",
+  "version": "0.9.0",
+  "description": "A small HTTP API for personal notes.",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": { "start": "node src/server.js" }
+}
