@@ -2,17 +2,20 @@ import { join } from "node:path";
 import { listSkills, skillsBlock } from "../skills.js";
 import { AGENT_MARKER, recordLeftovers, sessionSpan } from "./leftovers.js";
 import { paths } from "../paths.js";
-import { isolationEnv } from "../acp/backends.js";
+import { geminiMemoryOff, isolationEnv } from "../acp/backends.js";
 import { appendJsonl, newId } from "../fsutil.js";
 import { AcpSession, type SessionUpdate, type PromptResult } from "../acp/session.js";
 import { effectiveSettings, loadAgent, restoreSettings, updateState, type Agent } from "../agent/agent.js";
 import type { McpServerConfig } from "../settings.js";
 import { INSTRUCTIONS_VERSION, workingInstructions } from "./instructions.js";
+import { memoryBlock } from "../agent/memory.js";
+import { sandboxAvailable } from "./sandbox.js";
 import { answer } from "./permissions.js";
 import { clearLimit, confirmLimit, recordTurnUsage, rejectedLimits, writeLimit, type TurnUsage } from "./usage.js";
 import { classify } from "./errors.js";
 
-export type SessionKind = "main" | "chat" | "helper";
+/** reflect: a short session Overtime runs now and then to keep an agent's memory/ and skills/ current. */
+export type SessionKind = "main" | "chat" | "helper" | "reflect";
 
 export interface TurnOptions {
   /** The id for this run's log and usage row (the daemon passes its own, so all records of one turn match). */
@@ -41,6 +44,10 @@ export interface TurnOptions {
   header?: string;
   /** Replace the default preamble for a fresh session (helpers and chats get their own). */
   preamble?: string;
+  /** Paths this session may not write to, on top of the person's protected ones (where the sandbox can enforce it). */
+  protect?: string[];
+  /** Claude Code tools this session doesn't get, on top of the ones no Overtime session gets. */
+  disallowedTools?: string[];
   /** Live view of everything the agent does in this turn. */
   onUpdate?: (u: SessionUpdate) => void;
   /** Called once the session id is known (fresh or resumed). */
@@ -60,6 +67,8 @@ export interface TurnResult {
   context: { used: number; size: number } | null;
   /** Set when the backend wouldn't switch to the chosen model; the turn ran on its default. */
   modelIssue?: string;
+  /** The backend compacted the session's context during this turn (reported structurally, by Claude). */
+  compacted?: boolean;
 }
 
 /** The backend reported a subscription usage limit; nothing failed, the agent should pause until the reset. */
@@ -94,12 +103,22 @@ export function sessionPreamble(agent: Agent, kind: "main" | "chat" = "main"): s
     `# Your folder\n\n${agent.dir}\n\nAGENT.md and INDEX.md live there. Everything else in it is yours: clone, download and organise whatever the work needs.`,
     `# AGENT.md (who you are)\n\n${agent.identity.trim() || "(empty)"}`,
     `# INDEX.md (your map of your folder)\n\n${agent.index.trim() || "(You haven't written INDEX.md yet. Create it once you have files worth finding again.)"}`,
+    memoryBlock(agent.dir, agent.memory),
     skillsBlock(agent.dir),
   ].filter(Boolean);
   return parts.join("\n\n---\n\n");
 }
 
 const KILL_GRACE_MS = 20_000;
+
+/**
+ * Claude reports compacting a session's context as a tool call of its own, named "compact" (the ACP
+ * adapter's form for clients without compaction updates). Other backends don't say.
+ */
+export function isCompaction(u: SessionUpdate): boolean {
+  const x = u as any;
+  return (x.sessionUpdate === "tool_call" || x.sessionUpdate === "tool_call_update") && x._meta?.claudeCode?.toolName === "compact" && x.status === "completed";
+}
 
 /** Per agent: how many of its sessions are running, and since when, for cleaning up what they leave behind. */
 const activeSessions = new Map<string, { count: number; since: number; roots: Set<string> }>();
@@ -125,6 +144,7 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
   let session: AcpSession | null = null;
   let recorded = false;
   let modelIssue: string | undefined;
+  let compacted = false;
 
   // One deadline and one cancel path for the whole turn, including starting the backend.
   // Cancel politely first; if the backend ignores it, kill it, so a turn can never hang.
@@ -150,10 +170,15 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
   const endSpan = sessionSpan(agent.name, scope.roots);
 
   try {
+    // Gemini's memory is off through project settings: only in the agent's own folder (and its helpers'),
+    // never written into a workspace of the person's.
+    if (eff.backend === "gemini" && (eff.workspace === agent.dir || eff.workspace.startsWith(agent.dir + "/"))) await geminiMemoryOff(eff.workspace).catch(() => {});
     session = await AcpSession.open({
       backend: eff.backend,
       cwd: eff.workspace,
-      protect: base.protect,
+      // Extra paths only where the sandbox can enforce them: without it, the turn would refuse to run at all.
+      protect: o.protect?.length && sandboxAvailable().ok ? [...base.protect, ...o.protect] : base.protect,
+      disallowedTools: o.disallowedTools,
       hide: base.hidden,
       // Marks the backend and everything it starts as this agent's (see runtime/leftovers.ts).
       env: { [AGENT_MARKER]: agent.name, ...(await isolationEnv(eff.backend, paths.meta(agent.name))) },
@@ -166,6 +191,7 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
           reply += u.content.text;
         }
         if (u.sessionUpdate === "tool_call") afterTool = true;
+        if (isCompaction(u)) compacted = true;
         if (u.sessionUpdate === "usage_update") {
           const uu = u as any;
           if (typeof uu.used === "number" && typeof uu.size === "number") context = { used: uu.used, size: uu.size };
@@ -270,7 +296,7 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
     await clearLimit(eff.backend, eff.model);
     if (o.kind === "main") await updateState(agent.name, { mainSessionId: session.sessionId, mainSessionBackend: eff.backend, mainSessionModel: eff.model ?? null, lastRunAt: new Date().toISOString() });
     if (stopped || res.stopReason === "cancelled") throw new TurnIncompleteError(stopped ?? "the backend cancelled the turn", true);
-    return { runId, sessionId: session.sessionId, fresh, reply: reply.trim(), stopReason: res.stopReason, usage: res.usage ?? null, backend: eff.backend, usage2, context, modelIssue };
+    return { runId, sessionId: session.sessionId, fresh, reply: reply.trim(), stopReason: res.stopReason, usage: res.usage ?? null, backend: eff.backend, usage2, context, modelIssue, compacted };
   } catch (e: any) {
     await record("error", { message: String(e?.message ?? e) });
     // Whatever went wrong, the caller learns whether the agent was handed this turn's prompt.
