@@ -7,8 +7,8 @@ import { execFile } from "node:child_process";
 import { isAbsolute, join, sep } from "node:path";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
-import { createAgent, effectiveSettings, hasIdentity, listAgents, loadAgent, restoreSettings, updateState, type Agent, type AgentState } from "../agent/agent.js";
-import { newId } from "../fsutil.js";
+import { createAgent, effectiveSettings, hasIdentity, listAgents, loadAgent, publicAgents, restoreSettings, updateState, type Agent, type AgentState } from "../agent/agent.js";
+import { newId, readJson, writeJson } from "../fsutil.js";
 import { paths } from "../paths.js";
 import { loadSettings, saveSettings } from "../settings.js";
 import { withLock } from "../store/mutex.js";
@@ -68,6 +68,8 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 const MAX_HELPERS = 6;
+/** Messages a pair of agents may exchange in a day (both directions together), so two can't loop forever. */
+export const AGENT_MESSAGES_PER_DAY = 20;
 /** Finished helpers' worktrees and copies are removed after this long (git branches are kept). */
 const HELPER_KEEP_MS = 7 * 24 * 3600_000;
 /** A non-git workspace is copied for a helper only below these sizes; above, the helper gets an empty folder. */
@@ -161,7 +163,10 @@ export class Runtime extends EventEmitter implements ToolHost {
       },
       (a) => this.store(a),
       (a) => paths.agent(a),
-      async (a) => (await effectiveSettings(await loadAgent(a))).protect,
+      async (a) => {
+        const eff = await effectiveSettings(await loadAgent(a));
+        return { protect: eff.protect, hide: eff.hidden };
+      },
     );
   }
 
@@ -1140,6 +1145,51 @@ export class Runtime extends EventEmitter implements ToolHost {
     if (urgent) this.wakeMain(ctx.agent, `helper ${rec.id} sent an urgent update`);
   }
 
+  /**
+   * One agent messages another. It lands in the receiver's inbox, labelled with who sent it, and shows in
+   * both conversations with the person. It wakes the receiver like anything else in its inbox: a running
+   * turn picks it up next, and a stopped or paused agent finds it when it's back. Only between public
+   * agents, and at most AGENT_MESSAGES_PER_DAY a day for each pair. Throws, with the reason, when refused.
+   */
+  async messageAgent(from: string, to: string, text: string): Promise<void> {
+    if (to === from) throw new Error("That's you: message another agent.");
+    const listed = publicAgents().map((a) => a.name);
+    if (!listed.includes(from)) throw new Error("Only public agents can message other agents.");
+    // A private agent is answered exactly like one that doesn't exist.
+    if (!listed.includes(to)) throw new Error(`There's no agent called "${to}". Agents you can message: ${listed.filter((n) => n !== from).join(", ") || "none"}.`);
+    const pair = [from, to].sort().join(" and ");
+    const over = await withLock("agent-messages", async () => {
+      const file = join(paths.agentsDir(), "..", "agent-messages.json");
+      const d = new Date();
+      const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      const rec = await readJson<{ day: string; pairs: Record<string, { count: number; alerted?: boolean }> }>(file, { day, pairs: {} });
+      // A record from an earlier day starts over.
+      const today = rec.day === day ? rec : { day, pairs: {} };
+      const p = (today.pairs[pair] ??= { count: 0 });
+      const result = p.count >= AGENT_MESSAGES_PER_DAY ? (p.alerted ? "again" : "first") : null;
+      if (result) p.alerted = true;
+      else p.count++;
+      await writeJson(file, today);
+      return result;
+    });
+    if (over) {
+      if (over === "first") {
+        // Once a day per pair, the person hears of it: the two may be going round in circles.
+        await this.store(from).addMessage({ from: "overtime", kind: "alert", title: `${pair} hit their daily message limit`, text: `${from} and ${to} have sent each other ${AGENT_MESSAGES_PER_DAY} messages today, the most a pair can in a day. More are refused until tomorrow. If they're going round in circles, look at both conversations.`, baseDir: paths.agent(from) });
+        this.notify(`${from} and ${to} hit their message limit`, `${AGENT_MESSAGES_PER_DAY} messages between them today; more are refused until tomorrow.`);
+        this.changed(from, "messages");
+      }
+      throw new Error(`Not sent: you and ${to} have exchanged ${AGENT_MESSAGES_PER_DAY} messages today, the most a pair can in a day. Try again tomorrow, or tell the person if it can't wait.`);
+    }
+    await this.store(to).pushInbox({ type: "agent", text, data: { from } });
+    for (const name of [from, to]) {
+      await this.store(name).addMessage({ from: "agent", kind: "agent-message", fromAgent: from, toAgent: to, text, baseDir: paths.agent(name) });
+      this.changed(name, "messages");
+    }
+    const status = (await loadAgent(to)).state.status;
+    if (status !== "stopped" && status !== "paused") this.wakeMain(to, `a message from ${from}`);
+  }
+
   /** The agent's helpers right now: running ones (what each is doing and said last), then recent ones. */
   async helpersReport(agentName: string): Promise<string> {
     const all = await this.store(agentName).helpers();
@@ -1550,7 +1600,8 @@ export class Runtime extends EventEmitter implements ToolHost {
   }
 
   /** The person changed an agent's settings. Takes effect from its next turn. */
-  async setAgentSettings(name: string, patch: { backend?: string; model?: string | null; dailyBudgetUsd?: number; dailyTokenBudget?: number | null; workspace?: string | null; protect?: string[] | null }): Promise<void> {
+  async setAgentSettings(name: string, patch: { backend?: string; model?: string | null; dailyBudgetUsd?: number; dailyTokenBudget?: number | null; workspace?: string | null; protect?: string[] | null; visibility?: string }): Promise<void> {
+    if (patch.visibility !== undefined && patch.visibility !== "public" && patch.visibility !== "private") throw new Error('Visibility is "public" or "private".');
     if (patch.dailyTokenBudget !== undefined && patch.dailyTokenBudget !== null && !(Number.isFinite(patch.dailyTokenBudget) && patch.dailyTokenBudget > 0)) throw new Error("The token budget must be a positive number of tokens, or empty for none.");
     if (typeof patch.workspace === "string" && patch.workspace.trim()) {
       const { expandHome } = await import("../agent/agent.js");
@@ -1591,12 +1642,22 @@ export class Runtime extends EventEmitter implements ToolHost {
     if (patch.dailyBudgetUsd !== undefined && !(typeof patch.dailyBudgetUsd === "number" && patch.dailyBudgetUsd >= 0)) throw new Error("The daily budget must be a number of dollars, 0 or more.");
     const { setSettings } = await import("../agent/agent.js");
     // A new backend means the old model name may not exist there: clear it unless one was given.
-    await setSettings(name, { ...patch, model: patch.backend && patch.model === undefined ? null : patch.model });
+    // Public is the default, so only private is written down.
+    const visibility = patch.visibility === undefined ? undefined : patch.visibility === "private" ? "private" : null;
+    await setSettings(name, { ...patch, visibility, model: patch.backend && patch.model === undefined ? null : patch.model });
     this.log(`[${name}] settings changed: ${JSON.stringify(patch)}`);
     // Watches run under the protection they started with: restart them so a change applies to them too.
     if (patch.protect !== undefined || patch.workspace !== undefined) {
       this.monitors.stopAgent(name);
       if ((await loadAgent(name)).state.status !== "stopped") await this.monitors.startAll(name);
+    }
+    // Whether its folder is hidden from the others is part of their watches' rules.
+    if (patch.visibility !== undefined) {
+      for (const a of await listAgents()) {
+        if (a.name === name || a.state.status === "stopped") continue;
+        this.monitors.stopAgent(a.name);
+        await this.monitors.startAll(a.name);
+      }
     }
     this.changed(name, "state");
   }
@@ -1640,7 +1701,7 @@ function withFiles(text: string, files?: Attachment[]): string {
 
 function describeInbox(items: InboxItem[]): string {
   const kinds = new Set(items.map((i) => i.type));
-  const words: Record<string, string> = { message: "a message from the person", answer: "an answer to your question", monitor: "a monitor fired", helper: "a helper finished", "helper-update": "an update from a helper", loop: "a recurring task came due", system: "a note from Overtime" };
+  const words: Record<string, string> = { message: "a message from the person", answer: "an answer to your question", monitor: "a monitor fired", helper: "a helper finished", "helper-update": "an update from a helper", loop: "a recurring task came due", system: "a note from Overtime", agent: "a message from another agent" };
   return [...kinds].map((k) => words[k] ?? k).join(", ");
 }
 
@@ -1672,7 +1733,9 @@ function inboxBlock(all: InboxItem[], session: string | null = null): string {
                     ? "Update from a helper (it's still working)"
                   : i.type === "loop"
                     ? "Recurring task"
-                    : "From Overtime";
+                    : i.type === "agent"
+                      ? `Message from ${String((i.data as any)?.from ?? "another agent")} (another agent, not the person). Reply with message if it needs an answer`
+                      : "From Overtime";
         return `${n + 1}. ${head} — ${i.t}\n${i.text}`;
       })
       .join("\n\n") +
@@ -1741,7 +1804,7 @@ async function agentContext(agentName: string, maxChars = 40_000): Promise<strin
 function recentConversation(all: Message[]): string {
   const shown = all.filter((m) => !m.closes).slice(-40);
   if (!shown.length) return "";
-  const who = (m: Message) => (m.from === "you" ? "Person" : m.from === "agent" ? "You" : "Overtime");
+  const who = (m: Message) => (m.kind === "agent-message" ? `Between agents, ${m.fromAgent} → ${m.toAgent}` : m.from === "you" ? "Person" : m.from === "agent" ? "You" : "Overtime");
   const lines = shown.map((m) => {
     const kind = m.kind === "question" ? " [your question]" : m.kind === "report" ? " [report]" : m.kind === "alert" ? " [alert]" : "";
     const answer = m.kind === "question" && m.answer ? `\n  (${m.answer.closed ? `${m.answer.closed}` : `answered: ${m.answer.text}`})` : m.kind === "question" ? "\n  (not answered yet)" : "";

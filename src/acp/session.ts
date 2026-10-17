@@ -30,6 +30,8 @@ export interface OpenOptions {
   onStderr?: (line: string) => void;
   /** Paths the backend and everything it starts may not write to (enforced by the operating system). */
   protect?: string[];
+  /** Paths the backend and everything it starts may not read (macOS only; see runtime/sandbox.ts). */
+  hide?: string[];
 }
 
 /** Protected paths are set but this machine can't enforce them; the turn doesn't run unprotected. */
@@ -176,7 +178,7 @@ export class AcpSession {
 
   private static async start(opts: OpenOptions, base: BackendCommand): Promise<AcpSession> {
     const protect = opts.protect ?? [];
-    const cmd = sandboxLaunch(base.command, base.args, protect);
+    const cmd = sandboxLaunch(base.command, base.args, protect, opts.hide ?? []);
     if (protect.length && !cmd.sandboxed) throw new SandboxUnavailableError(cmd.why ?? "the sandbox can't start here");
     // Its own process group, so closing it also ends everything it started (CLI, MCP servers, shells).
     const proc = spawn(cmd.command, cmd.args, {

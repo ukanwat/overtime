@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -24,6 +24,8 @@ export interface AgentSettings {
   disableMcp?: string[];
   /** Paths this agent may not write to, on top of the ones protected for all agents. */
   protect?: string[];
+  /** Whether other agents can see and message it (default public). A private agent has no message tool. */
+  visibility?: "public" | "private";
 }
 
 export type AgentStatus = "new" | "working" | "asleep" | "paused" | "stopped" | "error";
@@ -93,6 +95,8 @@ export interface EffectiveSettings {
   mcpServers: McpServerConfig[];
   /** Every path this agent may not write to (all agents' plus its own). */
   protect: string[];
+  /** Folders this agent may not read: other agents' that are private. */
+  hidden: string[];
 }
 
 export function expandHome(p: string): string {
@@ -170,6 +174,37 @@ export async function listAgents(): Promise<Agent[]> {
     } catch {}
   }
   return agents;
+}
+
+/**
+ * The agents that can message each other: public ones that have been given their job, each with its job
+ * in one line (the first line of AGENT.md's body that isn't a heading). Read synchronously, because tools
+ * are listed synchronously; it's a few small files.
+ */
+export function publicAgents(): { name: string; job: string }[] {
+  let names: string[] = [];
+  try {
+    names = readdirSync(paths.agentsDir(), { withFileTypes: true }).filter((d) => d.isDirectory() && !d.name.startsWith(".")).map((d) => d.name).sort();
+  } catch {}
+  const out: { name: string; job: string }[] = [];
+  for (const name of names) {
+    try {
+      const { data, body } = parseFrontMatter(readFileSync(join(paths.agent(name), "AGENT.md"), "utf8"));
+      const settings = readJsonSync<AgentSettings | null>(settingsFile(name), null) ?? (data as AgentSettings);
+      if (settings.visibility === "private" || !hasIdentity({ identity: body } as Agent)) continue;
+      const job = body.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("#")) ?? "";
+      out.push({ name, job: job.length > 140 ? job.slice(0, 139) + "…" : job });
+    } catch {}
+  }
+  return out;
+}
+
+function readJsonSync<T>(file: string, fallback: T): T {
+  try {
+    return JSON.parse(readFileSync(file, "utf8")) as T;
+  } catch {
+    return fallback;
+  }
 }
 
 export async function saveState(name: string, state: AgentState): Promise<void> {
@@ -294,7 +329,28 @@ export async function effectiveSettings(agent: Agent): Promise<EffectiveSettings
     // Shared, the person's for this agent, and the agent's own mcp.json; minus what the person turned off.
     mcpServers: (await allMcpServers(agent)).map((x) => x.server).filter((x) => !disabled.has(x.name)),
     protect: [...new Set([...(g.protect ?? []), ...(agent.settings.protect ?? [])])],
+    hidden: await privateFolders(agent),
   };
+}
+
+/**
+ * Other agents' folders that are private, for this agent to be kept out of. Never one that holds this
+ * agent's own folder or workspace: an agent never loses access to its own work.
+ */
+async function privateFolders(agent: Agent): Promise<string[]> {
+  let names: string[] = [];
+  try {
+    names = (await readdir(paths.agentsDir(), { withFileTypes: true })).filter((d) => d.isDirectory() && !d.name.startsWith(".") && d.name !== agent.name).map((d) => d.name);
+  } catch {}
+  const own = [agent.dir, agent.settings.workspace ? expandHome(agent.settings.workspace) : agent.dir];
+  const out: string[] = [];
+  for (const n of names) {
+    if ((await readSettingsSnapshot(n))?.visibility !== "private") continue;
+    const dir = paths.agent(n);
+    if (own.some((p) => p === dir || p.startsWith(dir + "/"))) continue;
+    out.push(dir);
+  }
+  return out;
 }
 
 /** The person changed an agent's settings (from the app or the CLI): update the copy that counts and AGENT.md. */

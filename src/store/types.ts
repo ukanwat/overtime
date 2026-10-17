@@ -1,5 +1,8 @@
-/** What a message is: an ordinary message, a question for you, a report of finished work, or an alert. */
-export type MessageKind = "message" | "question" | "report" | "alert";
+/**
+ * What a message is: an ordinary message, a question for you, a report of finished work, an alert, or a
+ * message between two agents (shown in both their conversations, quietly).
+ */
+export type MessageKind = "message" | "question" | "report" | "alert" | "agent-message";
 
 export interface Attachment {
   name: string;
@@ -43,6 +46,9 @@ export interface Message {
   /** On a question once answered (derived from the answer message when read). */
   answer?: { choice?: number; note?: string; text: string; t: string; closed?: "withdrawn" | "dismissed" };
   attachments?: Attachment[];
+  /** For a message between agents: who sent it and who it was for. */
+  fromAgent?: string;
+  toAgent?: string;
   /** Paths and URLs found in the text, checked to exist (paths) when written. */
   links?: Link[];
 }
@@ -61,7 +67,7 @@ export interface Conversation {
   chatPrompt?: string;
 }
 
-export type InboxType = "message" | "answer" | "monitor" | "helper" | "helper-update" | "system" | "loop";
+export type InboxType = "message" | "answer" | "monitor" | "helper" | "helper-update" | "system" | "loop" | "agent";
 
 export interface InboxItem {
   id: string;

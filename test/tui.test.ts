@@ -307,6 +307,33 @@ describe("terminal app, with a scripted daemon", () => {
     expect(c.calls.some((x) => x.method === "archive" && x.params.name === "repo-keeper")).toBe(true);
   });
 
+  it("shows messages between agents quietly, labelled with both names, and toggles whether others see it", async () => {
+    const c = new FakeClient();
+    const iso = (m: number) => new Date(Date.now() - m * 60000).toISOString();
+    c.data.messages["repo-keeper"].push(
+      { id: "x1", t: iso(2), from: "agent", kind: "agent-message", fromAgent: "repo-keeper", toAgent: "game-builder", text: "The harbour assets are in the release branch now." },
+      { id: "x2", t: iso(1), from: "agent", kind: "agent-message", fromAgent: "game-builder", toAgent: "repo-keeper", text: "Thanks, pulling them in." },
+    );
+    c.data.agents[0].waiting = 0; // no open question to jump to: the newest messages are in view
+    c.data.messages["repo-keeper"].find((m: any) => m.id === "m5").answer = { choice: 1, text: "Merge it", t: iso(20) };
+    const { t, seen } = await open(110, 40, c);
+    await seen("Thanks, pulling them in.");
+    const s = await t.screen();
+    expect(s).toContain("repo-keeper → game-builder");
+    expect(s).toContain("game-builder → repo-keeper");
+    expect(s).toContain("between agents");
+    expect(s).toContain("The harbour assets are in the release branch now.");
+    t.press("\x1b[C"); // → settings
+    await seen("Other agents");
+    for (let i = 0; i < 30 && !(await t.screen()).match(/› Other agents/); i++) {
+      t.press(KEY.down);
+      await sleep(20);
+    }
+    t.press(KEY.enter);
+    await until(async () => c.calls.some((k) => k.method === "set" && k.params.visibility === "private"), 5_000, "made private");
+    await seen("hidden from them");
+  });
+
   it("picks an option with a click and answers with Enter, like its number key", async () => {
     const { t, c, seen } = await open();
     await seen("Merge the dependency fix?");

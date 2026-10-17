@@ -157,6 +157,12 @@ function printMessage(name: string, m: Message, open: boolean): void {
     print();
     return;
   }
+  if (m.kind === "agent-message") {
+    print(`${gray(`${m.fromAgent} → ${m.toAgent}`)}  ${time}  ${gray("between agents")}`);
+    for (const l of m.text.split("\n")) print(`  ${gray(l)}`);
+    print();
+    return;
+  }
   if (m.kind === "alert") {
     const h = headed(m, "Something went wrong");
     print(`${red("┃")} ${red(bold(h.title))}  ${time}`);
@@ -206,6 +212,9 @@ function parseSettings(args: string[]): Record<string, unknown> {
         if (!p.startsWith("/")) fail(`"${v}" isn't a full path.`, "e.g. workspace=~/code/my-repo");
         out.workspace = p;
       }
+    } else if (k === "visibility") {
+      if (!/^(public|private)$/.test(v)) fail(`"${v}" isn't a visibility.`, "visibility=public (other agents see it and can message it) or visibility=private");
+      out.visibility = v;
     } else if (k === "protect") {
       if (v === "" || /^(none|nothing)$/i.test(v)) out.protect = null;
       else {
@@ -357,6 +366,7 @@ async function main() {
         row("budget", `$${s.dailyBudgetUsd} a day`, s.costReported ? `$${s.spentUsd.toFixed(2)} spent today` : "");
         row("tokens", s.dailyTokenBudget ? `${s.dailyTokenBudget.toLocaleString()} a day` : "no limit", `${s.tokensToday.toLocaleString()} used today`);
         row("workspace", s.workspace, s.workspaceIsDefault ? "its own folder" : "");
+        row("visibility", s.visibility, s.visibility === "public" ? "other agents see it and can message it" : "hidden from other agents");
         row("protected", s.protect?.length ? s.protect.join(", ") : "nothing", s.protect?.length ? "read-only for it" : "it can write anywhere you can");
         print();
         print(gray("Change with: ") + cmdText(`overtime set ${name} budget=20 model=… workspace=~/code/…`));

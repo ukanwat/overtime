@@ -6,6 +6,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolContext, ToolHost } from "./host.js";
 import { clampWake, MAX_SLEEP_MS, MIN_SLEEP_MS, parseDuration } from "../store/store.js";
 import { parseFrontMatter } from "../agent/frontmatter.js";
+import { publicAgents } from "../agent/agent.js";
+import { paths } from "../paths.js";
 import { listSkills, readSkill } from "../skills.js";
 import { home } from "../paths.js";
 import { homedir } from "node:os";
@@ -232,6 +234,28 @@ Messages, answers and finished helpers always wake you early.`,
         return ok(r);
       }),
     );
+
+    // Public agents can message each other; a private one isn't listed, can't be messaged and has no tool.
+    const everyone = publicAgents();
+    const others = everyone.filter((a) => a.name !== ctx.agent);
+    if (others.length && everyone.length > others.length) {
+      reg(
+        "message",
+        {
+          description:
+            "Message another agent (never the person): it lands in their inbox, marked as from you, and wakes them. Only when the person asked you to or your AGENT.md says when; when the person tells you, write that rule into AGENT.md. Otherwise don't. You may read an agent's AGENT.md and conversation (.overtime/messages.jsonl), in its folder below, but never write to them. Agents:\n" +
+            others.map((a) => `- ${a.name}: ${a.job} (${paths.agent(a.name)})`).join("\n"),
+          inputSchema: {
+            to: z.string().describe("The agent's name."),
+            text: z.string(),
+          },
+        },
+        safe(async ({ to, text }) => {
+          await host.messageAgent(ctx.agent, to, text);
+          return ok(`Sent to ${to}.`);
+        }),
+      );
+    }
 
     reg(
       "helpers",

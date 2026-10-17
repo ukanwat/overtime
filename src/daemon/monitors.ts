@@ -26,8 +26,9 @@ interface Running {
   /** Lines held back during a cooldown, delivered together when it ends. */
   held: string[];
   stopped: boolean;
-  /** The agent's protected paths; watches run under the same rules as its sessions. */
+  /** The agent's protected and hidden paths; watches run under the same rules as its sessions. */
   protect?: string[];
+  hide?: string[];
   /** When it last woke the agent, and its cooldown: kept here so a burst of lines is judged at once, not after a file read. */
   lastFiredAt: number;
   cooldownMs: number;
@@ -95,7 +96,7 @@ export class MonitorRunner {
     private readonly ev: MonitorEvents,
     private readonly storeFor: (agent: string) => Store,
     private readonly cwdFor: (agent: string) => string,
-    private readonly protectFor: (agent: string) => Promise<string[]> = async () => [],
+    private readonly sandboxFor: (agent: string) => Promise<{ protect: string[]; hide: string[] }> = async () => ({ protect: [], hide: [] }),
   ) {}
 
   private key(agent: string, id: string) {
@@ -111,8 +112,9 @@ export class MonitorRunner {
     if (this.running.has(k)) return;
     const r: Running = { agent, id, held: [], stopped: false, lastFiredAt: 0, cooldownMs: 0 };
     this.running.set(k, r);
-    void Promise.all([this.storeFor(agent).monitors(), this.protectFor(agent).catch(() => [] as string[])]).then(([ms, protect]) => {
-      r.protect = protect;
+    void Promise.all([this.storeFor(agent).monitors(), this.sandboxFor(agent).catch(() => ({ protect: [] as string[], hide: [] as string[] }))]).then(([ms, sb]) => {
+      r.protect = sb.protect;
+      r.hide = sb.hide;
       const m = ms.find((x) => x.id === id);
       if (!m || r.stopped) return this.running.delete(k);
       r.lastFiredAt = m.lastFiredAt ? new Date(m.lastFiredAt).getTime() : 0;
@@ -186,7 +188,7 @@ export class MonitorRunner {
     const run = () => {
       if (r.stopped) return;
       const started = Date.now();
-      const l = launch(m.run, r.protect);
+      const l = launch(m.run, r.protect, r.hide);
       // Can't start: a failure like any other, retried with the same back-off (and reported at the third).
       if ("error" in l) return void this.failed(r, l.error).then(restart);
       const proc = spawn(l.command, l.args, { cwd: this.cwdFor(r.agent), stdio: ["ignore", "pipe", "pipe"], detached: true });
@@ -231,7 +233,7 @@ export class MonitorRunner {
       if (busy || r.stopped) return;
       busy = true;
       try {
-        const { code, stdout, stderr } = await runOnce(m.run, this.cwdFor(r.agent), RUN_TIMEOUT_MS, r.protect);
+        const { code, stdout, stderr } = await runOnce(m.run, this.cwdFor(r.agent), RUN_TIMEOUT_MS, r.protect, r.hide);
         if (r.stopped) return;
         if (code !== 0) {
           await this.failed(r, `exit ${code}. ${stderr.trim() || stdout.trim()}`.slice(0, 1000));
@@ -274,14 +276,14 @@ function killTree(p: ChildProcess): void {
 }
 
 /** A watch's shell, with the agent's protected paths read-only. Protection that can't be enforced is an error, never a silent bypass. */
-function launch(cmd: string, protect: string[] = []): { command: string; args: string[] } | { error: string } {
-  const l = sandboxLaunch("/bin/sh", ["-c", cmd], protect);
+function launch(cmd: string, protect: string[] = [], hide: string[] = []): { command: string; args: string[] } | { error: string } {
+  const l = sandboxLaunch("/bin/sh", ["-c", cmd], protect, hide);
   return !protect.length || l.sandboxed ? l : { error: `Can't protect the paths in your settings: ${l.why}` };
 }
 
-function runOnce(cmd: string, cwd: string, timeoutMs: number, protect?: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+function runOnce(cmd: string, cwd: string, timeoutMs: number, protect?: string[], hide?: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const l = launch(cmd, protect);
+    const l = launch(cmd, protect, hide);
     if ("error" in l) return resolve({ code: 126, stdout: "", stderr: l.error });
     const p = spawn(l.command, l.args, { cwd, stdio: ["ignore", "pipe", "pipe"], detached: true });
     let stdout = "";

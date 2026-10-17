@@ -234,6 +234,7 @@ export class ControlServer {
         workspaceIsDefault: !a.settings.workspace,
         protect: eff.protect,
         protectOwn: a.settings.protect ?? [],
+        visibility: a.settings.visibility ?? "public",
         spentUsd: today.usd,
         costReported: today.costReported,
         tokensToday: today.tokens,
@@ -264,7 +265,7 @@ export class ControlServer {
       return Promise.all((await this.rt.backends()).map(async (name) => ({ name, missing: await backendMissing(name) })));
     },
     models: async ({ backend }) => this.rt.models(String(backend)),
-    set: async ({ name, backend, model, dailyBudgetUsd, dailyTokenBudget, workspace, protect }) => {
+    set: async ({ name, backend, model, dailyBudgetUsd, dailyTokenBudget, workspace, protect, visibility }) => {
       await this.rt.setAgentSettings(name, {
         backend: backend || undefined,
         model,
@@ -272,6 +273,7 @@ export class ControlServer {
         dailyTokenBudget: dailyTokenBudget === undefined ? undefined : dailyTokenBudget === null ? null : Number(dailyTokenBudget),
         workspace,
         protect: protect === undefined ? undefined : protect === null ? null : (Array.isArray(protect) ? protect : [protect]).map(String).filter(Boolean),
+        visibility,
       });
       return { ok: true };
     },
