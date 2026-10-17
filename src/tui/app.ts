@@ -1734,7 +1734,8 @@ export class App implements Component {
     const composerH = composer.length;
     const bodyH = Math.max(1, rows - TOP - chipsH - composerH - 1);
     const narrow = width < NARROW;
-    const leftW = narrow ? 0 : Math.min(34, Math.max(26, Math.floor(width * 0.26)));
+    // The agent list grows a little on wide terminals, so their status lines have room to be read.
+    const leftW = narrow ? 0 : Math.min(width >= 150 ? 42 : 34, Math.max(26, Math.floor(width * 0.26)));
     const rightW = narrow ? width : width - leftW - 1;
     this.leftW = leftW;
     this.paneRows = TOP + bodyH;
@@ -1790,35 +1791,59 @@ export class App implements Component {
 
   private renderAgents(w: number, h: number): string[] {
     const lines: string[] = [this.renderBrand(w), ""];
-    const per = 3;
     const count = this.agents.length + 1;
-    const visible = Math.max(1, Math.floor((h - 3) / per));
-    const start = Math.max(0, Math.min(this.sel - Math.floor(visible / 2), count - visible));
-    for (let idx = start; idx < Math.min(count, start + visible); idx++) {
-      const on = idx === this.sel;
-      const row = TOP + lines.length;
+    // Each agent is its name, its status on one or two rows, and a blank row.
+    const blocks = Array.from({ length: count }, (_, idx) => this.agentRows(idx, w));
+    // Rows for the agents: less the name of the app and the blank row under it, and the "n of N" counter.
+    const room = Math.max(1, h - 3);
+    let start = this.sel;
+    let end = this.sel + 1;
+    let used = blocks[this.sel]?.length ?? 0;
+    // Around the selected agent, one above, then one below, as long as they fit.
+    for (let up = true, tried = 0; tried < 2; up = !up) {
+      const idx = up ? start - 1 : end;
+      if (idx >= 0 && idx < count && used + blocks[idx].length <= room) {
+        used += blocks[idx].length;
+        if (up) start--;
+        else end++;
+        tried = 0;
+      } else tried++;
+    }
+    for (let idx = start; idx < end; idx++) {
       const pick = () => {
         this.overlay = null;
         this.select(idx);
       };
-      this.hits.push({ row, x0: 0, x1: w, act: pick }, { row: row + 1, x0: 0, x1: w, act: pick });
-      const bar = on ? accent("▌") : " ";
-      if (idx === this.agents.length) {
-        lines.push(this.selRow(`${bar} ${accent(on ? bold("+ New agent") : "+ New agent")}`, w, on), this.selRow(`${bar}   ${muted("create one")}`, w, on), "");
-        continue;
-      }
-      const a = this.agents[idx];
-      const badge = a.waiting ? yellow(bold(`${a.waiting}`)) : a.unread ? accent(`${a.unread}`) : "";
-      const p = statusParts(a);
-      const detail = this.agentDetail(a);
-      const l1 = bar + " " + spread(on ? bold(a.name) : a.name, badge + " ", w - 2);
-      // Only the word "working" shines (enough to see it's busy at a glance); the rest stays quiet.
-      const word = p.word === "working" ? shimmer(p.word) : muted(p.word);
-      const l2 = bar + "   " + fit(`${p.color(p.dot)} ${word}${detail ? muted(` · ${cut(detail, Math.max(1, w - 9 - p.word.length))}`) : ""}`, w - 4);
-      lines.push(this.selRow(l1, w, on), this.selRow(l2, w, on), "");
+      // A click on any of its rows but the blank one picks it.
+      const row = TOP + lines.length;
+      for (let i = 0; i < blocks[idx].length - 1; i++) this.hits.push({ row: row + i, x0: 0, x1: w, act: pick });
+      lines.push(...blocks[idx]);
     }
-    if (count > visible) lines.push(muted(`   ${Math.min(this.sel + 1, count)} of ${count}`));
+    if (end - start < count) lines.push(muted(`   ${Math.min(this.sel + 1, count)} of ${count}`));
     return lines;
+  }
+
+  /** One entry in the agent list: its name, its status (wrapped onto a second row when it needs one), a blank row. */
+  private agentRows(idx: number, w: number): string[] {
+    const on = idx === this.sel;
+    const bar = on ? accent("▌") : " ";
+    if (idx === this.agents.length) {
+      return [this.selRow(`${bar} ${accent(on ? bold("+ New agent") : "+ New agent")}`, w, on), this.selRow(`${bar}   ${muted("create one")}`, w, on), ""];
+    }
+    const a = this.agents[idx];
+    const badge = a.waiting ? yellow(bold(`${a.waiting}`)) : a.unread ? accent(`${a.unread}`) : "";
+    const p = statusParts(a);
+    const detail = this.agentDetail(a);
+    const l1 = bar + " " + spread(on ? bold(a.name) : a.name, badge + " ", w - 2);
+    // Only the word "working" shines (enough to see it's busy at a glance); the rest stays quiet.
+    const word = p.word === "working" ? shimmer(p.word) : muted(p.word);
+    // The detail starts after "● word · " and carries on under the word; it's cut only after that second row.
+    const first = wrapHead(detail, Math.max(1, w - 9 - p.word.length));
+    const rest = detail.slice(first.length).trimStart();
+    const l2 = bar + "   " + fit(`${p.color(p.dot)} ${word}${detail ? muted(` · ${first}`) : ""}`, w - 4);
+    const rows = [this.selRow(l1, w, on), this.selRow(l2, w, on)];
+    if (rest) rows.push(this.selRow(bar + "     " + muted(cut(rest, Math.max(1, w - 7))), w, on));
+    return [...rows, ""];
   }
 
   /** The selected row: the accent bar always; a soft tint too when the terminal's colours are known. */
@@ -2440,6 +2465,18 @@ export class App implements Component {
 function setText(input: Input, v: string): void {
   input.setValue(v);
   (input as any).cursor = v.length;
+}
+
+/** As much of a line of text as fits in w columns, broken after a whole word when there is one. */
+function wrapHead(text: string, w: number): string {
+  if (visibleWidth(text) <= w) return text;
+  let out = "";
+  for (const ch of Array.from(text)) {
+    if (visibleWidth(out + ch) > w) break;
+    out += ch;
+  }
+  const space = out.lastIndexOf(" ");
+  return text[out.length] === " " || space <= 0 ? out : out.slice(0, space);
 }
 
 function tilde(p: string): string {
