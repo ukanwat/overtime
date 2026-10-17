@@ -407,6 +407,26 @@ describe("memory in a running agent", () => {
     expect(h.result).toBe(`wrote ${join(h.workdir, "result.txt")}`);
   });
 
+  it("holds a pass's inferred patterns to their bounds, and marks facts that can change and haven't been checked as possibly stale", async () => {
+    await rt.create("rpat");
+    await tell("rpat", "Your job is testing.");
+    await tell("rpat", "REFLECT_INFER the person rejected another tall layout");
+    await (rt as any).reflect("rpat", "test", new AbortController());
+    const dir = join(paths.agent("rpat"), "memory");
+    expect(existsSync(join(dir, "pattern-good.md"))).toBe(true);
+    expect(readFileSync(join(dir, "pattern-good.md"), "utf8")).toContain("unconfirmed: true");
+    expect(existsSync(join(dir, "pattern-thin.md"))).toBe(false);
+    expect(lines.some((l) => l.includes("[rpat] reflect pass inferred a pattern in pattern-thin.md with only 1 supporting memories and runs; removed it"))).toBe(true);
+    const index = readFileSync(join(dir, "MEMORY.md"), "utf8");
+    expect(index).toContain("- [Tall layouts](pattern-good.md) — avoid designs that use vertical space (unconfirmed)");
+    expect(index).not.toContain("pattern-thin.md");
+    // A fact that can change, last checked long ago: the next turn sees it marked.
+    writeFileSync(join(dir, "release.md"), "---\ntype: project\nsource: observed\ncan-change: true\ndate: 2026-01-01\nlast-verified: 2026-01-01\n---\n\n0.5 is the current release.\n");
+    writeFileSync(join(dir, "MEMORY.md"), `${readFileSync(join(dir, "MEMORY.md"), "utf8")}- [Release](release.md) — 0.5 is the current release\n`);
+    await tell("rpat", "What's the release?");
+    expect(prompts("rpat").at(-1)).toContain("- [Release](release.md) — 0.5 is the current release (possibly stale: last verified 2026-01-01)");
+  });
+
   it("lets a helper read the agent's memory but not write it, and asks it to report what it learned", async () => {
     await tell("rem", "SPAWN_MEMWRITE");
     const h = await until(async () => (await rt.store("rem").helpers()).find((x) => x.task.startsWith("WRITE_PARENT_MEMORY") && x.status !== "running"), 60_000, "helper done");
