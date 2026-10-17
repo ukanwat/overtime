@@ -46,7 +46,10 @@ Messages from you, answers and finished helpers always wake it early.
 
 **It never stops to wait for you.** When something is genuinely yours to decide, the agent asks,
 with its recommendation and short options you can answer with one key (or several, unless the
-options exclude each other), and carries on with everything else meanwhile. Related questions come
+options exclude each other), and carries on with everything else meanwhile: only the thing it asked
+about waits on your answer. It can ask more at any time; several questions can be open at once, and
+none replaces another. Each answer reaches it naming the question it's for and when that was asked
+(`Answer to your question "…" (asked 3:12 PM): …`). Related questions come
 together on one card that you answer in turn and send at once. It's fully autonomous otherwise. It asks first only before
 destroying things outside its folders, spending money, or acting publicly or as you. Overtime
 answers every permission request the backend makes itself, instantly, so no session can ever hang
@@ -150,12 +153,17 @@ Your agents are on the left, like DMs. On the right is your conversation with th
 nothing else: its messages, its reports, its questions, and yours. While it's answering, its reply
 streams in as it writes.
 
-- **Move** with ↑↓; the conversation follows. Just type to message the selected agent.
-- **Answer** a question with its number keys (pick one or several), then Enter, or type an answer in
-  your own words. On a card of several questions, Tab or ↑↓ moves between them and Enter on the last
-  sends them all.
+- **Move** with ↑↓; the conversation follows. Just type to message the selected agent: what you type
+  is always a message, even with questions open.
+- **Questions** wait for you together, pinned just above the message box, newest last, so they never
+  scroll away and you can answer any time. Tab (or a click) goes to one and ↑↓ to another; then pick
+  with its number keys (one or several), or type an answer in your own words in the box, and Enter.
+  Esc goes back to the message you were writing, keeping what you'd picked. On a card of several
+  questions, Tab moves between them and Enter on the last sends them all. Once answered, a question
+  shows in the conversation where it was asked, with your answer, and your reply says which question
+  it answered.
 - **Attach** a file or image by dragging it into the terminal. It's copied into the agent's folder.
-- **Settings** (→ or Tab): backend and model, daily budget, workspace, protected paths, MCP servers,
+- **Settings** (→, Ctrl+P, or Tab when no question is open): backend and model, daily budget, workspace, protected paths, MCP servers,
   skills, its schedule and helpers, plus wake, stop and archive.
 - The mouse works too: click agents, options, links and files. `?` lists every key.
 
@@ -167,7 +175,9 @@ overtime new <name> [key=value…]    create an agent (same keys as set)
 overtime ls                         list agents
 overtime send <name> "…"            message an agent (--attach <file>, repeatable)
 overtime messages <name>            read your conversation with it
-overtime answer <name> <n> [note]   answer its open question with option n (several: 1,3)
+overtime answer <name> [<q>] <n> [note]
+                                    answer its open question with option n (several: 1,3); with several
+                                    open, <q> says which: its number in `overtime messages`, or its id
 overtime settings <name>            show its backend, model, budgets and workspace
 overtime set <name> key=value…      backend=  model=  budget=  tokens=  workspace=  protect=  visibility=
 overtime models [backend]           the models a backend offers

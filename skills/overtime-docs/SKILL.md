@@ -117,7 +117,10 @@ then `overtime set <name> backend=goose`. Cost is read when the backend reports 
   run in your folder. If you set nothing and have no watch or repeating wake, you wake in an hour.
 - `cancel` - stop a repeating wake, a watch, or a running helper, by id; or withdraw a question that no
   longer applies, with a short `why` the person sees on it.
-- `ask` - a question for the person, with options and your recommendation; never blocks you. They may
+- `ask` - a question for the person, with options and your recommendation; never blocks you: only the
+  thing you asked about waits on the answer, so carry on with everything else, and ask more whenever
+  something else needs them (several can be open at once; none replaces another). Each answer reaches
+  you as `Answer to your question "<question>" (asked 3:12 PM): <answer>`. They may
   pick several options unless you set `single: true`. Batch related questions into one ask with
   `questions` (each with its own options, recommendation and `single`): one card, one notification, and
   the answers come back to you together, question by question, with any they left unanswered marked.
@@ -223,11 +226,15 @@ they type `/`). Load that skill and follow it for that message.
 ## The person's side
 
 - `overtime` opens the app: agents on the left, the conversation on the right. ↑↓ moves between agents,
-  → opens settings, typing writes a message, 1-9 picks options of a question (several unless it takes one)
-  and Enter answers; on a card of several questions Tab or ↑↓ moves between them and Enter on the last
-  sends them. Drag a file in to attach it, ? for keys.
+  → opens settings, typing always writes a message. Open questions are pinned together above the message
+  box (newest last) and stay there until answered; Tab (or a click) goes to one, ↑↓ to another, then 1-9
+  picks options (several unless it takes one) or the box takes an answer in their own words, and Enter
+  answers; Esc goes back to their message. On a card of several questions Tab moves between them and
+  Enter on the last sends them. Answered ones show in the conversation where they were asked, with the
+  answer. Drag a file in to attach it, ? for keys.
 - Commands: `overtime new <name>`, `ls`, `send <name> "..." [--attach file]`, `messages <name>`,
-  `answer <name> <n>` (several: `1,3`; a card: one per question, `-` to leave one), `stop|start|wake <name>`, `settings <name>`, `set <name> key=value`,
+  `answer <name> [<question>] <n>` (several: `1,3`; a card: one per question, `-` to leave one; with
+  several questions open, first say which: its number in `messages`, or its id), `stop|start|wake <name>`, `settings <name>`, `set <name> key=value`,
   `models [backend]`, `archive <name>` (stops it for good, moves its folder to `~/overtime/archive/`,
   nothing deleted), `daemon stop`, `daemon install` (start at login), `acp` (for editors: Zed, JetBrains, VS Code).
 
