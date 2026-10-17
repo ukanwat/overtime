@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { shimmer, cut } from "../src/tui/style.js";
+import { describe, it, expect, vi } from "vitest";
+import { shimmer, cut, statusParts, when } from "../src/tui/style.js";
 
 const plain = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
@@ -37,5 +37,29 @@ describe("links in messages", () => {
     expect(visible).toBe("See ~/a/story and ~/a/story/review.md, or https://example.com/x.");
     expect(out).toContain("\x1b]8;;file:///Users/me/a/story/review.md\x07");
     expect(out).toContain("\x1b]8;;https://example.com/x\x07");
+  });
+});
+
+describe("when something happens next", () => {
+  it("names a weekday only in the coming week, and the date further out", () => {
+    vi.useFakeTimers();
+    try {
+      const now = new Date(2026, 9, 17, 4, 43); // a Saturday
+      vi.setSystemTime(now);
+      const at = (days: number, h = 4, m = 42) => new Date(2026, 9, 17 + days, h, m);
+      const time = (d: Date) => d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      const date = (d: Date) => `${d.toLocaleDateString([], { day: "numeric", month: "short" })} ${time(d)}`;
+      expect(when(at(0, 9, 0).toISOString())).toBe(`at ${time(at(0, 9, 0))}`);
+      expect(when(at(1).toISOString())).toBe(`tomorrow ${time(at(1))}`);
+      expect(when(at(6).toISOString())).toBe(`${at(6).toLocaleDateString([], { weekday: "short" })} ${time(at(6))}`);
+      // A minute short of a week: Saturday again, so it says the date, not "Sat".
+      expect(when(at(7).toISOString())).toBe(date(at(7)));
+      expect(when(at(12).toISOString())).toBe(date(at(12)));
+      // The agent list (TUI and overtime ls) says it the same way.
+      const s = statusParts({ name: "a", status: "asleep", nextWake: at(7).toISOString() } as any);
+      expect(s.detail).toBe(`wakes ${date(at(7))}`);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
