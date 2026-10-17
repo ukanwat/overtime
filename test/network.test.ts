@@ -29,9 +29,9 @@ describe("when the internet goes out", () => {
     // In the app: waiting, because there's no internet, even while helpers are still running.
     const a = await loadAgent("wanderer");
     const p = statusParts({ status: "asleep", activity: a.state.activity, nextWake: null, pausedUntil: null, lastError: null, helpersRunning: 2, trouble: await rt.trouble("wanderer"), offlineSince: rt.offlineSince });
-    expect(p).toMatchObject({ word: "waiting", detail: "no internet" });
+    expect(p).toMatchObject({ kind: "trouble", word: "no internet" });
     // Online again but the backend still unreachable: says which.
-    expect(statusParts({ status: "asleep", activity: "", nextWake: null, pausedUntil: null, lastError: null, trouble: { since: "", backend: "claude" }, offlineSince: null })).toMatchObject({ word: "waiting", detail: "can't reach claude" });
+    expect(statusParts({ status: "asleep", activity: "", nextWake: null, pausedUntil: null, lastError: null, trouble: { since: "", backend: "claude" }, offlineSince: null })).toMatchObject({ kind: "trouble", word: "can't reach claude" });
 
     // Back online: it tries again at once, not at its next back-off time.
     await rt.store("wanderer").setWake(new Date(Date.now() + 3600_000), "retry later");

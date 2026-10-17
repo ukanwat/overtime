@@ -1,23 +1,130 @@
-import { describe, it, expect, vi } from "vitest";
-import { shimmer, cut, statusParts, when } from "../src/tui/style.js";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { visibleWidth } from "@earendil-works/pi-tui";
+import { applyTerminalColors, cut, resetPalette, STATE_TURN, stateGlyph, stateWord, statusLine, statusParts, when } from "../src/tui/style.js";
 
 const plain = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
-describe("the working shimmer", () => {
-  it("never changes or garbles the text, whatever the moment", () => {
+describe("the agent's state circle", () => {
+  const base = { status: "asleep", activity: "", nextWake: null, pausedUntil: null, lastError: null, waiting: 0 };
+  const states: [string, any, string | null][] = [
+    ["working", { status: "working" }, null],
+    ["waiting for you", { waiting: 1 }, "●"],
+    ["retrying", { lastError: "boom" }, "⊘"],
+    ["can't reach its backend", { trouble: { since: "", backend: "claude" }, helpersRunning: 1 }, "⊘"],
+    ["asleep", {}, "○"],
+    ["paused", { status: "paused" }, "◌"],
+    ["stopped", { status: "stopped" }, "⊖"],
+    ["new", { status: "new" }, "◦"],
+  ];
+  const dark = () => applyTerminalColors({ background: { r: 12, g: 12, b: 12 }, foreground: { r: 224, g: 224, b: 224 } }, true);
+  afterEach(() => {
+    resetPalette();
+    process.env.OVERTIME_STILL = "1";
+  });
+
+  it("is a circle for every state, differing by shape, one column wide in every frame", () => {
     delete process.env.OVERTIME_STILL;
-    const text = cut("working · Treatment + first look frame for The Walk to the Sea", 30);
-    for (let t = 0; t < 5000; t += 37) {
-      const s = shimmer(text, t);
-      expect(plain(s)).toBe(text);
-      expect(s).not.toMatch(/\x1b(?!\[[0-9;]*m)/); // every escape is a complete colour code
+    dark();
+    const shapes = new Map<string, Set<string>>();
+    for (const [name, o, mark] of states) {
+      const seen = new Set<string>();
+      for (let t = 0; t < 6000; t += 50) {
+        const g = plain(stateGlyph({ ...base, ...o }, t).glyph);
+        expect(visibleWidth(g)).toBe(1);
+        expect("●○◌◦⊘⊖◐◓◑◒").toContain(g);
+        seen.add(g);
+      }
+      if (mark) expect([...seen]).toEqual([mark]);
+      shapes.set(name, seen);
+    }
+    expect([...shapes.get("working")!]).toEqual(STATE_TURN);
+    // No two states share a shape (the two failures are one state), and no still circle is a frame of the turning one.
+    const all = [...shapes.entries()].filter(([n]) => n !== "can't reach its backend").flatMap(([, v]) => [...v]);
+    expect(new Set(all).size).toBe(all.length);
+  });
+
+  it("turns calmly while working, pulses yellow for you, and breathes slowly while asleep", () => {
+    delete process.env.OVERTIME_STILL;
+    dark();
+    const frames = (o: any, from: number, to: number, step: number) => Array.from({ length: (to - from) / step }, (_, i) => stateGlyph({ ...base, ...o }, from + i * step).glyph);
+    // Working: a quarter turn every 200 ms, the same four frames each 800 ms.
+    expect(stateGlyph({ ...base, status: "working" }).period).toBe(200);
+    expect(new Set(frames({ status: "working" }, 0, 800, 200)).size).toBe(4);
+    expect(frames({ status: "working" }, 800, 1600, 100)).toEqual(frames({ status: "working" }, 0, 800, 100));
+    // Needs you: a 1.6 s pulse in shades of yellow, the same full circle throughout.
+    expect(stateGlyph({ ...base, waiting: 1 }).period).toBe(100);
+    const w = frames({ waiting: 1 }, 0, 1600, 100);
+    expect(new Set(w).size).toBeGreaterThan(5);
+    expect(frames({ waiting: 1 }, 1600, 3200, 100)).toEqual(w);
+    // Asleep: a slow breath (2.8 s), changing only every 200 ms, and only in brightness.
+    expect(stateGlyph(base).period).toBe(200);
+    const z = frames({}, 0, 2800, 100);
+    expect(z[0]).toBe(z[1]);
+    expect(new Set(z).size).toBeGreaterThan(5);
+    expect(frames({}, 2800, 5600, 100)).toEqual(z);
+    // Still states don't ask for frames.
+    for (const o of [{ lastError: "x" }, { status: "paused" }, { status: "stopped" }, { status: "new" }]) expect(stateGlyph({ ...base, ...o }).period).toBe(null);
+  });
+
+  it("means one thing per circle: the word next to it always agrees", () => {
+    const wake = new Date(Date.now() + 3 * 3600_000).toISOString();
+    const lines: [any, RegExp, RegExp][] = [
+      [{ status: "working" }, /^◐ working$/, /^working$/],
+      [{ status: "working", helpersRunning: 2 }, /^◐ working · 2 helpers$/, /^working$/],
+      [{ helpersRunning: 1 }, /^◐ working · 1 helper$/, /^working$/],
+      [{ waiting: 1 }, /^● needs you$/, /^needs you$/],
+      [{ waiting: 1, nextWake: wake }, /^● needs you · wakes /, /^needs you$/],
+      [{ waiting: 1, status: "paused" }, /^● needs you$/, /^needs you$/],
+      [{ lastError: "boom", nextWake: wake }, /^⊘ retrying (at|tomorrow) /, /^retrying$/],
+      [{ lastError: "boom" }, /^⊘ retrying$/, /^retrying$/],
+      [{ lastError: "boom", waiting: 1 }, /^⊘ retrying$/, /^retrying$/],
+      [{ trouble: { since: "", backend: "claude" }, helpersRunning: 1 }, /^⊘ can't reach claude$/, /^can't reach$/],
+      [{ offlineSince: "x", status: "working" }, /^⊘ no internet$/, /^offline$/],
+      [{ nextWake: wake }, /^○ asleep · wakes /, /^(\d+:\d\d|\w{3})/],
+      [{}, /^○ asleep$/, /^asleep$/],
+      [{ status: "paused", pauseReason: "budget" }, /^◌ paused · budget used$/, /^paused$/],
+      [{ status: "stopped" }, /^⊖ stopped$/, /^stopped$/],
+      [{ status: "new" }, /^◦ new · waiting for its job$/, /^new$/],
+    ];
+    for (const [o, line, word] of lines) {
+      expect(plain(statusLine({ ...base, ...o }))).toMatch(line);
+      expect(plain(stateWord({ ...base, ...o }))).toMatch(word);
     }
   });
 
-  it("strips escape codes it's handed rather than splitting them", () => {
-    expect(plain(shimmer("abc\x1b[0m...", 500))).toBe("abc...");
+  it("says when an asleep agent wakes in the list's word: a time today, a weekday this week, a date further out", () => {
+    const at = (days: number, hour = 15) => {
+      const d = new Date();
+      d.setDate(d.getDate() + days);
+      d.setHours(hour, 0, 0, 0);
+      return d.toISOString();
+    };
+    expect(plain(stateWord({ ...base, nextWake: at(0, 23) }))).toMatch(/^\d+:\d\d(pm|am)?$|^\d\d:\d\d$/);
+    expect(plain(stateWord({ ...base, nextWake: at(3) }))).toMatch(/^[A-Z][a-z]{2}$/);
+    expect(plain(stateWord({ ...base, nextWake: at(10) }))).toMatch(/\d/);
   });
 
+  it("holds still for tests, without true colour, and with NO_COLOR", () => {
+    process.env.OVERTIME_STILL = "1";
+    dark();
+    for (const [, o] of states) {
+      expect(stateGlyph({ ...base, ...o }, 0)).toEqual(stateGlyph({ ...base, ...o }, 1234));
+      expect(stateGlyph({ ...base, ...o }).period).toBe(null);
+    }
+    delete process.env.OVERTIME_STILL;
+    resetPalette();
+    expect(stateGlyph(base).period).toBe(null);
+    expect(stateGlyph({ ...base, waiting: 1 }).period).toBe(null);
+    process.env.NO_COLOR = "1";
+    try {
+      expect(stateGlyph({ ...base, waiting: 1 }).glyph).toBe("●");
+    } finally {
+      delete process.env.NO_COLOR;
+    }
+  });
+});
+
+describe("plain text", () => {
   it("cuts plain text to width with an ellipsis and no escape codes", () => {
     expect(cut("lighting the harbour district", 12)).toBe("lighting th…");
     expect(cut("short", 12)).toBe("short");
