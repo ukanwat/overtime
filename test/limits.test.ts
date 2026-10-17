@@ -61,7 +61,7 @@ describe("a usage limit that lifts before its reset (you upgraded, bought more, 
     await until(async () => (await rt.store("lifted").messages()).some((m) => m.from === "agent" && m.text.includes("are you back?")), 30_000, "answered");
     // The reply is sent during the turn; the limit is cleared once the turn is over.
     await until(async () => ((await loadAgent("lifted")).state.status === "asleep" ? true : null), 30_000, "turn over");
-    expect(JSON.parse(readFileSync(join(home, "limits.json"), "utf8")).fake.status).toBe("allowed"); // cleared for every agent
+    expect(JSON.parse(readFileSync(join(home, "limits.json"), "utf8"))["fake/default"].windows.limit.status).toBe("allowed"); // cleared for every agent on its model
   });
 
   it("still over: it says so, keeps your message, and stays paused", async () => {

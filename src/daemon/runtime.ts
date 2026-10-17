@@ -19,7 +19,7 @@ import type { ToolContext, ToolHost } from "../tools/host.js";
 import { ToolServer } from "../tools/server.js";
 import { AcpSession } from "../acp/session.js";
 import { promptWasSent, runTurn, sessionPreamble, TurnIncompleteError, UsageLimitError, type TurnResult } from "../runtime/turn.js";
-import { blockedUntil, limitInfo, LIMIT_RECHECK_MS, usageToday, type TurnUsage, readLimits } from "../runtime/usage.js";
+import { blockedUntil, gotThroughAt, limitInfo, LIMIT_RECHECK_MS, rejectedLimits, usageToday, type TurnUsage } from "../runtime/usage.js";
 import { workingInstructions } from "../runtime/instructions.js";
 import { StepBoundary } from "../runtime/boundary.js";
 import { MonitorRunner, reapStaleMonitors } from "./monitors.js";
@@ -32,6 +32,22 @@ const exec = promisify(execFile);
 const TICK_MS = 5_000;
 const DEFAULT_WAKE_MS = 60 * 60_000;
 const BACKOFF_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000];
+/**
+ * A backstop against running into a usage limit over and over, whatever lifted the pause: when this many
+ * of an agent's turns since the last one that got through ended on a usage limit, all within one recheck
+ * interval, its next turn waits until a full interval after the last of them (the person messaging or
+ * waking it still tries at once).
+ */
+const LIMIT_HOT_TURNS = 3;
+
+/** Until when an agent is held back because its last turns kept ending on a usage limit (see LIMIT_HOT_TURNS). */
+export function limitHold(hits: string[] | undefined, now = Date.now()): Date | null {
+  if (!hits || hits.length < LIMIT_HOT_TURNS) return null;
+  const last = hits.slice(-LIMIT_HOT_TURNS).map((t) => new Date(t).getTime());
+  if (last[last.length - 1] - last[0] >= LIMIT_RECHECK_MS) return null;
+  const until = last[last.length - 1] + LIMIT_RECHECK_MS;
+  return until > now ? new Date(until) : null;
+}
 /** How long a helper waits before retrying after a passing provider problem (tests shorten it). */
 /** A backend that isn't signed in is checked again this often: it usually comes back once the person signs in. */
 const SIGNIN_RETRY_MS = 5 * 60_000;
@@ -396,11 +412,12 @@ export class Runtime extends EventEmitter implements ToolHost {
     if (a.state.status === "stopped" || this.mainRunning.has(a.name)) return;
     const store = this.store(a.name);
     if (a.state.status === "paused") {
-      // A budget pause lifts as soon as the budget is raised; a limit pause when the limit resets.
-      // A limit pause lifts when a turn on the backend gets through (any agent's), or at its next try.
-      const lifted = (a.state.pauseReason === "budget" || a.state.pauseReason === "limit") && !(await this.blocked(a.name));
+      // A budget pause lifts as soon as the budget is raised. A limit pause lifts at its next try, or
+      // sooner only when a turn on the same backend and model (any agent's) got through since it began:
+      // what other models report says nothing about this one's limits.
+      const lifted = a.state.pauseReason === "budget" ? !(await this.blocked(a.name)) : a.state.pauseReason === "limit" ? await this.limitLifted(a) : false;
       if (!lifted && a.state.pausedUntil && new Date(a.state.pausedUntil) > now) return;
-      await updateState(a.name, { status: hasIdentity(a) ? "asleep" : "new", pausedUntil: null, pauseReason: null, ...(a.state.activityByAgent ? {} : { activity: hasIdentity(a) ? "resting" : "waiting for its job" }) });
+      await updateState(a.name, { status: hasIdentity(a) ? "asleep" : "new", pausedUntil: null, pausedAt: null, pauseReason: null, ...(a.state.activityByAgent ? {} : { activity: hasIdentity(a) ? "resting" : "waiting for its job" }) });
       this.changed(a.name, "state");
       a = await loadAgent(a.name);
     }
@@ -433,12 +450,25 @@ export class Runtime extends EventEmitter implements ToolHost {
     }
   }
 
-  /** Usage limit or daily budget: whether this agent may spend right now. */
-  private async blocked(agentName: string, backend?: string): Promise<Blocked | null> {
+  /** Whether a limit pause can end before its next try: a turn on its backend and model got through since it began. */
+  private async limitLifted(a: Agent): Promise<boolean> {
+    if (limitHold(a.state.limitHits)) return false;
+    const eff = await effectiveSettings(a);
+    // Paused before pauses were dated: that no limit is still recorded for its model is enough.
+    if (!a.state.pausedAt) return !(await rejectedLimits(eff.backend, eff.model)).length;
+    const through = await gotThroughAt(eff.backend, eff.model);
+    return !!through && through > new Date(a.state.pausedAt);
+  }
+
+  /**
+   * Usage limit or daily budget: whether this agent may spend right now, on its own backend and model or
+   * (a helper) the ones given. A model of null or undefined with a backend given means the agent's model.
+   */
+  private async blocked(agentName: string, backend?: string, model?: string | null): Promise<Blocked | null> {
     const agent = await loadAgent(agentName);
     const eff = await effectiveSettings(agent);
     const b = backend ?? eff.backend;
-    const lim = await limitInfo(b);
+    const lim = await limitInfo(b, model ?? eff.model);
     if (lim) return { kind: "limit", until: lim.retryAt, resetsAt: lim.resetsAt, backend: b };
     const today = await usageToday(agentName);
     const overUsd = today.costReported && today.usd >= eff.dailyBudgetUsd;
@@ -456,7 +486,7 @@ export class Runtime extends EventEmitter implements ToolHost {
   private async pauseFor(agentName: string, b: Blocked): Promise<void> {
     const agent = await loadAgent(agentName);
     const already = agent.state.status === "paused" && agent.state.pausedUntil && new Date(agent.state.pausedUntil) >= b.until;
-    await updateState(agentName, { status: "paused", pausedUntil: b.until.toISOString(), activity: b.kind === "limit" ? `paused: ${b.backend} usage limit` : "paused: daily budget used", activityByAgent: false, pauseReason: b.kind === "limit" ? "limit" : "budget", limitResetsAt: b.kind === "limit" ? (b.resetsAt?.toISOString() ?? null) : null });
+    await updateState(agentName, { status: "paused", pausedUntil: b.until.toISOString(), pausedAt: new Date().toISOString(), activity: b.kind === "limit" ? `paused: ${b.backend} usage limit` : "paused: daily budget used", activityByAgent: false, pauseReason: b.kind === "limit" ? "limit" : "budget", limitResetsAt: b.kind === "limit" ? (b.resetsAt?.toISOString() ?? null) : null });
     if (b.kind === "budget" && !already) {
       await this.store(agentName).addMessage({ from: "overtime", kind: "alert", title: "Daily budget used", text: b.text, baseDir: agent.dir });
       this.notify(`${agentName} paused`, "Its daily budget is used. Raise it in its settings to keep it going today.");
@@ -485,6 +515,12 @@ export class Runtime extends EventEmitter implements ToolHost {
     const b = await this.blocked(agentName);
     if (b && !(forced && b.kind === "limit")) {
       await this.pauseFor(agentName, b);
+      return true;
+    }
+    // Its last turns kept ending on a usage limit: not again before a full recheck interval has passed.
+    const hold = forced ? null : limitHold(agent.state.limitHits);
+    if (hold) {
+      await this.pauseFor(agentName, { kind: "limit", until: hold, resetsAt: agent.state.limitResetsAt ? new Date(agent.state.limitResetsAt) : null, backend: eff.backend });
       return true;
     }
 
@@ -558,7 +594,7 @@ export class Runtime extends EventEmitter implements ToolHost {
       agent = await loadAgent(agentName);
       if (result.modelIssue) await this.modelIssue(agentName, result.modelIssue);
       if (result.usage2 && result.usage2.turnCostUsd == null) await this.noCostNotice(agentName, result.backend);
-      const patch: Partial<AgentState> = { status: hasIdentity(agent) ? "asleep" : "new", failures: 0, transientFailures: 0, troubleSince: null, lastError: null, mainSessionFiles: fileHashes(agent), mainSessionPrompt: promptVersion("main") };
+      const patch: Partial<AgentState> = { status: hasIdentity(agent) ? "asleep" : "new", failures: 0, transientFailures: 0, troubleSince: null, lastError: null, limitHits: [], mainSessionFiles: fileHashes(agent), mainSessionPrompt: promptVersion("main") };
       // Keep whatever status line the agent set itself; only replace Overtime's own placeholder.
       if (!agent.state.activityByAgent) patch.activity = hasIdentity(agent) ? "resting" : "waiting for its job";
       await updateState(agentName, patch);
@@ -595,7 +631,8 @@ export class Runtime extends EventEmitter implements ToolHost {
         // Tried again in a while (the limit can lift before its reset), or at the reset if that's sooner.
         const recheck = new Date(Date.now() + LIMIT_RECHECK_MS);
         const until = e.resetsAt && e.resetsAt < recheck ? e.resetsAt : recheck;
-        await updateState(agentName, { status: "paused", pausedUntil: until.toISOString(), activity: `paused: ${eff.backend} usage limit`, activityByAgent: false, pauseReason: "limit", limitResetsAt: e.resetsAt?.toISOString() ?? null });
+        const limitHits = [...(agent.state.limitHits ?? []), new Date().toISOString()].slice(-LIMIT_HOT_TURNS);
+        await updateState(agentName, { status: "paused", pausedUntil: until.toISOString(), pausedAt: new Date().toISOString(), limitHits, activity: `paused: ${eff.backend} usage limit`, activityByAgent: false, pauseReason: "limit", limitResetsAt: e.resetsAt?.toISOString() ?? null });
         this.log(`[${agentName}] paused by the ${eff.backend} usage limit; trying again ${until.toISOString()}`);
         if (forced) {
           await store.addMessage({ from: "overtime", kind: "message", text: `${eff.backend} is still at its usage limit${e.resetsAt ? ` (it says it resets ${e.resetsAt.toLocaleString()})` : ""}. ${agentName} keeps your message and tries again by itself every 15 minutes, and as soon as you message or wake it.`, baseDir: agent.dir });
@@ -749,7 +786,7 @@ export class Runtime extends EventEmitter implements ToolHost {
     const agent = await loadAgent(agentName);
     if (agent.state.status === "stopped") return;
     const b = await this.blocked(agentName);
-    if (b?.kind === "limit") {
+    if (b?.kind === "limit" || (!b && limitHold(agent.state.limitHits))) {
       // The limit may have lifted already: the person writing is the moment to find out.
       this.tryDespiteLimit.add(agentName);
     } else if (b) {
@@ -994,7 +1031,8 @@ export class Runtime extends EventEmitter implements ToolHost {
         req.model = undefined;
       }
     }
-    const b = await this.blocked(ctx.agent, req.backend);
+    // On the helper's own backend and model: another model may be over its limit while this one isn't.
+    const b = await this.blocked(ctx.agent, req.backend, req.model);
     if (b) throw new Error(`Can't start a helper: ${this.blockedLine(b)}.`);
     // With the agent's context: what it has been told, done and said lately, from Overtime's own records
     // of its sessions, so it works the same on every backend (and the helper keeps its own folder).
@@ -1184,7 +1222,7 @@ export class Runtime extends EventEmitter implements ToolHost {
     if (this.stopping) throw new Error("Overtime is shutting down; tell it next turn.");
     const agent = await loadAgent(agentName);
     const eff = await effectiveSettings(agent);
-    const b = await this.blocked(agentName, now.backend);
+    const b = await this.blocked(agentName, now.backend, now.model);
     if (b) throw new Error(`Can't continue ${id}: ${this.blockedLine(b)}.`);
     await withLock(`spawn:${agentName}`, async () => {
       const running = (await store.helpers()).filter((h) => h.status === "running").length;
@@ -1286,14 +1324,14 @@ export class Runtime extends EventEmitter implements ToolHost {
           if (e instanceof UsageLimitError && !over()) {
             limitedSince.t ||= Date.now();
             if (Date.now() - limitedSince.t < 24 * 3600_000) {
-              const until = e.resetsAt ?? (await blockedUntil(e.backend)) ?? new Date(Date.now() + 15 * 60_000);
+              const until = e.resetsAt ?? (await blockedUntil(e.backend, e.model)) ?? new Date(Date.now() + 15 * 60_000);
               this.log(`[${agentName}] helper ${rec.id}: ${e.backend} usage limit, waiting until ${until.toISOString()}`);
-              // Checked every minute: a turn of any agent getting through clears the limit (it often lifts
-              // before the reset it gave), and then this helper carries on too.
+              // Checked every minute: a turn of any agent on the same model getting through clears the limit
+              // (it often lifts before the reset it gave), and then this helper carries on too.
               const end = Math.max(Date.now() + 60_000, until.getTime());
               while (Date.now() < end && !over() && !waiting.aborted) {
                 await sleep(Math.min(60_000, end - Date.now()), waiting);
-                if ((await readLimits())[e.backend]?.status !== "rejected") break;
+                if (!(await rejectedLimits(e.backend, e.model)).length) break;
               }
               if (over() || waiting.aborted) throw e;
               attempt = Math.max(attempt, 1);
@@ -1474,7 +1512,7 @@ export class Runtime extends EventEmitter implements ToolHost {
     const a = await loadAgent(name);
     if (a.state.status !== "stopped" && a.state.status !== "paused") return;
     const hadJob = hasIdentity(a);
-    await updateState(name, { status: hadJob ? "asleep" : "new", pausedUntil: null, pauseReason: null, failures: 0, activity: hadJob ? "resuming" : "waiting for its job", activityByAgent: false }, { allowStopped: true });
+    await updateState(name, { status: hadJob ? "asleep" : "new", pausedUntil: null, pausedAt: null, pauseReason: null, failures: 0, activity: hadJob ? "resuming" : "waiting for its job", activityByAgent: false }, { allowStopped: true });
     this.agentAborts.delete(name);
     await this.monitors.startAll(name);
     if (hadJob) this.wakeMain(name, "the person started you again");
@@ -1583,7 +1621,7 @@ export class Runtime extends EventEmitter implements ToolHost {
     const a = await loadAgent(name);
     if (a.state.status === "stopped") throw new Error(`${name} is stopped. Start it first.`);
     if (a.state.status === "new" && !(await this.store(name).inbox()).length) throw new Error(`${name} doesn't have a job yet. Send it a message saying what it's for.`);
-    if (a.state.status === "paused") await updateState(name, { status: hasIdentity(a) ? "asleep" : "new", pausedUntil: null, pauseReason: null, ...(a.state.activityByAgent ? {} : { activity: hasIdentity(a) ? "resting" : "waiting for its job" }) });
+    if (a.state.status === "paused") await updateState(name, { status: hasIdentity(a) ? "asleep" : "new", pausedUntil: null, pausedAt: null, pauseReason: null, ...(a.state.activityByAgent ? {} : { activity: hasIdentity(a) ? "resting" : "waiting for its job" }) });
     await updateState(name, { failures: 0 });
     // Waking it means trying, whatever limit was recorded (a budget pause is the person's own setting).
     this.tryDespiteLimit.add(name);

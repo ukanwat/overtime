@@ -21,6 +21,8 @@ interface S {
   /** Overtime's tools server: a URL, or (for a stdio-only backend) the command to start. */
   tools?: string | { command: string; args: string[] };
   cost: number;
+  /** The model Overtime chose for the session ("default" until it chooses one). */
+  model: string;
 }
 const sessions = new Map<string, S>();
 let cancelled = false;
@@ -54,6 +56,17 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
     s.cost += 0.25;
     await cx.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "usage_update", used: 1000, size: 100000, cost: { amount: s.cost, currency: "USD" } } as any });
     throw new acp.RequestError(-32603, "Internal error", { message: "scripted costly failure" });
+  }
+  // Claude's way, per model: while `limit-model-<model>` exists (holding when it resets, in epoch seconds),
+  // that model is over its weekly limit. The first turn to hit it gets the structured "rejected" report;
+  // later ones only the error, of the same kind as a passing rate limit (as Claude does).
+  const modelLimit = process.env.OVERTIME_HOME ? join(process.env.OVERTIME_HOME, `limit-model-${s.model}`) : "";
+  if (modelLimit && existsSync(modelLimit)) {
+    if (!existsSync(`${modelLimit}.told`)) {
+      writeFileSync(`${modelLimit}.told`, "1");
+      await cx.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "usage_update", used: 1000, size: 100000, _meta: { "_claude/rateLimit": { status: "rejected", rateLimitType: "seven_day", resetsAt: Number(readFileSync(modelLimit, "utf8")) } } } as any });
+    }
+    throw new acp.RequestError(-32603, "Internal error", { errorKind: "rate_limit", message: "You've hit your weekly limit" });
   }
   // The account is over its limit for as long as this file exists (the test lifts it by deleting it).
   if (process.env.OVERTIME_HOME && existsSync(join(process.env.OVERTIME_HOME, "limit-on"))) throw new acp.RequestError(-32603, "Internal error", { message: "You've hit your usage limit.", codexErrorInfo: "usageLimitExceeded" });
@@ -169,8 +182,19 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
     await t.close();
   }
   s.cost += 0.01;
+  // With `report-limits`, each turn that gets through reports its model's limits as allowed, as Claude does.
+  const allowed = (rateLimitType: string) => ({ "_claude/rateLimit": { status: "allowed", rateLimitType, resetsAt: Math.floor(Date.now() / 1000) + 3600 } });
+  if (process.env.OVERTIME_HOME && existsSync(join(process.env.OVERTIME_HOME, "report-limits"))) {
+    for (const w of ["five_hour", "seven_day"]) await cx.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "usage_update", used: 1000, size: 100000, _meta: allowed(w) } as any });
+  }
   await cx.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "usage_update", used: 1000, size: 100000, cost: { amount: s.cost, currency: "USD" } } as any });
   return { stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } as any };
+}
+
+/** A session's model, kept by the run of this backend that set it (each turn runs a new one). */
+function savedModel(sessionId: string): string {
+  const f = process.env.OVERTIME_HOME ? join(process.env.OVERTIME_HOME, `.fake-model-${sessionId}`) : "";
+  return f && existsSync(f) ? readFileSync(f, "utf8") : "default";
 }
 
 /** Where Overtime's tools are, as this backend was given them. A stdio-only backend must be given a command. */
@@ -188,7 +212,7 @@ acp
   .onRequest("session/new", (ctx: any) => {
     const id = randomUUID();
     const http = toolsServer(ctx.params.mcpServers);
-    sessions.set(id, { cwd: ctx.params.cwd, tools: http, cost: 0 });
+    sessions.set(id, { cwd: ctx.params.cwd, tools: http, cost: 0, model: "default" });
     // Record which MCP servers this session was given, so tests can check what reached the backend.
     try {
       writeFileSync(join(ctx.params.cwd, ".mcp-seen"), (ctx.params.mcpServers ?? []).map((m: any) => m.name).join(",") + "\n");
@@ -202,10 +226,16 @@ acp
     } catch {}
     const http = toolsServer(ctx.params.mcpServers);
     const prev = sessions.get(ctx.params.sessionId);
-    sessions.set(ctx.params.sessionId, { cwd: ctx.params.cwd, tools: http, cost: prev?.cost ?? 0.05 });
+    sessions.set(ctx.params.sessionId, { cwd: ctx.params.cwd, tools: http, cost: prev?.cost ?? 0.05, model: prev?.model ?? savedModel(ctx.params.sessionId) });
     return {} as any;
   })
   .onRequest("session/set_mode", () => ({}) as any)
+  .onRequest("session/set_model" as any, (p: any) => p, (ctx: any) => {
+    const s = sessions.get(ctx.params.sessionId);
+    if (s) s.model = ctx.params.modelId;
+    if (process.env.OVERTIME_HOME) writeFileSync(join(process.env.OVERTIME_HOME, `.fake-model-${ctx.params.sessionId}`), ctx.params.modelId);
+    return {} as any;
+  })
   .onRequest("session/prompt", (ctx: any) => turn(ctx.params.sessionId, ctx.params.prompt.map((p: any) => p.text ?? "").join("\n"), ctx.client))
   .onNotification("session/cancel", () => {
     cancelled = true;

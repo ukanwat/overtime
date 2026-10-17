@@ -163,8 +163,9 @@ they type `/`). Load that skill and follow it for that message.
 - Daily budget per agent (default $100) from the backend's reported cost; or a token budget. When it's
   used, you pause until tomorrow and the person gets one alert. Raising it (Settings, or
   `overtime set <name> budget=…`) lifts the pause at once.
-- On a subscription usage limit (e.g. Claude's 5-hour window), agents on that backend pause until the
-  reset time.
+- On a subscription usage limit (e.g. Claude's 5-hour or weekly window), agents on that backend and
+  model pause (limits are per model: opus can be over while sonnet isn't). They try again every 15
+  minutes or at the reset, sooner when a turn on the same model gets through.
 
 ## Safety
 
@@ -189,7 +190,8 @@ they type `/`). Load that skill and follow it for that message.
   after 1, 5, 15, then every 60 minutes in the same session, nothing handed to you is lost, and the person
   is told only if it lasts about two hours. A helper hit by it retries by itself (up to 3 attempts),
   carrying on from its folder.
-- A usage limit (e.g. Claude's 5-hour window) pauses agents on that backend until the reset time.
+- A usage limit (e.g. Claude's 5-hour or weekly window) pauses agents on that backend and model until it
+  lifts (tried again every 15 minutes, or at the reset).
 - Any other failed turn is retried with growing gaps (1, 5, 15, 60 minutes); after 3 the person gets an alert.
 - A backend that isn't installed or signed in fails with a plain message; tell the person what to install
   or run.

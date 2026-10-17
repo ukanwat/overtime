@@ -22,15 +22,23 @@ export interface TurnUsage {
   incomplete?: boolean;
 }
 
-/** The latest subscription limit status a backend reported (e.g. Claude's 5-hour and 7-day limits). */
+/** The latest status a backend reported for one subscription limit (e.g. Claude's 5-hour or 7-day limit). */
 export interface LimitStatus {
   backend: string;
+  /** The model the turn ran on (null: the backend's default). */
+  model?: string | null;
   status: "allowed" | "allowed_warning" | "rejected";
   rateLimitType?: string;
   utilization?: number;
   /** Epoch seconds when the limit resets. */
   resetsAt?: number;
   updatedAt: string;
+}
+
+/** What is known about one backend and model's limits: each limit (window) as last reported, and the last turn that got through. */
+export interface ModelLimits {
+  windows: Record<string, LimitStatus>;
+  gotThroughAt?: string;
 }
 
 const usagePath = (agent: string) => join(paths.meta(agent), "usage.jsonl");
@@ -85,45 +93,107 @@ export async function usageToday(agent: string, now = new Date()): Promise<{ usd
 
 const limitsPath = () => join(paths.agentsDir(), "..", "limits.json");
 
-export async function readLimits(): Promise<Record<string, LimitStatus>> {
-  return readJson<Record<string, LimitStatus>>(limitsPath(), {});
+/**
+ * Limits are kept per backend and model: Claude's are per model (opus can be over its weekly limit while
+ * sonnet isn't), so one agent's turns say nothing about another's on a different model. The default
+ * model has its own key.
+ */
+export const limitKey = (backend: string, model?: string | null) => `${backend}/${model && model !== "default" ? model : "default"}`;
+/** A limit recorded before limits were kept per model: which model it was for isn't known, so it holds for all of the backend's. */
+const anyModel = (backend: string) => `${backend}/*`;
+/** Each limit is kept on its own, so an allowed 5-hour limit doesn't hide a used-up 7-day one. */
+const windowOf = (l: LimitStatus) => l.rateLimitType ?? "limit";
+
+export async function readLimits(): Promise<Record<string, ModelLimits>> {
+  const raw = await readJson<Record<string, any>>(limitsPath(), {});
+  const all: Record<string, ModelLimits> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (v && typeof v === "object" && v.windows) all[k] = v;
+    // The old format (one record per backend): only a limit still in force is worth keeping.
+    else if (v && typeof v.status === "string" && v.status === "rejected") all[anyModel(k)] = { windows: { [windowOf(v)]: { ...v, backend: k } } };
+  }
+  return all;
+}
+
+async function updateLimits(key: string, change: (m: ModelLimits) => void): Promise<void> {
+  await withLock("limits", async () => {
+    const all = await readLimits();
+    const m = (all[key] ??= { windows: {} });
+    change(m);
+    await writeJson(limitsPath(), all);
+  });
 }
 
 export async function writeLimit(l: LimitStatus): Promise<void> {
-  await withLock("limits", async () => {
-    const all = await readLimits();
-    all[l.backend] = l;
-    await writeJson(limitsPath(), all);
+  await updateLimits(limitKey(l.backend, l.model), (m) => {
+    m.windows[windowOf(l)] = l;
   });
 }
 
 /** How long a recorded limit is trusted before the backend is simply tried again. */
 export const LIMIT_RECHECK_MS = 15 * 60_000;
 
+/** The limits recorded as used up for this backend and model (whatever their time), with a reset not yet passed. */
+export async function rejectedLimits(backend: string, model?: string | null, now = Date.now()): Promise<LimitStatus[]> {
+  const all = await readLimits();
+  const ls = [...Object.values(all[limitKey(backend, model)]?.windows ?? {}), ...Object.values(all[anyModel(backend)]?.windows ?? {})];
+  return ls.filter((l) => l.status === "rejected" && !(l.resetsAt && l.resetsAt * 1000 <= now));
+}
+
 /**
- * If this backend was last seen over a usage limit: when it said the limit resets (if it said), and
- * when to try it again. A recorded limit is only what the backend said last time; it can lift early
+ * If this backend and model were last seen over a usage limit: when it said the limit resets (if it said),
+ * and when to try again. A recorded limit is only what the backend said last time; it can lift early
  * (the person upgrades, buys more, or the reset time was wrong), so it's tried again every 15 minutes
- * even before the reset, and the next turn that gets through clears it.
+ * even before the reset, and the next turn that gets through on the same model clears it.
  */
-export async function limitInfo(backend: string, now = Date.now()): Promise<{ resetsAt: Date | null; retryAt: Date } | null> {
-  const l = (await readLimits())[backend];
-  if (!l || l.status !== "rejected") return null;
-  const resetsAt = l.resetsAt ? new Date(l.resetsAt * 1000) : null;
-  const recheck = new Date(l.updatedAt).getTime() + LIMIT_RECHECK_MS;
-  const retryAt = new Date(Math.min(recheck, resetsAt?.getTime() ?? Infinity));
-  return retryAt.getTime() > now ? { resetsAt, retryAt } : null;
+export async function limitInfo(backend: string, model?: string | null, now = Date.now()): Promise<{ resetsAt: Date | null; retryAt: Date } | null> {
+  let found: { resetsAt: Date | null; retryAt: Date } | null = null;
+  for (const l of await rejectedLimits(backend, model, now)) {
+    const resetsAt = l.resetsAt ? new Date(l.resetsAt * 1000) : null;
+    const recheck = new Date(l.updatedAt).getTime() + LIMIT_RECHECK_MS;
+    const retryAt = new Date(Math.min(recheck, resetsAt?.getTime() ?? Infinity));
+    if (retryAt.getTime() <= now) continue;
+    // Over several limits at once: it waits for the last of them.
+    if (!found || retryAt > found.retryAt) found = { resetsAt, retryAt };
+    if (resetsAt && (!found.resetsAt || resetsAt > found.resetsAt)) found.resetsAt = resetsAt;
+  }
+  return found;
 }
 
-/** If this backend should be left alone for now (see limitInfo): until when. */
-export async function blockedUntil(backend: string, now = Date.now()): Promise<Date | null> {
-  return (await limitInfo(backend, now))?.retryAt ?? null;
+/** If this backend and model should be left alone for now (see limitInfo): until when. */
+export async function blockedUntil(backend: string, model?: string | null, now = Date.now()): Promise<Date | null> {
+  return (await limitInfo(backend, model, now))?.retryAt ?? null;
 }
 
-/** A turn on this backend got through: whatever limit was recorded for it is over. */
-export async function clearLimit(backend: string): Promise<void> {
-  const l = (await readLimits())[backend];
-  if (l?.status === "rejected") await writeLimit({ backend, status: "allowed", updatedAt: new Date().toISOString() });
+/** A turn just ended on a limit already recorded: it still holds, so it's trusted for another 15 minutes from now. */
+export async function confirmLimit(backend: string, model?: string | null): Promise<void> {
+  const t = new Date().toISOString();
+  await updateLimits(limitKey(backend, model), (m) => {
+    for (const l of Object.values(m.windows)) if (l.status === "rejected") l.updatedAt = t;
+  });
+}
+
+/** When a turn on this backend and model last got through after a limit (none recorded: null). */
+export async function gotThroughAt(backend: string, model?: string | null): Promise<Date | null> {
+  const t = (await readLimits())[limitKey(backend, model)]?.gotThroughAt;
+  return t ? new Date(t) : null;
+}
+
+/** A turn on this backend and model got through: the limits recorded for it are over, for every agent on that model (not on others). */
+export async function clearLimit(backend: string, model?: string | null): Promise<void> {
+  if (!(await rejectedLimits(backend, model, 0)).length) return;
+  const t = new Date().toISOString();
+  await updateLimits(limitKey(backend, model), (m) => {
+    for (const [w, l] of Object.entries(m.windows)) if (l.status === "rejected") m.windows[w] = { backend, model: l.model, status: "allowed", rateLimitType: l.rateLimitType, updatedAt: t };
+    m.gotThroughAt = t;
+  });
+  // An old record whose model isn't known: this turn shows it no longer holds for the backend.
+  await withLock("limits", async () => {
+    const all = await readLimits();
+    if (!all[anyModel(backend)]) return;
+    delete all[anyModel(backend)];
+    await writeJson(limitsPath(), all);
+  });
 }
 
 /**

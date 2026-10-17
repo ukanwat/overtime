@@ -60,6 +60,10 @@ export interface AgentState {
   lastError: string | null;
   /** When paused by a subscription usage limit: when it resumes. */
   pausedUntil?: string | null;
+  /** When the current pause began: a limit pause lifts early only for a turn on its model that got through after it. */
+  pausedAt?: string | null;
+  /** When its latest turns in a row ended on a usage limit (the last few; cleared by a turn that gets through). */
+  limitHits?: string[];
   /** Consecutive failed turns, for back-off. */
   failures?: number;
   /** Turns that hit a passing provider problem (a 502, overloaded): retried, never counted as failures. */

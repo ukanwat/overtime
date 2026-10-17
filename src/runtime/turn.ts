@@ -9,7 +9,7 @@ import { effectiveSettings, loadAgent, restoreSettings, updateState, type Agent 
 import type { McpServerConfig } from "../settings.js";
 import { INSTRUCTIONS_VERSION, workingInstructions } from "./instructions.js";
 import { answer } from "./permissions.js";
-import { clearLimit, readLimits, recordTurnUsage, writeLimit, type TurnUsage } from "./usage.js";
+import { clearLimit, confirmLimit, recordTurnUsage, rejectedLimits, writeLimit, type TurnUsage } from "./usage.js";
 import { classify } from "./errors.js";
 
 export type SessionKind = "main" | "chat" | "helper";
@@ -64,7 +64,12 @@ export interface TurnResult {
 
 /** The backend reported a subscription usage limit; nothing failed, the agent should pause until the reset. */
 export class UsageLimitError extends Error {
-  constructor(readonly backend: string, readonly resetsAt: Date | null) {
+  constructor(
+    readonly backend: string,
+    readonly resetsAt: Date | null,
+    /** The model the turn ran on: limits are per model. */
+    readonly model: string | null = null,
+  ) {
     super(`${backend} usage limit reached${resetsAt ? `; resets ${resetsAt.toISOString()}` : ""}`);
   }
 }
@@ -169,7 +174,7 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
           }
           const rl = uu._meta?.["_claude/rateLimit"];
           if (rl && typeof rl.status === "string") {
-            void writeLimit({ backend: eff.backend, status: rl.status, rateLimitType: rl.rateLimitType, utilization: rl.utilization, resetsAt: rl.resetsAt, updatedAt: new Date().toISOString() });
+            void writeLimit({ backend: eff.backend, model: eff.model ?? null, status: rl.status, rateLimitType: rl.rateLimitType, utilization: rl.utilization, resetsAt: rl.resetsAt, updatedAt: new Date().toISOString() });
             if (rl.status === "rejected") limitRejected = { resetsAt: rl.resetsAt ? new Date(rl.resetsAt * 1000) : null };
           }
         }
@@ -225,20 +230,24 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
       res = await session.prompt(prompt);
     } catch (e) {
       const lim = limitRejected as { resetsAt: Date | null } | null;
-      if (lim) throw new UsageLimitError(eff.backend, lim.resetsAt);
+      if (lim) throw new UsageLimitError(eff.backend, lim.resetsAt, eff.model ?? null);
       if (stopped) throw new TurnIncompleteError(stopped, promptSent);
-      // A usage limit, whichever backend says so: noted for the backend, so every agent on it waits
-      // (see blockedUntil), and reported as a limit rather than a failure.
+      // A usage limit, whichever backend says so: noted for the backend and model, so every agent on
+      // that model waits (see blockedUntil), and reported as a limit rather than a failure.
       // Claude reports a used-up subscription limit with the same error kind as a passing rate limit.
-      // What tells them apart is the limit status the backend itself last reported for the account
+      // What tells them apart is the limit status the backend itself last reported for this model
       // (its structured rate-limit updates, kept in limits.json): rejected, with a reset still ahead.
       if (classify(e) === "transient") {
-        const rec = (await readLimits())[eff.backend];
-        if (rec?.status === "rejected" && rec.resetsAt && rec.resetsAt * 1000 > Date.now()) throw new UsageLimitError(eff.backend, new Date(rec.resetsAt * 1000));
+        const resets = (await rejectedLimits(eff.backend, eff.model)).map((l) => (l.resetsAt ?? 0) * 1000).filter((t) => t > Date.now());
+        if (resets.length) {
+          // Still over it: trusted for another while, so other agents on this model don't try it meanwhile.
+          await confirmLimit(eff.backend, eff.model);
+          throw new UsageLimitError(eff.backend, new Date(Math.max(...resets)), eff.model ?? null);
+        }
       }
       if (classify(e) === "limit") {
-        await writeLimit({ backend: eff.backend, status: "rejected", updatedAt: new Date().toISOString() });
-        throw new UsageLimitError(eff.backend, null);
+        await writeLimit({ backend: eff.backend, model: eff.model ?? null, status: "rejected", updatedAt: new Date().toISOString() });
+        throw new UsageLimitError(eff.backend, null, eff.model ?? null);
       }
       throw e;
     }
@@ -255,9 +264,9 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
       context,
     });
     recorded = true;
-    if (limitRejected) throw new UsageLimitError(eff.backend, (limitRejected as { resetsAt: Date | null }).resetsAt);
-    // It got through: a limit recorded for this backend is over, for every agent on it.
-    await clearLimit(eff.backend);
+    if (limitRejected) throw new UsageLimitError(eff.backend, (limitRejected as { resetsAt: Date | null }).resetsAt, eff.model ?? null);
+    // It got through: a limit recorded for this backend and model is over, for every agent on that model.
+    await clearLimit(eff.backend, eff.model);
     if (o.kind === "main") await updateState(agent.name, { mainSessionId: session.sessionId, mainSessionBackend: eff.backend, mainSessionModel: eff.model ?? null, lastRunAt: new Date().toISOString() });
     if (stopped || res.stopReason === "cancelled") throw new TurnIncompleteError(stopped ?? "the backend cancelled the turn", true);
     return { runId, sessionId: session.sessionId, fresh, reply: reply.trim(), stopReason: res.stopReason, usage: res.usage ?? null, backend: eff.backend, usage2, context, modelIssue };
