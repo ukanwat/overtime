@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { fakeHome, until } from "./helpers.js";
 
 const home = fakeHome();
+const notes = process.env.OVERTIME_FAKE_NOTES!;
 // The scripted backend under Gemini's name too, to see what Overtime sets up for a Gemini session.
 const settingsFile = join(home, "settings.json");
 const settings = JSON.parse(readFileSync(settingsFile, "utf8"));
@@ -15,7 +16,7 @@ writeFileSync(settingsFile, JSON.stringify(settings));
 process.env.CLAUDE_CONFIG_DIR = mkdtempSync(join(tmpdir(), "overtime-claude-"));
 // Reflect passes are off by default for now; these tests cover them.
 process.env.OVERTIME_REFLECT = "1";
-const { Runtime, reflectDue, REFLECT_TURNS } = await import("../src/daemon/runtime.js");
+const { Runtime, reflectDue, REFLECT_CHUNK_CHARS, REFLECT_IDLE_MS, REFLECT_PASSES_PER_DAY, REFLECT_BACKOFF_MS } = await import("../src/daemon/runtime.js");
 const { loadAgent, setSettings, updateState } = await import("../src/agent/agent.js");
 const { paths } = await import("../src/paths.js");
 const { isolationMeta, CLAUDE_BUILTINS_OFF } = await import("../src/acp/session.js");
@@ -96,10 +97,12 @@ describe("importing Claude's memories", () => {
     const r = await mem.importClaudeMemory(agentDir, [agentDir, agentDir]);
     expect(r.files).toBe(3);
     const colour = readFileSync(join(agentDir, "memory", "colour.md"), "utf8");
-    expect(colour).toMatch(/type: feedback\nsource: agent\ndate: 2026-10-09\nlast-verified: 2026-10-09/);
+    // What the person said (Claude's feedback and user memories) is from the person; the rest was observed.
+    expect(colour).toMatch(/type: feedback\nsource: person\ndate: 2026-10-09\nlast-verified: 2026-10-09/);
     expect(colour).toContain("Purple is wanted.");
     expect(readFileSync(join(agentDir, "memory", "budget.md"), "utf8")).toBe("mine\n");
-    expect(readFileSync(join(agentDir, "memory", "budget.claude.md"), "utf8")).toContain("type: person");
+    expect(readFileSync(join(agentDir, "memory", "budget.claude.md"), "utf8")).toContain("type: person\nsource: person");
+    expect(readFileSync(join(agentDir, "memory", "unlisted.md"), "utf8")).toContain("type: project\nsource: observed");
     expect(readFileSync(join(agentDir, "memory", "MEMORY.md"), "utf8")).toBe(
       "- [Mine](budget.md) — my own budget note\n- [Colour](colour.md) — purple is wanted\n- [Budget](budget.claude.md) — keep under $20\n- [Unlisted](unlisted.md) — not in Claude's index\n",
     );
@@ -112,12 +115,12 @@ describe("importing Claude's memories", () => {
 });
 
 describe("the index and its cap", () => {
-  it("shows the whole index, and past the cap tells the agent to consolidate rather than cutting it", () => {
+  it("shows the whole index, and past the cap has a note to consolidate rather than cutting it", () => {
     const long = Array.from({ length: mem.MEMORY_CAP_LINES + 5 }, (_, i) => `- [M${i}](m${i}.md) — rule ${i}`).join("\n");
-    const shown = mem.memoryText(long);
-    expect(shown).toContain(`rule ${mem.MEMORY_CAP_LINES + 4}`);
-    expect(shown).toContain(`over the ${mem.MEMORY_CAP_LINES}-line cap. Consolidate it now`);
+    expect(mem.memoryText(long)).toContain(`rule ${mem.MEMORY_CAP_LINES + 4}`);
+    expect(mem.memoryOverCap(long)).toContain(`over the ${mem.MEMORY_CAP_LINES}-line cap. Before this turn ends, merge overlapping memories`);
     expect(mem.memoryText("- [A](a.md) — b")).toBe("- [A](a.md) — b");
+    expect(mem.memoryOverCap("- [A](a.md) — b")).toBe("");
   });
 });
 
@@ -130,9 +133,11 @@ describe("history", () => {
     writeFileSync(join(dir, "draft.txt"), "not history\n");
     mkdirSync(join(dir, ".overtime"));
     writeFileSync(join(dir, ".overtime", "state.json"), "{}");
-    const id = await mem.commitHistory(dir, "turn main_1: a test");
+    const id = await mem.commitHistory(dir, "turn main_1", { body: "Why it was awake: a test" });
     expect(id).toBeTruthy();
-    expect(git(dir, "log", "--format=%an <%ae>|%s").trim()).toBe("Overtime <overtime@localhost>|turn main_1: a test");
+    // The message says what changed, then what started it; the body has the rules that came and went.
+    expect(git(dir, "log", "--format=%an <%ae>|%s").trim()).toBe("Overtime <overtime@localhost>|added .gitignore, AGENT.md; memory: added MEMORY.md (turn main_1)");
+    expect(git(dir, "log", "-1", "--format=%b").trim()).toBe("Why it was awake: a test\n\nAdded: [A](a.md) — b");
     expect(git(dir, "show", "--name-only", "--format=", "HEAD").trim().split("\n").sort()).toEqual([".gitignore", "AGENT.md", "memory/MEMORY.md"]);
     expect(readFileSync(join(dir, ".gitignore"), "utf8")).toContain(".overtime/");
     // Only what isn't history shows as untracked: not its own .gitignore.
@@ -140,8 +145,14 @@ describe("history", () => {
     // Nothing changed: no commit. A deletion is committed too.
     expect(await mem.commitHistory(dir, "turn main_2")).toBeNull();
     execFileSync("rm", [join(dir, "memory", "MEMORY.md")]);
+    writeFileSync(join(dir, "memory", "b.md"), "b\n");
+    mkdirSync(join(dir, "skills", "deploy"), { recursive: true });
+    writeFileSync(join(dir, "skills", "deploy", "SKILL.md"), "---\nname: deploy\n---\n");
+    writeFileSync(join(dir, "AGENT.md"), "# a\n\nMore.\n");
     expect(await mem.commitHistory(dir, "turn main_3")).toBeTruthy();
-    expect(git(dir, "show", "--name-status", "--format=", "HEAD").trim()).toBe("D\tmemory/MEMORY.md");
+    expect(git(dir, "show", "--name-status", "--format=", "HEAD").trim().split("\n")).toContain("D\tmemory/MEMORY.md");
+    expect(git(dir, "log", "-1", "--format=%s").trim()).toBe("edited AGENT.md; memory: added b.md, removed MEMORY.md; skill deploy: added SKILL.md (turn main_3)");
+    expect(git(dir, "log", "-1", "--format=%b").trim()).toBe("Removed: [A](a.md) — b");
     expect(await mem.inHistoryRepo(dir)).toBe(true);
   });
 
@@ -158,17 +169,46 @@ describe("history", () => {
 describe("when a reflect pass is due", () => {
   const base = { formatVersion: 1, status: "asleep", activity: "", nextWake: null, mainSessionId: null, mainSessionBackend: null, createdAt: "", lastRunAt: null, lastError: null } as any;
   const now = Date.parse("2026-10-17T12:00:00Z");
-  it("after enough turns, at most once a day; after a compaction, sooner", () => {
-    expect(reflectDue({ ...base, turnsSinceReflect: REFLECT_TURNS - 1 }, now)).toBeNull();
-    expect(reflectDue({ ...base, turnsSinceReflect: REFLECT_TURNS }, now)).toMatch(/turns since the last pass/);
-    expect(reflectDue({ ...base, turnsSinceReflect: 20, lastReflectAt: "2026-10-17T00:00:00Z" }, now)).toBeNull();
-    expect(reflectDue({ ...base, turnsSinceReflect: 1, compactedSinceReflect: true, lastReflectAt: "2026-10-17T10:00:00Z" }, now)).toBe("its session was compacted");
-    expect(reflectDue({ ...base, turnsSinceReflect: 1, compactedSinceReflect: true, lastReflectAt: "2026-10-17T11:30:00Z" }, now)).toBeNull();
+  const ago = (ms: number) => new Date(now - ms);
+  const today = { passes: 0, usd: 0, budgetUsd: 100 };
+  const some = { turns: 3, chars: 5_000, newest: ago(10 * 60_000) };
+  it("by how much is unread, a compaction, or idle time; never with nothing unread", () => {
+    expect(reflectDue(base, { turns: 0, chars: 0, newest: null }, today, now)).toBeNull();
+    // A little, just now: it waits.
+    expect(reflectDue(base, some, today, now)).toBeNull();
+    // A chunk's worth: now, however recent.
+    expect(reflectDue(base, { turns: 40, chars: REFLECT_CHUNK_CHARS, newest: ago(60_000) }, today, now)).toBe("40 turns not reflected yet");
+    // Compacted: now.
+    expect(reflectDue({ ...base, compactedSinceReflect: true }, some, today, now)).toBe("its session was compacted; 3 turns not reflected yet");
+    // A little, but idle a while: now.
+    expect(reflectDue(base, { ...some, newest: ago(REFLECT_IDLE_MS) }, today, now)).toBe("idle, 3 turns not reflected yet");
+    expect(reflectDue({ ...base, lastRunAt: ago(60_000).toISOString() }, { ...some, newest: ago(REFLECT_IDLE_MS) }, today, now)).toBeNull();
+  });
+
+  it("at most so many passes, and so much of the budget, a day", () => {
+    const big = { turns: 40, chars: REFLECT_CHUNK_CHARS * 3, newest: ago(60_000) };
+    expect(reflectDue(base, big, { ...today, passes: REFLECT_PASSES_PER_DAY - 1 }, now)).toBeTruthy();
+    expect(reflectDue(base, big, { ...today, passes: REFLECT_PASSES_PER_DAY }, now)).toBeNull();
+    expect(reflectDue(base, big, { ...today, usd: 9.99 }, now)).toBeTruthy();
+    expect(reflectDue(base, big, { ...today, usd: 10 }, now)).toBeNull();
+  });
+
+  it("after a pass was stopped or failed, only once it has been idle a while, longer each time in a row", () => {
+    const big = { turns: 40, chars: REFLECT_CHUNK_CHARS * 3, newest: ago(6 * 3600_000) };
+    const stopped = (n: number, at: number) => ({ ...base, reflectStops: n, reflectStoppedAt: ago(at).toISOString() });
+    expect(reflectDue(stopped(1, REFLECT_BACKOFF_MS - 60_000), big, today, now)).toBeNull();
+    expect(reflectDue(stopped(1, REFLECT_BACKOFF_MS), big, today, now)).toBeTruthy();
+    // The person kept writing: idle counts from their last turn, not from the stop.
+    expect(reflectDue({ ...stopped(1, 3600_000), lastRunAt: ago(5 * 60_000).toISOString() }, big, today, now)).toBeNull();
+    expect(reflectDue(stopped(2, REFLECT_BACKOFF_MS), big, today, now)).toBeNull();
+    expect(reflectDue(stopped(2, 2 * REFLECT_BACKOFF_MS), big, today, now)).toBeTruthy();
+    // Never more than 4 hours.
+    expect(reflectDue(stopped(9, 4 * 3600_000), big, today, now)).toBeTruthy();
   });
   it("never, unless reflect passes are turned on", () => {
     delete process.env.OVERTIME_REFLECT;
     try {
-      expect(reflectDue({ ...base, turnsSinceReflect: 50, compactedSinceReflect: true }, now)).toBeNull();
+      expect(reflectDue({ ...base, compactedSinceReflect: true }, { turns: 40, chars: REFLECT_CHUNK_CHARS * 3, newest: ago(6 * 3600_000) }, today, now)).toBeNull();
     } finally {
       process.env.OVERTIME_REFLECT = "1";
     }
@@ -215,14 +255,15 @@ describe("memory in a running agent", () => {
     const third = prompts("rem")[2];
     expect(third).toContain("memory/MEMORY.md (your memory index");
     expect(third).toContain("changed since your last turn. It now reads:\n\n- [Phone first](phone.md) — every frame must read at phone size\n- [Short](short.md) — keep replies short");
-    expect(third).toContain("if you were corrected or worked out how to do something, save it as a memory (memory/) or a skill");
+    expect(third).toContain("if you were corrected or worked out how to do something, save it: a how-to as a skill, anything else as a memory (memory/).");
   });
 
   it("commits memory/, skills/, AGENT.md, INDEX.md and .gitignore after each turn, and nothing else", async () => {
     const dir = paths.agent("rem");
-    const log = git(dir, "log", "--format=%an|%s");
-    expect(log).toMatch(/^Overtime\|turn main_\S+: the person sent you a message/m);
-    expect(log).toMatch(/^Overtime\|turn main_\S+: the person sent you your first message/m);
+    const log = git(dir, "log", "--format=%an|%s|%b");
+    // What changed, then the turn; why it was awake in the body.
+    expect(log).toMatch(/^Overtime\|added \.gitignore, AGENT\.md, INDEX\.md; memory: added MEMORY\.md, phone\.md \(turn main_\S+\)\|Why it was awake: the person sent you your first message/m);
+    expect(log).toMatch(/^Overtime\|memory: edited MEMORY\.md \(turn main_\S+\)\|Why it was awake: the person sent you a message\n\nAdded: \[Short\]\(short\.md\) — keep replies short/m);
     const files = git(dir, "ls-files").trim().split("\n");
     expect(files).toEqual(expect.arrayContaining(["AGENT.md", "INDEX.md", "memory/MEMORY.md", "memory/phone.md"]));
     // The fake wrote notes/ and its own files in the folder: none of that is history.
@@ -230,21 +271,23 @@ describe("memory in a running agent", () => {
     expect(git(dir, "status", "--porcelain", "--", "memory", "AGENT.md", "INDEX.md").trim()).toBe("");
   });
 
-  it("runs a reflect pass only when due and idle: it edits memory/ alone, with file tools only, quietly, and is committed", async () => {
+  it("runs a reflect pass only when due and idle: it may change memory/ alone, sees its rules and skills, reads on from a cursor, quietly, and is committed", async () => {
     await rt.create("refl");
     await tell("refl", "Your job is testing.");
     await tell("refl", "REFLECT_TAMPER you forgot to check the render");
     const dir = paths.agent("refl");
     const reflectRuns = () => readdirSync(join(paths.meta("refl"), "runs")).filter((f) => f.startsWith("reflect_"));
     const messages = (await rt.store("refl").messages()).length;
+    mkdirSync(join(dir, "skills", "render"), { recursive: true });
+    writeFileSync(join(dir, "skills", "render", "SKILL.md"), "---\nname: render\ndescription: how to render a shot\n---\n\n1. Render.\n");
+    // An MCP server of the agent's own: a reflect pass doesn't get it.
+    writeFileSync(join(dir, "mcp.json"), JSON.stringify({ mcpServers: { mailer: { command: "true" } } }));
 
-    // Not due yet, and not while paused: nothing runs.
-    await updateState("refl", { turnsSinceReflect: REFLECT_TURNS - 1 });
+    // Not due yet (two short turns, just now), and not while over its budget: nothing runs.
     await new Promise((r) => setTimeout(r, 6_000));
     expect(reflectRuns()).toHaveLength(0);
-    // Over its budget (a pause): nothing runs either.
     await setSettings("refl", { dailyBudgetUsd: 0 });
-    await updateState("refl", { turnsSinceReflect: REFLECT_TURNS });
+    await updateState("refl", { compactedSinceReflect: true });
     await new Promise((r) => setTimeout(r, 6_000));
     expect(reflectRuns()).toHaveLength(0);
 
@@ -252,32 +295,59 @@ describe("memory in a running agent", () => {
     await setSettings("refl", { dailyBudgetUsd: null });
     const agentMd = readFileSync(join(dir, "AGENT.md"), "utf8");
     await updateState("refl", { status: "asleep", pausedUntil: null, pauseReason: null });
-    await until(async () => (await loadAgent("refl")).state.turnsSinceReflect === 0 && (await rt.store("refl").reports()).some((r) => r.text.startsWith("Reflect pass")), 40_000, "a reflect pass");
+    await until(async () => (await rt.store("refl").reports()).some((r) => r.text.startsWith("Reflect pass")), 40_000, "a reflect pass");
     expect(reflectRuns()).toHaveLength(1);
-    const seen = readFileSync(join(home, "reflect-seen-refl.txt"), "utf8");
-    // Only Overtime's skill tool; what it did since the last pass, with run ids; and its memory.
+    const seen = readFileSync(join(notes, "reflect-seen-refl.txt"), "utf8");
+    // Only Overtime's own tools server, with the skill tool; none of the agent's servers.
     expect(seen.split("\n")[0]).toBe("skill");
-    expect(seen).toMatch(/## Turn at .* \(run main_\S+\)/);
-    expect(seen).toContain("you forgot to check the render");
-    expect(seen).toContain("Never touch AGENT.md, INDEX.md, settings, .overtime/ or anything outside the folder");
-    // Its edit is in memory/, AGENT.md is as it was, and the commit has only memory/.
+    expect(seen.split("\n")[1]).toBe("servers: overtime");
+    // What it did, oldest first with run ids; its rules and skills to compare against, read-only.
+    expect(seen).toMatch(/## Turn at .* UTC \(run main_\S+\)/);
+    expect(seen.indexOf("Your job is testing.")).toBeLessThan(seen.indexOf("you forgot to check the render"));
+    expect(seen).toContain("# AGENT.md (read-only: never edit it)\n\n# fake");
+    expect(seen).toContain("# INDEX.md (read-only)\n\n# Index");
+    expect(seen).toContain(`- render (its own, ${join(dir, "skills", "render", "SKILL.md")}): how to render a shot`);
+    expect(seen).toContain("Change nothing outside");
+    // No boilerplate from the turns: not the reply reminder, not the time line.
+    const digest = seen.slice(seen.indexOf("# What refl did"));
+    expect(digest).not.toContain("Reply with send to new messages");
+    expect(digest).not.toMatch(/^Time now: /m);
+    expect(digest).toMatch(/It was told:\nWhy you are awake: the person sent you a message\n\nYour inbox/);
+    // Its edit is in memory/. Its tries at AGENT.md and a file beside it didn't stay, and the commit has only memory/.
     expect(readFileSync(join(dir, "memory", "reflected.md"), "utf8")).toMatch(/runs: \[main_\S+\]/);
     expect(readFileSync(join(dir, "AGENT.md"), "utf8")).toBe(agentMd);
+    if (sandboxAvailable().ok) {
+      expect(readFileSync(join(notes, "reflect-tamper-refl.txt"), "utf8")).toBe("denied");
+      expect(existsSync(join(dir, "notes-outside-memory.txt"))).toBe(false);
+    } else expect(lines.some((l) => l.includes("[refl/reflect] changed") && l.includes("AGENT.md") && l.includes("put it back"))).toBe(true);
+    expect(readFileSync(join(dir, "skills", "render", "SKILL.md"), "utf8")).toContain("1. Render.");
     const last = git(dir, "log", "-1", "--format=%an|%s").trim();
-    expect(last).toMatch(new RegExp(`^Overtime\\|reflect ${new Date().toISOString().slice(0, 10)} \\(${REFLECT_TURNS} turns since the last pass\\), reflect_\\S+$`));
+    expect(last).toMatch(/^Overtime\|memory: added MEMORY\.md, reflected\.md \(reflect reflect_\S+\)$/);
+    expect(git(dir, "log", "-1", "--format=%b")).toMatch(/^Reflect pass on \d{4}-\d\d-\d\d \(its session was compacted; 2 turns not reflected yet\), over its turns .* UTC\.\n\nreflected: added reflected\.md\n\nAdded: \[Check renders\]/);
     expect(git(dir, "show", "--name-only", "--format=", "HEAD").trim().split("\n").sort()).toEqual(["memory/MEMORY.md", "memory/reflected.md"]);
     // Nothing to the person: no message, one quiet activity line.
     expect((await rt.store("refl").messages()).length).toBe(messages);
     expect((await rt.store("refl").reports()).at(-1)!.text).toMatch(/^Reflect pass: updated its memory \(commit \w+/);
-    // It counts toward the budget.
+    // It counts toward the budget, and toward the day's passes.
     const usage = readFileSync(join(paths.meta("refl"), "usage.jsonl"), "utf8");
     expect(usage).toContain('"kind":"reflect"');
+    const st = (await loadAgent("refl")).state;
+    expect(st.reflectDay?.passes).toBe(1);
+    expect(st.compactedSinceReflect).toBe(false);
+    // The cursor is at the last turn it read; the next pass reads on from there, not again.
+    const mains = readdirSync(join(paths.meta("refl"), "runs")).filter((f) => f.startsWith("main_")).sort();
+    expect(st.reflectCursor).toBe(mains.at(-1)!.replace(/\.jsonl$/, ""));
     // The next turn is told its memory changed.
     await tell("refl", "Next.");
     expect(prompts("refl").at(-1)).toContain("- [Check renders](reflected.md) — watch the whole render before sending it");
+    await updateState("refl", { compactedSinceReflect: true });
+    await until(async () => reflectRuns().length === 2 && !(rt as any).reflecting.has("refl"), 40_000, "a second pass");
+    const second = readFileSync(join(notes, "reflect-seen-refl.txt"), "utf8");
+    expect(second).toContain("Next.");
+    expect(second).not.toContain("you forgot to check the render");
   });
 
-  it("stops a reflect pass for real work: the main turn waits for it to stop, and it records one row only if a cost was reported", async () => {
+  it("stops a reflect pass for real work: the main turn waits for it to stop, it records one row only if a cost was reported, and it backs off", async () => {
     await rt.create("rcan");
     await tell("rcan", "Your job is testing.");
     const runs = (prefix: string) => readdirSync(join(paths.meta("rcan"), "runs")).filter((f) => f.startsWith(prefix));
@@ -286,14 +356,15 @@ describe("memory in a running agent", () => {
       readFileSync(join(paths.meta("rcan"), "usage.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((r) => r.runId === runId);
     for (const [mark, rows] of [["", 0], ["cost", 1]] as const) {
       await until(async () => !(rt as any).reflecting.has("rcan"), 40_000, "no reflect pass running");
-      writeFileSync(join(home, "reflect-slow"), mark);
+      writeFileSync(join(notes, "reflect-slow"), mark);
       const before = new Set(runs("reflect_"));
-      await updateState("rcan", { turnsSinceReflect: REFLECT_TURNS, lastReflectAt: null });
-      const f = await until(async () => !existsSync(join(home, "reflect-slow")) && runs("reflect_").find((x) => !before.has(x) && events(x).some((e) => e.event === "prompt")), 40_000, "a reflect pass under way");
-      rmSync(join(home, "reflect-stopped-at"), { force: true });
+      await updateState("rcan", { compactedSinceReflect: true, reflectStops: 0, reflectStoppedAt: null });
+      const f = await until(async () => !existsSync(join(notes, "reflect-slow")) && runs("reflect_").find((x) => !before.has(x) && events(x).some((e) => e.event === "prompt")), 40_000, "a reflect pass under way");
+      rmSync(join(notes, "reflect-stopped-at"), { force: true });
+      const cursor = (await loadAgent("rcan")).state.reflectCursor;
       await tell("rcan", "Real work.");
       // The pass had stopped before the main turn began.
-      const stoppedAt = Number(readFileSync(join(home, "reflect-stopped-at"), "utf8"));
+      const stoppedAt = Number(readFileSync(join(notes, "reflect-stopped-at"), "utf8"));
       const main = runs("main_").map(events).sort((a, b) => a[0].t.localeCompare(b[0].t)).at(-1)!;
       expect(new Date(main[0].t).getTime()).toBeGreaterThanOrEqual(stoppedAt);
       expect(lines.some((l) => l.includes("[rcan] reflect pass stopped: its main session has work"))).toBe(true);
@@ -301,13 +372,19 @@ describe("memory in a running agent", () => {
       const got = usage(f.replace(/\.jsonl$/, ""));
       expect(got).toHaveLength(rows);
       if (rows) expect(got[0].turnCostUsd).toBeCloseTo(0.02);
+      // What it was reading is read again later (the cursor stayed), after a wait: not straight away.
+      const st = (await loadAgent("rcan")).state;
+      expect(st.reflectCursor).toBe(cursor);
+      expect(st.reflectStops).toBe(1);
+      const n = runs("reflect_").length;
+      await new Promise((r) => setTimeout(r, 6_000));
+      expect(runs("reflect_").length).toBe(n);
     }
   });
 
   it("notes a compaction the backend reports, and reflects after it", async () => {
     await rt.create("comp");
     await tell("comp", "Your job is testing.");
-    await updateState("comp", { lastReflectAt: new Date(Date.now() - 2 * 3600_000).toISOString() });
     await tell("comp", "COMPACT please");
     await until(async () => lines.some((l) => l.includes("[comp] committed") && l.includes("reflect") && l.includes("its session was compacted")), 40_000, "a reflect pass after compaction");
     expect((await loadAgent("comp")).state.compactedSinceReflect).toBe(false);

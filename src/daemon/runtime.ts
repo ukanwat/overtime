@@ -21,7 +21,8 @@ import { AcpSession } from "../acp/session.js";
 import { promptWasSent, runTurn, sessionPreamble, TurnIncompleteError, UsageLimitError, type TurnResult } from "../runtime/turn.js";
 import { blockedUntil, gotThroughAt, limitInfo, LIMIT_RECHECK_MS, rejectedLimits, usageToday, type TurnUsage } from "../runtime/usage.js";
 import { reflectInstructions, workingInstructions } from "../runtime/instructions.js";
-import { commitHistory, ensureHistory, importClaudeMemory, inHistoryRepo, memoryText } from "../agent/memory.js";
+import { commitHistory, ensureHistory, importClaudeMemory, importHelperClaudeMemory, inHistoryRepo, memoryOverCap, memoryText } from "../agent/memory.js";
+import { recentTurns, runIds, runTime, unreadChunk, unreadVolume } from "../agent/runlog.js";
 import { StepBoundary } from "../runtime/boundary.js";
 import { MonitorRunner, reapStaleMonitors } from "./monitors.js";
 import { classify, isTransient, needsPerson } from "../runtime/errors.js";
@@ -69,13 +70,23 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * The reflect pass: a short session that keeps an agent's memory/ and skills/ current from what it did.
- * Due once its backend compacted the main session (Claude says so), or after this many main turns, and
- * only while the agent is idle; the turn-count one at most once a day.
+ * The reflect pass: a short session that keeps an agent's memory/ current from what it did. It reads
+ * the agent's turns and chats once each, oldest first, from a cursor (the last run it read), a chunk at
+ * a time, over as many passes as it takes. One is due while the agent is idle and a chunk's worth is
+ * unread, its session was compacted, or it has been idle a while with anything unread; at most
+ * REFLECT_PASSES_PER_DAY a day and REFLECT_BUDGET_SHARE of its daily budget.
  */
-export const REFLECT_TURNS = 8;
-const REFLECT_GAP_MS = 24 * 3600_000;
-const REFLECT_AFTER_COMPACTION_GAP_MS = 3600_000;
+export const REFLECT_CHUNK_CHARS = 80_000;
+export const REFLECT_IDLE_MS = 3600_000;
+export const REFLECT_PASSES_PER_DAY = 10;
+export const REFLECT_BUDGET_SHARE = 0.1;
+/** Where an agent's first pass starts: this far back (older turns were seen by no pass, but they're old). */
+export const REFLECT_BACKLOG_DAYS = 7;
+/** After a pass is stopped (the person wrote) or fails: this much idle time first, doubling for each in a row. */
+export const REFLECT_BACKOFF_MS = 30 * 60_000;
+const REFLECT_BACKOFF_MAX_MS = 4 * 3600_000;
+/** A part of its history that failed this many passes in a row is passed over, so it can't fail forever. */
+const REFLECT_FAILS_BEFORE_SKIP = 3;
 const REFLECT_TIMEOUT_MS = 15 * 60_000;
 /** Claude Code tools a reflect pass doesn't get: it works with file tools only. */
 const REFLECT_TOOLS_OFF = ["Bash", "BashOutput", "KillShell", "WebFetch", "WebSearch", "NotebookEdit", "Monitor"];
@@ -86,13 +97,33 @@ const REFLECT_TOOLS_OFF = ["Bash", "BashOutput", "KillShell", "WebFetch", "WebSe
  */
 const reflectOn = () => process.env.OVERTIME_REFLECT === "1";
 
-/** Why a reflect pass is due for this agent now, or null. */
-export function reflectDue(s: AgentState, now = Date.now()): string | null {
+/** What a pass would read: unread turns, how long their digest is, and when the newest began. */
+export type ReflectBacklog = { turns: number; chars: number; newest: Date | null };
+/** Today's reflecting so far, against the caps. */
+export type ReflectToday = { passes: number; usd: number; budgetUsd: number };
+
+/** A day as the person's clock has it (YYYY-MM-DD). */
+export function localDate(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** Why a reflect pass is due for this agent now (it is idle), or null. */
+export function reflectDue(s: AgentState, backlog: ReflectBacklog, today: ReflectToday, now = Date.now()): string | null {
   if (!reflectOn()) return null;
-  const turns = s.turnsSinceReflect ?? 0;
-  const since = s.lastReflectAt ? now - new Date(s.lastReflectAt).getTime() : Infinity;
-  if (s.compactedSinceReflect && turns >= 1 && since >= REFLECT_AFTER_COMPACTION_GAP_MS) return "its session was compacted";
-  if (turns >= REFLECT_TURNS && since >= REFLECT_GAP_MS) return `${turns} turns since the last pass`;
+  if (!backlog.turns) return null;
+  if (today.passes >= REFLECT_PASSES_PER_DAY) return null;
+  if (today.budgetUsd > 0 && today.usd >= today.budgetUsd * REFLECT_BUDGET_SHARE) return null;
+  const lastWork = Math.max(backlog.newest?.getTime() ?? 0, s.lastRunAt ? Date.parse(s.lastRunAt) : 0);
+  // Stopped or failed last time: not again until it has been idle a while, longer for each in a row, so
+  // a chatty day doesn't pay for one partial pass after another.
+  if (s.reflectStops) {
+    const wait = Math.min(REFLECT_BACKOFF_MS * 2 ** (s.reflectStops - 1), REFLECT_BACKOFF_MAX_MS);
+    if (now - Math.max(lastWork, s.reflectStoppedAt ? Date.parse(s.reflectStoppedAt) : 0) < wait) return null;
+  }
+  const what = `${backlog.turns} turn${backlog.turns === 1 ? "" : "s"} not reflected yet`;
+  if (s.compactedSinceReflect) return `its session was compacted; ${what}`;
+  if (backlog.chars >= REFLECT_CHUNK_CHARS) return what;
+  if (now - lastWork >= REFLECT_IDLE_MS) return `idle, ${what}`;
   return null;
 }
 
@@ -495,8 +526,8 @@ export class Runtime extends EventEmitter implements ToolHost {
       this.changed(a.name, "state");
     }
     // Idle (asleep, no main turn, no helpers): time to reflect, if one is due.
-    const trigger = a.state.status === "asleep" && hasIdentity(a) ? reflectDue(a.state, now.getTime()) : null;
-    if (trigger && !this.reflecting.has(a.name) && !(await store.helpers()).some((h) => h.status === "running")) {
+    const trigger = a.state.status === "asleep" && hasIdentity(a) && !this.reflecting.has(a.name) && !(await store.helpers()).some((h) => h.status === "running") ? await this.reflectTrigger(a, now) : null;
+    if (trigger) {
       const ctl = new AbortController();
       const done = this.reflect(a.name, trigger, ctl)
         .catch((e) => this.log(`[${a.name}] reflect: ${e?.stack ?? e}`))
@@ -590,6 +621,15 @@ export class Runtime extends EventEmitter implements ToolHost {
         agent = await loadAgent(agentName);
       }
     }
+    // And once, what Claude kept in its helpers' folders (an agent imported before this came in gets it too).
+    if (!agent.state.helperMemoryImportedAt) {
+      const r = await importHelperClaudeMemory(agent.dir).catch((e) => (this.log(`[${agentName}] importing its helpers' Claude memories: ${e?.message ?? e}`), null));
+      if (r) {
+        await updateState(agentName, { helperMemoryImportedAt: new Date().toISOString() });
+        if (r.files) this.log(`[${agentName}] copied ${r.files} of Claude's memories from its helpers' folders into memory/ (from ${r.from.length} helper${r.from.length === 1 ? "" : "s"}; the originals are kept)`);
+        agent = await loadAgent(agentName);
+      }
+    }
 
     const firstJob = !hasIdentity(agent);
     const runId = newId("main");
@@ -632,7 +672,7 @@ export class Runtime extends EventEmitter implements ToolHost {
         // If resuming fails, the backend starts fresh, and the agent is told so.
         // A fresh session also gets the recent conversation with the person: it's the one voice they talk to.
         // Items an unfinished turn already showed this same session are marked as such; a fresh one gets them as new.
-        text: (fresh) => (fresh ? recentConversation(convo) : newInstructions + edits) + mainTurnText(items, firstJob, fresh && !!agent.state.mainSessionId, fresh ? null : resume),
+        text: (fresh) => (fresh ? recentConversation(convo) : newInstructions + edits) + mainTurnText(items, firstJob, fresh && !!agent.state.mainSessionId, fresh ? null : resume, memoryOverCap(agent.memory)),
         switchModel: !sameModel,
         header: await this.turnHeader(agentName),
         resumeSessionId: resume,
@@ -752,7 +792,7 @@ export class Runtime extends EventEmitter implements ToolHost {
       if (this.boundaries.get(agentName) === boundary) this.boundaries.delete(agentName);
       this.tools.close(ctx.token);
       // Whatever the turn changed in memory/, skills/, AGENT.md and INDEX.md goes into the folder's history.
-      await this.commit(agentName, `turn ${runId}: ${reason.split("\n")[0].slice(0, 120)}`);
+      await this.commit(agentName, `turn ${runId}`, { body: `Why it was awake: ${reason.split("\n")[0].slice(0, 200)}` });
       this.emit("turnEnd", { agent: agentName, kind: "main" });
       await this.refreshNextWake(agentName).catch(() => {});
       this.changed(agentName, "state");
@@ -763,7 +803,7 @@ export class Runtime extends EventEmitter implements ToolHost {
    * Commit the agent's memory/, skills/, AGENT.md and INDEX.md to its folder's history. A folder that is a
    * git repository of the agent's own isn't committed to: noted once.
    */
-  private async commit(agentName: string, message: string, only?: string[]): Promise<void> {
+  private async commit(agentName: string, tag: string, opts: { body?: string; only?: string[] } = {}): Promise<void> {
     try {
       const dir = paths.agent(agentName);
       const h = await ensureHistory(dir);
@@ -775,43 +815,73 @@ export class Runtime extends EventEmitter implements ToolHost {
         }
         return;
       }
-      const id = await commitHistory(dir, message, only);
-      if (id) this.log(`[${agentName}] committed ${id}: ${message.slice(0, 80)}`);
+      const id = await commitHistory(dir, tag, opts);
+      if (id) this.log(`[${agentName}] committed ${id} (${tag})${opts.body ? `: ${opts.body.split("\n")[0].slice(0, 120)}` : ""}`);
     } catch (e: any) {
       this.log(`[${agentName}] history commit failed: ${String(e?.message ?? e).split("\n")[0]}`);
     }
   }
 
+  /** Where this agent's reflecting reads on from: its cursor, or for its first pass, the start of its last few days. */
+  private async reflectCursor(a: Agent, now = Date.now()): Promise<string | null> {
+    if (a.state.reflectCursor !== undefined) return a.state.reflectCursor;
+    const from = now - REFLECT_BACKLOG_DAYS * 86400_000;
+    const cursor = (await runIds(a.name)).filter((id) => runTime(id) < from).at(-1) ?? null;
+    await updateState(a.name, { reflectCursor: cursor });
+    a.state.reflectCursor = cursor;
+    return cursor;
+  }
+
+  /** Why a reflect pass is due for an idle agent now (see reflectDue), or null. */
+  private async reflectTrigger(a: Agent, now: Date): Promise<string | null> {
+    const backlog = await unreadVolume(a.name, await this.reflectCursor(a, now.getTime()), now.getTime());
+    if (!backlog.turns) return null;
+    const day = localDate(now);
+    const passes = a.state.reflectDay?.day === day ? a.state.reflectDay.passes : 0;
+    const usd = (await usageToday(a.name, now, "reflect")).usd;
+    return reflectDue(a.state, backlog, { passes, usd, budgetUsd: (await effectiveSettings(a)).dailyBudgetUsd }, now.getTime());
+  }
+
   /**
-   * A reflect pass: a short session, in the agent's folder, that reads its main turns since the last pass
-   * and makes small edits to memory/ and skills/ (each citing the run it comes from). It counts toward the
-   * agent's budget, waits while it's paused or over a limit, and posts nothing to the person: one quiet
-   * line in its activity, and a commit in its folder's history.
+   * A reflect pass: a short session, in the agent's folder, that reads the next part of what it did
+   * (from its cursor, oldest first, a chunk at a time) and makes small edits to memory/, each citing the
+   * runs it comes from. It may change nothing else (see runtime/write-scope.ts): it sees AGENT.md,
+   * INDEX.md and the skills only to compare against, and what it thinks they lack becomes a memory.
+   * It counts toward the agent's budget, waits while it's paused or over a limit, and posts nothing to
+   * the person: one quiet line in its activity, and a commit in its folder's history.
    */
   private async reflect(agentName: string, trigger: string, ctl: AbortController): Promise<void> {
     const agent = await loadAgent(agentName);
     if (agent.state.status !== "asleep" || (await this.blocked(agentName)) || limitHold(agent.state.limitHits)) return;
-    const since = agent.state.lastReflectAt ? new Date(agent.state.lastReflectAt) : null;
-    const digest = await agentContext(agentName, 60_000, { since, ids: true });
-    const done = { lastReflectAt: new Date().toISOString(), turnsSinceReflect: 0, compactedSinceReflect: false };
-    if (!digest) {
-      await updateState(agentName, done);
+    const cursor = await this.reflectCursor(agent);
+    const chunk = await unreadChunk(agentName, cursor, REFLECT_CHUNK_CHARS);
+    if (!chunk.turns.length) {
+      // Nothing to read but empty logs: the cursor moves past them.
+      if (chunk.last && chunk.last !== cursor) await updateState(agentName, { reflectCursor: chunk.last });
       return;
     }
-    const files = await readdir(join(agent.dir, "memory")).catch(() => [] as string[]);
+    const day = localDate(new Date());
+    await updateState(agentName, { reflectDay: { day, passes: (agent.state.reflectDay?.day === day ? agent.state.reflectDay.passes : 0) + 1 } });
+    const memDir = join(agent.dir, "memory");
+    await mkdir(memDir, { recursive: true });
+    const files = (await readdir(memDir).catch(() => [] as string[])).filter((f) => f.endsWith(".md") && f !== "MEMORY.md");
+    const first = chunk.turns[0].at.toISOString().slice(0, 16).replace("T", " ");
+    const last = chunk.turns.at(-1)!.at.toISOString().slice(0, 16).replace("T", " ");
     const text = [
-      `# What ${agentName} did since the last pass${since ? ` (${since.toISOString()})` : ""}\n\n${digest}`,
-      `# memory/MEMORY.md now\n\n${agent.memory.trim() ? memoryText(agent.memory) : "(empty)"}`,
-      `# Files in memory/\n\n${files.filter((f) => f.endsWith(".md")).join("\n") || "(none)"}`,
+      `# AGENT.md (read-only: never edit it)\n\n${agent.identity.trim() || "(empty)"}`,
+      `# INDEX.md (read-only)\n\n${agent.index.trim() || "(none yet)"}`,
+      `# Skills (read-only: never edit them)\n\n${listSkills(agent.dir).map((k) => `- ${k.name} (${k.source}${k.source === "built-in" ? "" : `, ${k.file}`}): ${k.description}`).join("\n") || "(none)"}`,
+      `# memory/MEMORY.md now\n\n${agent.memory.trim() ? memoryText(agent.memory) : "(empty)"}${memoryOverCap(agent.memory)}`,
+      `# Files in memory/\n\n${files.join("\n") || "(none)"}`,
+      `# Lines its helpers marked "learned:"\n\n${chunk.learned.join("\n") || "(none in these turns)"}`,
+      `# What ${agentName} did, ${first} to ${last} UTC (${chunk.turns.length} turns${chunk.left ? `; ${chunk.left} later ones come in the next pass` : ""})\n\n${chunk.text}`,
     ].join("\n\n---\n\n");
-    // AGENT.md and INDEX.md are the agent's own to change: whatever happens to them in this pass is undone.
-    const keep = new Map<string, string | null>();
-    for (const f of ["AGENT.md", "INDEX.md", "mcp.json"]) keep.set(f, await readFile(join(agent.dir, f), "utf8").catch(() => null));
     const { ctx, mcp } = this.tools.open({ agent: agentName, kind: "reflect", depth: 0 });
     const runId = newId("reflect");
+    let reply = "";
     let ok = false;
     try {
-      await runTurn({
+      const r = await runTurn({
         runId,
         agent: agentName,
         kind: "reflect",
@@ -819,8 +889,10 @@ export class Runtime extends EventEmitter implements ToolHost {
         text,
         preamble: reflectInstructions(agentName, agent.dir),
         cwd: agent.dir,
+        // Only Overtime's own tools (skills, to compare against): none of the agent's MCP servers.
         extraMcp: [mcp],
-        protect: [...keep.keys()].map((f) => join(agent.dir, f)),
+        agentServers: false,
+        writable: [memDir],
         disallowedTools: REFLECT_TOOLS_OFF,
         timeoutMs: REFLECT_TIMEOUT_MS,
         signal: this.signalFor(agentName, ctl.signal),
@@ -830,28 +902,33 @@ export class Runtime extends EventEmitter implements ToolHost {
         },
         log: this.log,
       });
+      reply = r.reply;
       ok = true;
     } catch (e: any) {
-      // Stopped for real work: tried again later. Anything else waits a day, like a pass that ran.
-      if (ctl.signal.aborted && !this.stopping) return void this.log(`[${agentName}] reflect pass stopped: its main session has work`);
-      this.log(`[${agentName}] reflect pass failed: ${String(e?.message ?? e).split("\n")[0]}`);
+      if (!(ctl.signal.aborted && !this.stopping)) this.log(`[${agentName}] reflect pass failed: ${String(e?.message ?? e).split("\n")[0]}`);
     } finally {
       this.tools.close(ctx.token);
-      for (const [f, was] of keep) {
-        const now = await readFile(join(agent.dir, f), "utf8").catch(() => null);
-        if (now === was) continue;
-        if (was === null) await rm(join(agent.dir, f), { force: true });
-        else await writeFile(join(agent.dir, f), was);
-        this.log(`[${agentName}] reflect pass changed ${f}; put it back`);
-      }
     }
-    if (ctl.signal.aborted && !this.stopping) return;
-    await updateState(agentName, ok ? done : { lastReflectAt: done.lastReflectAt });
-    if (!ok) return;
-    const day = new Date().toISOString().slice(0, 10);
+    if (this.stopping) return;
+    const now = new Date().toISOString();
+    const st = (await loadAgent(agentName)).state;
+    if (!ok) {
+      // Stopped for real work, or failed: the same turns are read again, once it has been idle a while.
+      // A part of its history that keeps failing is passed over rather than paid for again and again.
+      const stopped = ctl.signal.aborted;
+      const failures = stopped ? st.reflectFailures ?? 0 : (st.reflectFailures ?? 0) + 1;
+      const skip = failures >= REFLECT_FAILS_BEFORE_SKIP;
+      await updateState(agentName, { reflectStops: (st.reflectStops ?? 0) + 1, reflectStoppedAt: now, reflectFailures: skip ? 0 : failures, ...(skip ? { reflectCursor: chunk.last } : {}) });
+      if (stopped) this.log(`[${agentName}] reflect pass stopped: its main session has work`);
+      if (skip) this.log(`[${agentName}] reflect pass failed ${failures} times on its turns ${first} to ${last} UTC; passed over them`);
+      // What it had already changed is kept, in its own commit, so the next turn's commit is only its own.
+      await this.commit(agentName, `reflect ${runId}, stopped partway`, { body: `It was reading its turns ${first} to ${last} UTC.`, only: ["memory"] });
+      return;
+    }
+    await updateState(agentName, { reflectCursor: chunk.last, lastReflectAt: now, turnsSinceReflect: 0, compactedSinceReflect: false, reflectStops: 0, reflectStoppedAt: null, reflectFailures: 0 });
     const before = await exec("git", ["-C", agent.dir, "rev-parse", "--short", "HEAD"]).then((r) => r.stdout.trim(), () => "");
-    // Only what a reflect pass may change: anything else waits for the agent's own next turn.
-    await this.commit(agentName, `reflect ${day} (${trigger}), ${runId}`, ["memory", "skills"]);
+    const said = reply.trim().split("\n").filter(Boolean).at(-1) ?? "";
+    await this.commit(agentName, `reflect ${runId}`, { body: `Reflect pass on ${localDate(new Date())} (${trigger}), over its turns ${first} to ${last} UTC.${said ? `\n\n${said.slice(0, 500)}` : ""}`, only: ["memory"] });
     const after = await exec("git", ["-C", agent.dir, "rev-parse", "--short", "HEAD"]).then((r) => r.stdout.trim(), () => "");
     await this.store(agentName).addReport(`Reflect pass: ${after && after !== before ? `updated its memory (commit ${after}; see git log in its folder)` : "nothing to change"}.`);
     this.changed(agentName, "state");
@@ -1203,7 +1280,7 @@ export class Runtime extends EventEmitter implements ToolHost {
     if (b) throw new Error(`Can't start a helper: ${this.blockedLine(b)}.`);
     // With the agent's context: what it has been told, done and said lately, from Overtime's own records
     // of its sessions, so it works the same on every backend (and the helper keeps its own folder).
-    const contextText = req.withContext ? (await agentContext(ctx.agent)) || recentConversation(await store.messages()) || undefined : undefined;
+    const contextText = req.withContext ? (await recentTurns(ctx.agent, 40_000)) || recentConversation(await store.messages()) || undefined : undefined;
     // Checked and recorded under one lock, so two spawns at once can't both slip under the cap.
     const rec = await withLock(`spawn:${ctx.agent}`, async () => {
       const running = (await store.helpers()).filter((h) => h.status === "running").length;
@@ -1943,61 +2020,6 @@ function inboxBlock(all: InboxItem[], session: string | null = null): string {
  * The recent conversation with the person, for a session that starts fresh (context full, an update, a
  * new model): the last 40 messages, newest last, at most about 16,000 characters.
  */
-/**
- * What an agent has been doing lately, from Overtime's records of its main sessions (runs/*.jsonl):
- * for each recent turn, what it was told, the steps it took and what it said. Newest turns are kept
- * when it's long. Empty if there's nothing recorded yet.
- */
-async function agentContext(agentName: string, maxChars = 40_000, opts: { since?: Date | null; ids?: boolean } = {}): Promise<string> {
-  const dir = join(paths.meta(agentName), "runs");
-  let files: string[] = [];
-  try {
-    files = (await readdir(dir)).filter((f) => f.startsWith("main_") && f.endsWith(".jsonl")).sort().reverse();
-  } catch {
-    return "";
-  }
-  const turns: string[] = [];
-  let size = 0;
-  for (const f of files.slice(0, 30)) {
-    if (opts.since && (await lstat(join(dir, f)).catch(() => null))?.mtime! <= opts.since) continue;
-    let told = "";
-    let said = "";
-    const steps: string[] = [];
-    for (const line of (await readFile(join(dir, f), "utf8").catch(() => "")).split("\n")) {
-      let e: any;
-      try {
-        e = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (e?.event === "prompt" && typeof e.data?.text === "string") {
-        // A fresh session's prompt starts with Overtime's standing instructions; only what follows is this turn's.
-        const t: string = e.data.text;
-        const cut = t.lastIndexOf("\n---\n");
-        told = (cut >= 0 ? t.slice(cut + 5) : t).trim();
-      } else if (e?.event === "update") {
-        const u = e.data;
-        if (u?.sessionUpdate === "agent_message_chunk" && typeof u.content?.text === "string") said += u.content.text;
-        else if (u?.sessionUpdate === "tool_call" && typeof u.title === "string") steps.push(u.title.split("\n")[0].slice(0, 160));
-      }
-    }
-    if (!told && !said && !steps.length) continue;
-    const when = /main_(\d{8})(\d{6})/.exec(f);
-    const turn = [
-      `## Turn${when ? ` at ${when[1].slice(0, 4)}-${when[1].slice(4, 6)}-${when[1].slice(6)} ${when[2].slice(0, 2)}:${when[2].slice(2, 4)}` : ""}${opts.ids ? ` (run ${f.replace(/\.jsonl$/, "")})` : ""}`,
-      told ? `It was told:\n${told.slice(0, 4000)}` : "",
-      steps.length ? `It did:\n${steps.slice(0, 40).map((s) => `- ${s}`).join("\n")}` : "",
-      said.trim() ? `It said:\n${said.trim().slice(0, 4000)}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n\n");
-    if (size + turn.length > maxChars && turns.length) break;
-    turns.push(turn);
-    size += turn.length;
-  }
-  return turns.reverse().join("\n\n");
-}
-
 function recentConversation(all: Message[]): string {
   const shown = all.filter((m) => !m.closes).slice(-40);
   if (!shown.length) return "";
@@ -2012,7 +2034,7 @@ function recentConversation(all: Message[]): string {
   return `Your recent conversation with the person (most recent last):\n\n${text}\n\n---\n\n`;
 }
 
-function mainTurnText(items: InboxItem[], firstJob: boolean, contextReset: boolean, session: string | null = null): string {
+function mainTurnText(items: InboxItem[], firstJob: boolean, contextReset: boolean, session: string | null = null, memoryNote = ""): string {
   const parts: string[] = [];
   if (firstJob) {
     parts.push(
@@ -2021,7 +2043,9 @@ function mainTurnText(items: InboxItem[], firstJob: boolean, contextReset: boole
   }
   if (contextReset) parts.push("Note: this is a fresh session. Your earlier work session isn't carried over (your recent conversation with the person is above); your folder is. Check INDEX.md and your notes for where things stand.");
   parts.push(inboxBlock(items, session));
-  parts.push("Reply with send to new messages from the person (not to ones passed on from your conversation: those were already answered, so never acknowledge them twice). Do the work, as part of your goals. Before this turn ends, bring your notes and INDEX.md up to date; if you were corrected or worked out how to do something, save it as a memory (memory/) or a skill. Decide the next useful step toward your goals, and choose when to wake.");
+  parts.push("Reply with send to new messages from the person (not to ones passed on from your conversation: those were already answered, so never acknowledge them twice). Do the work, as part of your goals. Before this turn ends, bring your notes and INDEX.md up to date; if you were corrected or worked out how to do something, save it: a how-to as a skill, anything else as a memory (memory/). Decide the next useful step toward your goals, and choose when to wake.");
+  // After the request, never ahead of it: the index has grown past its cap.
+  if (memoryNote) parts.push(memoryNote.trim());
   return parts.join("\n\n");
 }
 

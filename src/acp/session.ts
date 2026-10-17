@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { spawn, type ChildProcess } from "node:child_process";
-import { sandboxLaunch } from "../runtime/sandbox.js";
+import { sandboxLaunch, type WriteLayer } from "../runtime/sandbox.js";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import type { McpServerConfig } from "../settings.js";
@@ -34,6 +34,8 @@ export interface OpenOptions {
   hide?: string[];
   /** Claude Code tools this session doesn't get, on top of CLAUDE_BUILTINS_OFF. */
   disallowedTools?: string[];
+  /** Write rules for a session that may change only some folders (see runtime/write-scope.ts). */
+  writeLayers?: WriteLayer[];
 }
 
 /** Protected paths are set but this machine can't enforce them; the turn doesn't run unprotected. */
@@ -181,8 +183,8 @@ export class AcpSession {
 
   private static async start(opts: OpenOptions, base: BackendCommand): Promise<AcpSession> {
     const protect = opts.protect ?? [];
-    const cmd = sandboxLaunch(base.command, base.args, protect, opts.hide ?? []);
-    if (protect.length && !cmd.sandboxed) throw new SandboxUnavailableError(cmd.why ?? "the sandbox can't start here");
+    const cmd = sandboxLaunch(base.command, base.args, protect, opts.hide ?? [], opts.writeLayers ?? []);
+    if ((protect.length || opts.writeLayers?.length) && !cmd.sandboxed) throw new SandboxUnavailableError(cmd.why ?? "the sandbox can't start here");
     // Its own process group, so closing it also ends everything it started (CLI, MCP servers, shells).
     const proc = spawn(cmd.command, cmd.args, {
       cwd: opts.cwd,

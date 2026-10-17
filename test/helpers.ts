@@ -13,6 +13,8 @@ export function fakeHome(extra: Record<string, unknown> = {}): string {
   delete process.env.OVERTIME_AGENT;
   process.env.OVERTIME_NO_NOTIFY = "1"; // no real desktop notifications from test agents
   process.env.OVERTIME_FAST_RETRY = "1"; // retries after provider trouble in moments, not minutes
+  // Where the scripted backend leaves notes for tests from sessions that may not write in Overtime's home (a reflect pass).
+  process.env.OVERTIME_FAKE_NOTES = mkdtempSync(join(tmpdir(), "overtime-notes-"));
   mkdirSync(join(dir, "protected"), { recursive: true });
   writeFileSync(
     join(dir, "settings.json"),

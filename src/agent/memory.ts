@@ -29,11 +29,18 @@ export async function readMemoryIndex(agentDir: string): Promise<string> {
   return readFile(memoryIndexPath(agentDir), "utf8").catch(() => "");
 }
 
-/** The index as an agent is shown it: all of it (never cut), with a note to consolidate when it's long. */
+/** The index as an agent is shown it: all of it, never cut (past the cap it is told to consolidate: memoryOverCap). */
 export function memoryText(index: string): string {
-  const lines = index.trim().split("\n").length;
-  const over = lines > MEMORY_CAP_LINES ? `\n\n(MEMORY.md is ${lines} lines, over the ${MEMORY_CAP_LINES}-line cap. Consolidate it now: merge overlapping memories, delete stale ones, and keep one line per memory.)` : "";
-  return `${index.trim()}${over}`;
+  return index.trim();
+}
+
+/**
+ * Past the cap, a note to consolidate the index. It goes after the person's request in a turn (and in
+ * a reflect pass), so it never comes ahead of the work it was woken for. "" under the cap.
+ */
+export function memoryOverCap(index: string): string {
+  const lines = index.trim() ? index.trim().split("\n").length : 0;
+  return lines > MEMORY_CAP_LINES ? `\n\n(MEMORY.md is ${lines} lines, over the ${MEMORY_CAP_LINES}-line cap. Before this turn ends, merge overlapping memories and delete stale ones until it is under the cap.)` : "";
 }
 
 /** The section of a fresh session's opening that shows the index. */
@@ -53,13 +60,17 @@ export function claudeMemoryDir(cwd: string): string {
 
 const TYPES: Record<string, string> = { user: "person", person: "person", feedback: "feedback", project: "project", reference: "reference" };
 
-/** A Claude memory file with Overtime's header added (its own fields kept), so it reads like any other memory. */
+/**
+ * A Claude memory file with Overtime's header added (its own fields kept), so it reads like any other
+ * memory. Its source: the person for what they said (Claude's user and feedback memories), otherwise
+ * observed (what the agent's sessions saw for themselves).
+ */
 function withHeader(text: string, modified: Date): string {
   const { data, body } = parseFrontMatter(text);
   const meta = (data.metadata && typeof data.metadata === "object" ? data.metadata : {}) as Record<string, unknown>;
   const day = (String(meta.modified ?? "") || modified.toISOString()).slice(0, 10);
   const type = TYPES[String(data.type ?? meta.type ?? "")] ?? "project";
-  return stringifyFrontMatter({ ...data, type, source: data.source ?? "agent", date: data.date ?? day, "last-verified": data["last-verified"] ?? day }, body);
+  return stringifyFrontMatter({ ...data, type, source: data.source ?? (type === "person" || type === "feedback" ? "person" : "observed"), date: data.date ?? day, "last-verified": data["last-verified"] ?? day }, body);
 }
 
 /** The memory file an index line points to, if it is one: `- [Title](file.md) — hook`. */
@@ -74,12 +85,35 @@ function linkOf(line: string): string | null {
  * Returns how many files came over.
  */
 export async function importClaudeMemory(agentDir: string, cwds: string[]): Promise<{ files: number; from: string[] }> {
+  // Claude names the folder after the real path (symlinks resolved), so both spellings are looked at.
+  const real = await Promise.all(cwds.map((c) => realDir(c)));
+  return importFrom(agentDir, [...new Set([...cwds, ...real].map(claudeMemoryDir))].map((dir) => ({ dir, prefix: "" })));
+}
+
+/**
+ * The same for the memories Claude kept in the agent's helpers' folders (<agent folder>/.overtime/helpers/
+ * <id>/…, which Claude files under the agent folder's name and "--overtime-helpers-"). Each comes in as
+ * helper-<id>-<name>.md; one whose text is already in memory/ is left out.
+ */
+export async function importHelperClaudeMemory(agentDir: string): Promise<{ files: number; from: string[] }> {
+  const projects = join(claudeMemoryDir(agentDir), "..", "..");
+  const names = await readdir(projects).catch(() => [] as string[]);
+  const sources: { dir: string; prefix: string }[] = [];
+  for (const d of new Set([agentDir, await realDir(agentDir)])) {
+    const lead = `${d.replace(/[^a-zA-Z0-9]/g, "-")}--overtime-helpers-`;
+    for (const n of names.filter((x) => x.startsWith(lead)).sort()) {
+      const id = /helper-\d{14}-([0-9a-f]+)/.exec(n)?.[1] ?? n.slice(lead.length).replace(/[^a-zA-Z0-9]/g, "").slice(0, 12);
+      sources.push({ dir: join(projects, n, "memory"), prefix: `helper-${id}-` });
+    }
+  }
+  return importFrom(agentDir, sources);
+}
+
+async function importFrom(agentDir: string, sources: { dir: string; prefix: string }[]): Promise<{ files: number; from: string[] }> {
   const dest = join(agentDir, MEMORY_DIR);
   let files = 0;
   const from: string[] = [];
-  // Claude names the folder after the real path (symlinks resolved), so both spellings are looked at.
-  const real = await Promise.all(cwds.map((c) => realDir(c)));
-  for (const src of [...new Set([...cwds, ...real].map(claudeMemoryDir))]) {
+  for (const { dir: src, prefix } of sources) {
     let names: string[] = [];
     try {
       names = (await readdir(src)).filter((n) => n.endsWith(".md")).sort();
@@ -89,13 +123,16 @@ export async function importClaudeMemory(agentDir: string, cwds: string[]): Prom
     if (!names.length) continue;
     from.push(src);
     await mkdir(dest, { recursive: true });
+    // What's already here, by its text: a helper's copy of a memory the agent has isn't brought in twice.
+    const have = new Set(prefix ? await Promise.all((await readdir(dest)).filter((n) => n.endsWith(".md")).map((n) => readFile(join(dest, n), "utf8").then((t) => parseFrontMatter(t).body.trim(), () => ""))) : []);
     /** Claude's name for a file → the name it has here. */
     const renamed = new Map<string, string>();
     for (const n of names.filter((n) => n !== MEMORY_INDEX)) {
       const text = withHeader(await readFile(join(src, n), "utf8"), (await stat(join(src, n))).mtime);
-      let target = n;
-      const existing = await readFile(join(dest, n), "utf8").catch(() => null);
-      if (existing !== null && existing !== text) target = n.replace(/\.md$/, ".claude.md");
+      if (prefix && have.has(parseFrontMatter(text).body.trim())) continue;
+      let target = prefix + n;
+      const existing = await readFile(join(dest, target), "utf8").catch(() => null);
+      if (existing !== null && existing !== text) target = target.replace(/\.md$/, ".claude.md");
       if (existing === text || existsSync(join(dest, target))) {
         renamed.set(n, target);
         continue;
@@ -110,7 +147,7 @@ export async function importClaudeMemory(agentDir: string, cwds: string[]): Prom
     const add: string[] = [];
     for (const line of theirs.split("\n")) {
       const link = linkOf(line);
-      if (!link) continue;
+      if (!link || (prefix && !renamed.has(link))) continue;
       const target = renamed.get(link) ?? link;
       if (listed.has(target)) continue;
       listed.add(target);
@@ -194,20 +231,54 @@ async function realDir(dir: string): Promise<string> {
 }
 
 /**
- * Commit what changed in memory/, skills/, AGENT.md, INDEX.md and .gitignore (or fewer of them; nothing
- * else in the folder), with the message given. Returns the commit's short id, or null when nothing changed or
+ * Commit what changed in memory/, skills/, AGENT.md, INDEX.md and .gitignore (or fewer of them;
+ * nothing else in the folder). The message says what changed, so `git log memory/` reads as a history: the files added,
+ * edited and removed, then what started it (`tag`, e.g. the turn's run id), and in its body the index
+ * lines that came and went and `body`. Returns the commit's short id, or null when nothing changed or
  * Overtime doesn't commit here.
  */
-export async function commitHistory(agentDir: string, message: string, only: string[] = TRACKED): Promise<string | null> {
+export async function commitHistory(agentDir: string, tag: string, opts: { body?: string; only?: string[] } = {}): Promise<string | null> {
+  const only = opts.only ?? TRACKED;
   if (!(await ensureHistory(agentDir)).ok) return null;
   const tracked = new Set((await git(agentDir, ["ls-files", "--", ...only])).split("\n").filter(Boolean).map((f) => f.split("/")[0]));
   const paths = only.filter((p) => existsSync(join(agentDir, p)) || tracked.has(p));
   if (!paths.length) return null;
   await git(agentDir, ["add", "-A", "--", ...paths]);
-  const staged = (await git(agentDir, ["diff", "--cached", "--name-only", "--", ...paths])).trim();
+  const staged = (await git(agentDir, ["diff", "--cached", "--name-status", "--no-renames", "--", ...paths])).trim();
   if (!staged) return null;
+  const index = await git(agentDir, ["diff", "--cached", "--unified=0", "--", join(MEMORY_DIR, MEMORY_INDEX)]).catch(() => "");
+  const message = [`${describeChanges(staged)} (${tag})`, opts.body?.trim() ?? "", indexChanges(index)].filter(Boolean).join("\n\n");
   await git(agentDir, ["commit", "-q", "--no-verify", "-m", message, "--", ...paths]);
   return (await git(agentDir, ["rev-parse", "--short", "HEAD"])).trim();
+}
+
+/** `git diff --name-status` as a line: per part of the folder, the files added, edited and removed. */
+export function describeChanges(nameStatus: string): string {
+  const groups = new Map<string, { added: string[]; edited: string[]; removed: string[] }>();
+  for (const line of nameStatus.split("\n").filter(Boolean)) {
+    const [status, file] = line.split("\t");
+    const parts = file.split("/");
+    // memory/a.md → memory: a.md; skills/x/SKILL.md → skill x: SKILL.md; AGENT.md on its own.
+    const [group, name] = parts[0] === "skills" && parts.length > 2 ? [`skill ${parts[1]}`, parts.slice(2).join("/")] : parts.length > 1 ? [parts[0], parts.slice(1).join("/")] : ["", file];
+    const g = groups.get(group) ?? { added: [], edited: [], removed: [] };
+    (status.startsWith("A") ? g.added : status.startsWith("D") ? g.removed : g.edited).push(name);
+    groups.set(group, g);
+  }
+  const list = (verb: string, names: string[]) => (names.length ? `${verb} ${names.length > 4 ? `${names.slice(0, 3).join(", ")} and ${names.length - 3} more` : names.join(", ")}` : "");
+  return [...groups]
+    .map(([group, g]) => {
+      const what = [list("added", g.added), list("edited", g.edited), list("removed", g.removed)].filter(Boolean).join(", ");
+      return group ? `${group}: ${what}` : what;
+    })
+    .join("; ");
+}
+
+/** The lines of MEMORY.md a commit adds and removes: each one is a rule, so they say what was learned or dropped. */
+function indexChanges(diff: string): string {
+  const lines = diff.split("\n").filter((l) => /^[+-]\s*[-*] /.test(l));
+  if (!lines.length) return "";
+  const shown = lines.slice(0, 12).map((l) => `${l[0] === "+" ? "Added" : "Removed"}: ${l.slice(1).trim().replace(/^[-*]\s+/, "")}`);
+  return [...shown, ...(lines.length > 12 ? [`(and ${lines.length - 12} more lines of MEMORY.md)`] : [])].join("\n");
 }
 
 /** Whether a folder is in a repository Overtime made for an agent's history (not a workspace of the agent's own). */

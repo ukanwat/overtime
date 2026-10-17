@@ -76,8 +76,8 @@ function sameLocalDay(a: Date, b: Date): boolean {
 }
 
 /** Today's totals for one agent (local day), from what backends reported. */
-export async function usageToday(agent: string, now = new Date()): Promise<{ usd: number; costReported: boolean; tokens: number; turns: number }> {
-  const rows = (await readJsonl<TurnUsage>(usagePath(agent))).filter((r) => sameLocalDay(new Date(r.t), now));
+export async function usageToday(agent: string, now = new Date(), kind?: string): Promise<{ usd: number; costReported: boolean; tokens: number; turns: number }> {
+  const rows = (await readJsonl<TurnUsage>(usagePath(agent))).filter((r) => sameLocalDay(new Date(r.t), now) && (!kind || r.kind === kind));
   let usd = 0;
   let costReported = false;
   let tokens = 0;
