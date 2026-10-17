@@ -54,3 +54,68 @@ describe("cancel", () => {
     ]);
   });
 });
+
+describe("ask", () => {
+  const added: any[] = [];
+  const notes: string[][] = [];
+  const host = {
+    store: () => ({ addMessage: async (m: any) => (added.push(m), { id: `m_${added.length}`, ...m }) }),
+    notify: (title: string, body: string) => void notes.push([title, body]),
+  };
+
+  it("lets the person pick several unless single, and asks agents to batch related questions", async () => {
+    const { tools } = await connect(host);
+    const ask = tools.find((t) => t.name === "ask")!;
+    expect(ask.description).toContain("Batch related questions into one ask");
+    expect(ask.description).toContain("They may pick several options unless you set single.");
+    const props = ask.inputSchema.properties as any;
+    expect(props.single.type).toBe("boolean");
+    expect(Object.keys(props.questions.items.properties).sort()).toEqual(["options", "question", "recommendation", "single", "why"]);
+    // Nothing new is required: a question asked the old way still works.
+    expect(ask.inputSchema.required ?? []).toEqual([]);
+  });
+
+  it("asks one question the old way, multi-select unless single", async () => {
+    const { call } = await connect(host);
+    added.length = notes.length = 0;
+    expect((await call("ask", { question: "Which platforms?", options: ["macOS", "Linux"] })).text).toContain("Asked (m_1)");
+    await call("ask", { question: "Which version?", options: ["2.0.0", "1.9.0"], single: true });
+    expect(added[0]).toMatchObject({ kind: "question", text: "Which platforms?", options: ["macOS", "Linux"] });
+    expect(added[0].single).toBeUndefined();
+    expect(added[1].single).toBe(true);
+    expect(notes).toEqual([["ann has a question", "Which platforms?"], ["ann has a question", "Which version?"]]);
+  });
+
+  it("puts several questions on one card, with one notification for it", async () => {
+    const { call } = await connect(host);
+    added.length = notes.length = 0;
+    await call("ask", {
+      question: "Before I cut 2.0",
+      questions: [
+        { question: "Which platforms?", options: ["macOS", "Linux"], recommendation: "macOS" },
+        { question: "Which version?", options: ["2.0.0", "1.9.0"], single: true },
+        { question: "Who to credit?", why: "Three outside fixes" },
+      ],
+    });
+    expect(added).toHaveLength(1);
+    expect(added[0]).toMatchObject({
+      title: "Before I cut 2.0",
+      text: "1. Which platforms?\n2. Which version?\n3. Who to credit?",
+      questions: [
+        { text: "Which platforms?", options: ["macOS", "Linux"], recommendation: "macOS" },
+        { text: "Which version?", single: true },
+        { text: "Who to credit?", why: "Three outside fixes" },
+      ],
+    });
+    expect(notes).toEqual([["ann has 3 questions", "Before I cut 2.0"]]);
+  });
+
+  it("treats a list of one as a plain question, and refuses an ask with no question", async () => {
+    const { call } = await connect(host);
+    added.length = 0;
+    await call("ask", { questions: [{ question: "Merge it?", options: ["Yes", "No"], single: true }] });
+    expect(added[0]).toMatchObject({ text: "Merge it?", options: ["Yes", "No"], single: true });
+    expect(added[0].questions).toBeUndefined();
+    expect(await call("ask", {})).toEqual({ text: "Give a question, or questions.", isError: true });
+  });
+});

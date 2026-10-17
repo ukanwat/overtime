@@ -45,8 +45,9 @@ agent, so `tail -F app.log | grep ERROR` reacts within moments and costs nothing
 Messages from you, answers and finished helpers always wake it early.
 
 **It never stops to wait for you.** When something is genuinely yours to decide, the agent asks,
-with its recommendation and short options you can answer with one key, and carries on with
-everything else meanwhile. It's fully autonomous otherwise. It asks first only before
+with its recommendation and short options you can answer with one key (or several, unless the
+options exclude each other), and carries on with everything else meanwhile. Related questions come
+together on one card that you answer in turn and send at once. It's fully autonomous otherwise. It asks first only before
 destroying things outside its folders, spending money, or acting publicly or as you. Overtime
 answers every permission request the backend makes itself, instantly, so no session can ever hang
 on a permission prompt.
@@ -101,7 +102,7 @@ Deliberately few, because every tool costs context on every turn:
 |---|---|
 | `wake` | when to wake next: at a time, after a delay, repeatedly, or on a watch |
 | `cancel` | stop a repeating wake-up, a watch or a running helper, or withdraw a question |
-| `ask` | a question for you, without stopping work |
+| `ask` | a question for you, or a card of several, without stopping work |
 | `send` | message you (a reply, a report, files to share), or set the one-line status next to its name |
 | `spawn` | start a helper (up to 6 at once) |
 | `tell` | tell one of its helpers something: a correction, more to go on, or a follow-up for a finished one |
@@ -150,7 +151,9 @@ nothing else: its messages, its reports, its questions, and yours. While it's an
 streams in as it writes.
 
 - **Move** with ↑↓; the conversation follows. Just type to message the selected agent.
-- **Answer** a question with its number key, then Enter, or type an answer in your own words.
+- **Answer** a question with its number keys (pick one or several), then Enter, or type an answer in
+  your own words. On a card of several questions, Tab or ↑↓ moves between them and Enter on the last
+  sends them all.
 - **Attach** a file or image by dragging it into the terminal. It's copied into the agent's folder.
 - **Settings** (→ or Tab): backend and model, daily budget, workspace, protected paths, MCP servers,
   skills, its schedule and helpers, plus wake, stop and archive.
@@ -164,7 +167,7 @@ overtime new <name> [key=value…]    create an agent (same keys as set)
 overtime ls                         list agents
 overtime send <name> "…"            message an agent (--attach <file>, repeatable)
 overtime messages <name>            read your conversation with it
-overtime answer <name> <n> [note]   answer its open question with option n
+overtime answer <name> <n> [note]   answer its open question with option n (several: 1,3)
 overtime settings <name>            show its backend, model, budgets and workspace
 overtime set <name> key=value…      backend=  model=  budget=  tokens=  workspace=  protect=  visibility=
 overtime models [backend]           the models a backend offers

@@ -13,7 +13,7 @@ import { paths } from "../paths.js";
 import { loadSettings, saveSettings } from "../settings.js";
 import { withLock } from "../store/mutex.js";
 import { Store, clampWake } from "../store/store.js";
-import type { Attachment, Decision, HelperRecord, InboxItem, Message, Monitor } from "../store/types.js";
+import { questionParts, type Attachment, type Decision, type HelperRecord, type InboxItem, type Message, type Monitor, type QuestionPart, type Reply } from "../store/types.js";
 import { receiveAttachments } from "../store/attachments.js";
 import type { ToolContext, ToolHost } from "../tools/host.js";
 import { ToolServer } from "../tools/server.js";
@@ -997,26 +997,56 @@ export class Runtime extends EventEmitter implements ToolHost {
     return m;
   }
 
-  /** The person answered a question: pick an option and/or write something. Defaults to the newest open question. */
-  async answer(agentName: string, questionId?: string, choice?: number, text?: string): Promise<void> {
+  /**
+   * The person answered a question: pick one or more options and/or write something. Defaults to the newest
+   * open question. A card of several questions takes one reply per question (replies); any left out stay
+   * unanswered, and the agent is told so.
+   */
+  async answer(agentName: string, questionId?: string, choice?: number | number[], text?: string, replies?: Reply[]): Promise<void> {
     const agent = await loadAgent(agentName);
     const store = this.store(agentName);
     const open = await store.openQuestions();
     const q = questionId ? await store.message(questionId) : open.at(-1);
     if (!q || q.kind !== "question") throw new Error(questionId ? `There's no question ${questionId}.` : `${agentName} hasn't asked you anything.`);
     if (q.answer) throw new Error("That question is already answered.");
-    const picked = choice && q.options ? q.options[choice - 1] : undefined;
-    if (choice && !picked) throw new Error(`There is no option ${choice}.`);
-    // The option's own words, without a number the agent may already have put in front.
-    const label = picked ? picked.replace(/^\s*(\d{1,2}|[a-zA-Z])\s*[—–\-.):]\s+/, "").trim() || picked : "";
-    const answerText = [picked ? `${choice}. ${label}` : "", text ?? ""].filter(Boolean).join(" — ");
-    if (!answerText) throw new Error("Pick an option or write an answer.");
+    const parts = questionParts(q);
+    const card = !!q.questions?.length;
     const note = text?.trim() || undefined;
-    const m = await store.addMessage({ from: "you", kind: "message", text: answerText, replyTo: q.id, choice, note, baseDir: agent.dir });
-    await store.recordDecision({ threadId: q.id, category: q.category ?? "uncategorised", question: q.text, answer: answerText, ...(picked ? { choice: label } : {}) });
-    await store.pushInbox({ type: "answer", text: answerText + (await this.autonomyHint(agentName, q.category)), messageId: m.id, data: { question: q.text } });
+    // A lone question's picks and words are its one reply; a card's words, beside its replies, are about all of it.
+    const picks = choice == null ? [] : Array.isArray(choice) ? choice : [choice];
+    const given: Reply[] = card ? replies ?? (picks.length ? [{ choices: picks }] : []) : [{ choices: replies?.[0]?.choices ?? picks, note: replies?.[0]?.note?.trim() || note }];
+    const lines: { part: QuestionPart; reply: Reply; labels: string[]; said: string }[] = parts.map((part, i) => {
+      const r = given[i] ?? {};
+      const chosen = [...new Set((r.choices ?? []).filter((n) => n))].sort((x, y) => x - y);
+      for (const n of chosen) if (!part.options?.[n - 1]) throw new Error(`There is no option ${n}${card ? ` in question ${i + 1}` : ""}.`);
+      if (part.single && chosen.length > 1) throw new Error(`${card ? `Question ${i + 1}` : "That question"} takes one option.`);
+      // The option's own words, without a number the agent may already have put in front.
+      const labels = chosen.map((n) => part.options![n - 1].replace(/^\s*(\d{1,2}|[a-zA-Z])\s*[—–\-.):]\s+/, "").trim() || part.options![n - 1]);
+      const own = r.note?.trim() || undefined;
+      const said = [chosen.map((n, k) => `${n}. ${labels[k]}`).join("; "), own ?? ""].filter(Boolean).join(" — ");
+      return { part, reply: { ...(chosen.length ? { choices: chosen } : {}), ...(own ? { note: own } : {}) }, labels, said };
+    });
+    if (!lines.some((l) => l.said) && !note) throw new Error("Pick an option or write an answer.");
+    let answerText: string;
+    let m: Message;
+    if (!card) {
+      const [only] = lines;
+      answerText = only.said;
+      const choices = only.reply.choices;
+      m = await store.addMessage({ from: "you", kind: "message", text: answerText, replyTo: q.id, choice: choices?.[0], choices: choices && choices.length > 1 ? choices : undefined, note: only.reply.note, baseDir: agent.dir });
+    } else {
+      // One line per question, in order, so the agent reads every answer (and every gap) together.
+      answerText = [...lines.map((l, i) => `Q${i + 1}. ${l.part.text.slice(0, 200)}\n→ ${l.said || "(left unanswered)"}`), ...(note ? [`Also: ${note}`] : [])].join("\n");
+      m = await store.addMessage({ from: "you", kind: "message", text: answerText, replyTo: q.id, replies: lines.map((l) => l.reply), note, baseDir: agent.dir });
+    }
+    for (const l of lines) {
+      if (!l.said) continue;
+      await store.recordDecision({ threadId: q.id, category: q.category ?? "uncategorised", question: l.part.text, answer: l.said, ...(l.labels.length ? { choice: l.labels.join("; ") } : {}) });
+    }
+    const data = { question: card ? q.title || `${parts.length} questions` : q.text, answers: lines.map((l) => ({ question: l.part.text, chosen: l.labels, ...(l.reply.note ? { note: l.reply.note } : {}) })), ...(card && note ? { note } : {}) };
+    await store.pushInbox({ type: "answer", text: answerText + (await this.autonomyHint(agentName, q.category)), messageId: m.id, data });
     this.changed(agentName, "messages");
-    await this.deliver(agentName, "the person answered one of your questions");
+    await this.deliver(agentName, card ? "the person answered your questions" : "the person answered one of your questions");
   }
 
   /**
@@ -1186,7 +1216,7 @@ export class Runtime extends EventEmitter implements ToolHost {
     if (!q || q.kind !== "question") throw new Error(`There's no question ${questionId}.`);
     if (q.answer) return;
     await store.addMessage({ from: "you", kind: "message", text: "Dismissed", replyTo: q.id, closes: "dismissed", baseDir: agent.dir });
-    await store.pushInbox({ type: "answer", text: `The person dismissed your question without answering it: "${q.text.slice(0, 300)}". Don't wait on it: go with your own judgement, or ask again in a different way only if it really matters.`, data: { question: q.text } });
+    await store.pushInbox({ type: "answer", text: `The person dismissed your ${q.questions?.length ? "questions" : "question"} without answering: "${q.text.slice(0, 300)}". Don't wait on it: go with your own judgement, or ask again in a different way only if it really matters.`, data: { question: q.text } });
     this.changed(agentName, "messages");
   }
 
@@ -2034,7 +2064,7 @@ function inboxBlock(all: InboxItem[], session: string | null = null): string {
               ? "Passed on from your conversation with the person. They have already been answered about this: don't reply to it or acknowledge it again. Do the work, and message them only with new results or questions"
               : "Message from the person"
             : i.type === "answer"
-              ? `The person answered your question: "${String((i.data as any)?.question ?? "").slice(0, 200)}"`
+              ? `The person answered your ${(i.data as any)?.answers?.length > 1 ? "questions" : "question"}: "${String((i.data as any)?.question ?? "").slice(0, 200)}"`
               : i.type === "monitor"
                 ? "Monitor fired"
                 : i.type === "helper"

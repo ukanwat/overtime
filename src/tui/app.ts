@@ -68,7 +68,7 @@ import {
   when,
   yellow,
 } from "./style.js";
-import { closedLine, headed, humanBytes, openQuestion, optionLabel, recommendedOption, type AgentSettingsView, type LiveState, type Message } from "./types.js";
+import { closedLine, headed, humanBytes, openQuestion, optionLabel, questionParts, replyTo, recommendedOption, type AgentSettingsView, type LiveState, type Message } from "./types.js";
 
 export { clean, cleanDeep, openPlan } from "./style.js";
 export type { LiveState, Message } from "./types.js";
@@ -559,8 +559,12 @@ export class App implements Component {
   overlay: Overlay = null;
   flash: { text: string; tone: "ok" | "err" | "info" } | null = null;
   input: Composer;
-  /** An option picked with a number key, waiting for Enter (so one stray key never answers). */
-  choosing: { id: string; n: number } | null = null;
+  /**
+   * Your answer to the open question as you make it, waiting for Enter (so one stray key never answers): the
+   * options picked for each of its questions, your own words for any, which question you're on (a card can
+   * hold several), or 0 pressed to dismiss it.
+   */
+  choosing: { id: string; at: number; picks: number[][]; notes: (string | undefined)[]; dismiss: boolean } | null = null;
   fieldInput = new Input({ prompt: "", placeholderStyle: muted });
   pending: PendingAttachment[] = [];
   /** What you'd started writing (and attaching) to each agent, kept while you look at another one. */
@@ -912,6 +916,9 @@ export class App implements Component {
       this.input.handleInput(data);
       return this.tui.requestRender();
     }
+    // On a card of several questions, Tab and ⇧Tab move between them (→ still opens settings).
+    const card = !this.onNewRow && !this.typing() ? openQuestion(this.messages) : undefined;
+    if (card?.questions?.length && (matchesKey(data, Key.tab) || matchesKey(data, Key.shift("tab")))) return this.moveQuestion(card, matchesKey(data, Key.tab) ? 1 : -1);
     if (matchesKey(data, Key.tab) || matchesKey(data, Key.ctrl("p"))) return this.showSettings();
     const typing = this.typing();
     // → moves right, into the selected agent's settings (← or Esc comes back), as long as you aren't typing.
@@ -922,6 +929,7 @@ export class App implements Component {
       // With text selected, Esc lets go of the selection first; pressed again, it clears the message.
       if (this.input.selection()) this.input.deselect();
       else if (typing) this.input.setValue("");
+      else if (this.choosing?.dismiss) this.choosing.dismiss = false;
       else if (this.choosing) this.choosing = null;
       else if (this.linkIdx >= 0) this.linkIdx = -1;
       else if (this.pending.length) this.pending = [];
@@ -941,6 +949,8 @@ export class App implements Component {
         this.input.handleInput(data);
         return this.tui.requestRender();
       }
+      // While you answer a card of several questions, they move between its questions (Esc lets go).
+      if (card?.questions?.length && this.choosing?.id === card.id) return this.moveQuestion(card, matchesKey(data, Key.up) ? -1 : 1);
       return this.select(this.sel + (matchesKey(data, Key.up) ? -1 : 1));
     }
     if (matchesKey(data, Key.pageUp) || matchesKey(data, Key.pageDown)) return this.scrollBy(matchesKey(data, Key.pageUp) ? -PAGE : PAGE);
@@ -951,8 +961,10 @@ export class App implements Component {
     if (!typing && !this.onNewRow && /^[0-9]$/.test(data)) {
       const q = openQuestion(this.messages);
       const n = Number(data);
-      if (q && (n === 0 || (q.options?.length && n <= q.options.length))) {
-        this.choosing = { id: q.id, n };
+      const at = q && this.choosing?.id === q.id ? this.choosing.at : 0;
+      const count = q ? questionParts(q)[at]?.options?.length ?? 0 : 0;
+      if (q && (n === 0 || n <= count)) {
+        this.choose(q, n, at);
         this.scroll = Number.MAX_SAFE_INTEGER;
         this.anchor = "question"; // bring the question into view, once
         return this.tui.requestRender();
@@ -962,12 +974,13 @@ export class App implements Component {
       const q = openQuestion(this.messages);
       if (!q || q.id !== this.choosing.id) this.choosing = null;
       else if (matchesKey(data, Key.enter)) {
-        const n = this.choosing.n;
-        this.choosing = null;
-        return n === 0 ? this.dismiss(q) : this.answer(q, n);
-      } else if (matchesKey(data, Key.escape)) {
-        this.choosing = null;
-        return this.tui.requestRender();
+        if (this.choosing.dismiss) {
+          this.choosing = null;
+          return this.dismiss(q);
+        }
+        // On a card, Enter goes on to the next question; on the last it sends what you've answered.
+        if (this.choosing.at < questionParts(q).length - 1) return this.moveQuestion(q, 1);
+        return this.answer(q);
       }
     }
     // Shift+Enter / Ctrl+J start a new line in the message (checked before Enter, which Ctrl+J resembles).
@@ -1047,9 +1060,34 @@ export class App implements Component {
     this.say(`Attached ${files.map((f) => f.name).join(", ")}. It goes with your next message.`, "ok");
   }
 
-  /** Pick an option of the open question (0: dismiss it), waiting for Enter, as its number key does. */
-  private choose(q: Message, n: number): void {
-    this.choosing = { id: q.id, n };
+  /** Your answer to this question as you make it, started when you first pick, move or type. */
+  private draft(q: Message): NonNullable<App["choosing"]> {
+    if (this.choosing?.id !== q.id) this.choosing = { id: q.id, at: 0, picks: [], notes: [], dismiss: false };
+    return this.choosing;
+  }
+
+  /**
+   * Pick option n of question i on the open card (0: dismiss it), waiting for Enter, as its number key does.
+   * A question with one answer takes the new pick instead; otherwise each number turns its option on or off.
+   */
+  private choose(q: Message, n: number, i = this.choosing?.id === q.id ? this.choosing.at : 0): void {
+    const d = this.draft(q);
+    d.at = i;
+    d.dismiss = n === 0;
+    if (n) {
+      const had = d.picks[i] ?? [];
+      d.picks[i] = questionParts(q)[i]?.single ? [n] : had.includes(n) ? had.filter((x) => x !== n) : [...had, n].sort((x, y) => x - y);
+    }
+    this.tui.requestRender();
+  }
+
+  /** On a card of several questions: go to the next (1) or previous (-1) one, keeping what you've answered. */
+  private moveQuestion(q: Message, by: number, to?: number): void {
+    const d = this.draft(q);
+    d.at = Math.min(Math.max(0, to ?? d.at + by), questionParts(q).length - 1);
+    d.dismiss = false;
+    this.scroll = Number.MAX_SAFE_INTEGER;
+    this.anchor = "question"; // keep the question you're on in view
     this.tui.requestRender();
   }
 
@@ -1061,11 +1099,37 @@ export class App implements Component {
     await this.refresh();
   }
 
-  private async answer(q: Message, n: number): Promise<void> {
+  /** What to press on the open question, under its card: for the question you're on, if it's a card of several. */
+  private questionHint(q: Message, at: number): string {
+    const parts = questionParts(q);
+    const p = parts[at];
+    const n = p.options?.length ?? 0;
+    const keys = n ? `Press ${n === 1 ? "1" : `1–${n}`} to ${p.single ? "choose" : n === 1 ? "pick it" : "pick one or more"}` : "";
+    if (parts.length < 2) return n ? `${keys} (0 to dismiss), then Enter. Or type a message to answer in your own words.` : "Type a message to answer, or press 0 then Enter to dismiss.";
+    const last = at === parts.length - 1;
+    return `Question ${at + 1} of ${parts.length}: ${keys ? `${keys.toLowerCase()}, or type` : "type"} your own answer. ${last ? "Enter sends your answers (any left blank stay unanswered)" : "Enter goes to the next"} · Tab or ↑↓ moves · 0 dismisses all.`;
+  }
+
+  /** Send your answer to the open question: what you picked on each of its questions, and any words of your own. */
+  private async answer(q: Message, text?: string): Promise<void> {
     const a = this.agent;
     if (!a || this.onNewRow) return;
-    await this.c.call("answer", { name: a.name, questionId: q.id, choice: n });
-    this.say(`Answered: ${q.options![n - 1]}`, "ok");
+    const d = this.choosing?.id === q.id ? this.choosing : null;
+    const parts = questionParts(q);
+    const labels = (i: number) => (d?.picks[i] ?? []).map((n) => optionLabel(parts[i].options?.[n - 1] ?? String(n)));
+    if (parts.length > 1) {
+      const replies = parts.map((_, i) => ({ ...(d?.picks[i]?.length ? { choices: d.picks[i] } : {}), ...(d?.notes[i] ? { note: d.notes[i] } : {}) }));
+      const done = replies.filter((r) => r.choices || r.note).length;
+      if (!done) return this.say("Nothing answered yet: pick an option or type an answer, or Esc to leave the questions.");
+      await this.c.call("answer", { name: a.name, questionId: q.id, replies });
+      this.say(done === parts.length ? `Answered all ${parts.length} questions.` : `Answered ${done} of ${parts.length} questions; the rest stay unanswered.`, "ok");
+    } else {
+      const picks = d?.picks[0] ?? [];
+      if (!picks.length && !text) return;
+      await this.c.call("answer", { name: a.name, questionId: q.id, ...(picks.length > 1 ? { choices: picks } : picks.length ? { choice: picks[0] } : {}), ...(text ? { text } : {}) });
+      if (picks.length) this.say(`Answered: ${labels(0).join(", ")}`, "ok");
+    }
+    this.choosing = null;
     this.scroll = Number.MAX_SAFE_INTEGER;
     await this.refresh();
   }
@@ -1089,8 +1153,14 @@ export class App implements Component {
     this.tui.requestRender();
     try {
       // With a question open and no files, what you type answers it, as its card says.
+      // On a card of several, your words answer the question you're on, and Enter goes on to the next.
       const q = !sent.length ? openQuestion(this.messages) : undefined;
-      if (q) await this.c.call("answer", { name: a.name, questionId: q.id, text });
+      if (q?.questions?.length) {
+        const d = this.draft(q);
+        d.notes[d.at] = text;
+        if (d.at < q.questions.length - 1) return this.moveQuestion(q, 1);
+        await this.answer(q);
+      } else if (q) await this.answer(q, text);
       else await this.c.call("send", sent.length ? { name: a.name, text, attachments: sent.map((p) => p.path) } : { name: a.name, text });
     } catch (e) {
       // Put it back, so nothing typed is ever lost to an error.
@@ -2005,76 +2075,117 @@ export class App implements Component {
         if (body.length && body.at(-1) !== "") body.push("");
         if (open) questionStart = body.length;
         const hq = headed(m, "A question for you");
-        const rec = recommendedOption(m.options, m.recommendation);
+        const parts = questionParts(m);
+        const card = parts.length > 1;
+        const title = card ? m.title?.trim() || `${parts.length} questions for you` : hq.title;
+        // On a card, each question's options sit under its "Q1" label.
+        const ind = card ? "  " : "";
         if (!open && m.answer) {
-          // Answered: the question and all its options, the one you chose marked and the rest muted, so you
+          // Answered: each question and all its options, the ones you chose marked and the rest muted, so you
           // can see what you picked from. Read-only: no clicks or number keys, so it never looks still open.
-          for (const l of paras(`${muted("?")} ${muted(hq.title)}  ${muted(stamp(m.t))}`, inner - 4)) body.push(line(l));
-          const choice = !m.answer.closed && m.answer.choice && m.options?.[m.answer.choice - 1] ? m.answer.choice : 0;
-          const said = m.answer.note ?? m.answer.text ?? "";
-          if (m.options?.length) {
-            body.push(line(""));
-            m.options.forEach((o, i) => {
-              const n = i + 1;
-              // The same "n  label" as an unanswered option, behind a two-column gutter for the ✓; long labels
-              // wrap under themselves so no line runs past the edge.
-              const lead = `${n}  `;
-              const tag = "  · your answer";
-              const parts = wrap(optionLabel(o), inner - 6 - lead.length - (n === choice ? tag.length : 0));
-              parts.forEach((p, j) => {
-                const text = (j ? " ".repeat(lead.length) : lead) + p;
-                if (n !== choice) body.push(line(`  ${muted(text)}`));
-                else body.push(line(`${j ? "  " : `${accent("✓")} `}${accent(bold(text))}${j === parts.length - 1 ? muted(tag) : ""}`));
+          const ans = m.answer;
+          for (const l of paras(`${muted("?")} ${muted(title)}  ${muted(stamp(m.t))}`, inner - 4)) body.push(line(l));
+          parts.forEach((p, i) => {
+            const r = ans.closed ? {} : replyTo(ans, i);
+            const chosen = (r.choices ?? []).filter((n) => p.options?.[n - 1]);
+            if (card) {
+              body.push(line(""));
+              for (const l of paras(muted(`Q${i + 1}  ${p.text}`), inner - 4)) body.push(line(l));
+            }
+            if (p.options?.length) {
+              if (!card) body.push(line(""));
+              p.options.forEach((o, k) => {
+                const n = k + 1;
+                const on = chosen.includes(n);
+                // The same "n  label" as an unanswered option, behind a two-column gutter for the ✓; long labels
+                // wrap under themselves so no line runs past the edge.
+                const lead = `${n}  `;
+                const tag = "  · your answer";
+                const lines = wrap(optionLabel(o), inner - 6 - ind.length - lead.length - (on ? tag.length : 0));
+                lines.forEach((l, j) => {
+                  const text = (j ? " ".repeat(lead.length) : lead) + l;
+                  if (!on) body.push(line(`${ind}  ${muted(text)}`));
+                  else body.push(line(`${ind}${j ? "  " : `${accent("✓")} `}${accent(bold(text))}${j === lines.length - 1 ? muted(tag) : ""}`));
+                });
               });
-            });
-          }
-          if (m.answer.closed) {
-            if (m.options?.length) body.push(line(""));
+            }
+            if (ans.closed) return;
+            if (!chosen.length && !r.note && card) body.push(line(muted(`${ind}  (left unanswered)`)));
+            else if (!chosen.length) {
+              // In your own words (older answers kept only the whole text).
+              if (p.options?.length && !card) body.push(line(""));
+              for (const l of paras(`${ind}${accent("✓")} You answered: ${r.note ?? ans.text ?? ""}`, inner - 4)) body.push(line(l));
+            } else if (r.note) {
+              if (!card) body.push(line(""));
+              for (const l of paras(muted(r.note), inner - 4 - ind.length)) body.push(line(ind + l));
+            }
+          });
+          if (ans.closed) {
+            if (parts.some((p) => p.options?.length)) body.push(line(""));
             // Muted like the rest of the closed card, never red: a withdrawal isn't a denial.
-            for (const l of paras(closedLine(m.answer, a.name), inner - 4)) body.push(line(muted(l)));
-          } else if (!choice) {
-            if (m.options?.length) body.push(line(""));
-            for (const l of paras(`${accent("✓")} You answered: ${said}`, inner - 4)) body.push(line(l));
-          } else if (m.answer.note) {
+            for (const l of paras(closedLine(ans, a.name), inner - 4)) body.push(line(muted(l)));
+          } else if (card && ans.note) {
             body.push(line(""));
-            for (const l of paras(muted(m.answer.note), inner - 4)) body.push(line(l));
+            for (const l of paras(muted(ans.note), inner - 4)) body.push(line(l));
           }
           t = this.pushExtras(m, body, bodyHits, w, t, line);
           body.push("");
           prev = m;
           continue;
         }
-        for (const l of paras(`${open ? yellow(bold("?")) : muted("?")} ${open ? bold(hq.title) : muted(hq.title)}  ${muted(stamp(m.t))}`, inner - 4)) body.push(line(l));
-        if (hq.body) for (const l of markdownLines(hq.body, inner - 4)) body.push(line(linkify(l, m.links)));
-        if (m.why) for (const l of paras(muted(m.why), inner - 4)) body.push(line(l));
-        // A recommendation that names an option is marked on it; anything else gets its own line.
-        if (m.recommendation && rec < 0) for (const l of paras(`${bold("I'd suggest:")} ${m.recommendation}`, inner - 4)) body.push(line(l));
-        if (m.options?.length) {
-          body.push(line(""));
-          m.options.forEach((o, i) => {
-            const n = i + 1;
-            const picked = open && this.choosing?.id === m.id && this.choosing.n === n;
-            const label = optionLabel(o);
-            const tag = i === rec ? muted("  · suggested") : "";
-            if (open) {
-              const num = picked ? inverse(bold(yellow(` ${n} `))) : inverse(accent(` ${n} `));
-              const shown = `${num} ${picked ? bold(label) : label}`;
-              // A click picks the option, like its number key; Enter answers. Only where it's written.
-              bodyHits.push({ line: body.length, x0: 4, x1: 4 + visibleWidth(shown), act: () => this.choose(m, n) });
-              body.push(line(`${shown}${tag}${picked ? `  ${yellow("← Enter to answer, Esc to cancel")}` : ""}`));
-            } else body.push(line(muted(`${n}  ${label}`)));
-          });
-        }
+        const draft = open && this.choosing?.id === m.id ? this.choosing : null;
+        const at = draft?.at ?? 0;
+        for (const l of paras(`${open ? yellow(bold("?")) : muted("?")} ${open ? bold(title) : muted(title)}  ${muted(stamp(m.t))}`, inner - 4)) body.push(line(l));
+        if (!card && hq.body) for (const l of markdownLines(hq.body, inner - 4)) body.push(line(linkify(l, m.links)));
+        parts.forEach((p, i) => {
+          // The question you're on: its numbers are live and it's marked; the others wait, quieter.
+          const cur = open && i === at;
+          const picks = draft?.picks[i] ?? [];
+          const rec = recommendedOption(p.options, p.recommendation);
+          if (card) {
+            body.push(line(""));
+            const head = cur ? `${yellow(bold(`▸ Q${i + 1}`))}  ${bold(p.text)}` : `${muted(`  Q${i + 1}`)}  ${open ? p.text : muted(p.text)}`;
+            const done = !cur && (picks.length || draft?.notes[i]) ? `  ${accent("✓")}` : "";
+            // A click on a question goes to it.
+            if (open) bodyHits.push({ line: body.length, act: () => this.moveQuestion(m, 0, i) });
+            for (const l of paras(head + done, inner - 4)) body.push(line(l));
+          }
+          if (p.why) for (const l of paras(muted(p.why), inner - 4 - ind.length)) body.push(line(ind + l));
+          // A recommendation that names an option is marked on it; anything else gets its own line.
+          if (p.recommendation && rec < 0) for (const l of paras(`${bold("I'd suggest:")} ${p.recommendation}`, inner - 4 - ind.length)) body.push(line(ind + l));
+          if (p.options?.length) {
+            if (!card) body.push(line(""));
+            const last = Math.max(0, ...picks);
+            p.options.forEach((o, k) => {
+              const n = k + 1;
+              const on = picks.includes(n);
+              const label = optionLabel(o);
+              const tag = k === rec ? muted("  · suggested") : "";
+              if (open) {
+                const num = on ? inverse(bold(yellow(` ${n} `))) : cur ? inverse(accent(` ${n} `)) : muted(` ${n} `);
+                // Picks are ticked too, so which are on shows before Enter, even without colour.
+                const shown = `${num} ${on ? bold(label) : cur ? label : muted(label)}${on ? ` ${yellow("✓")}` : ""}`;
+                // A click picks the option, like its number key; Enter answers. Only where it's written.
+                bodyHits.push({ line: body.length, x0: 4 + ind.length, x1: 4 + ind.length + visibleWidth(shown), act: () => this.choose(m, n, i) });
+                const hint = on && !card && !draft?.dismiss && n === last ? `  ${yellow("← Enter to answer, Esc to cancel")}` : "";
+                body.push(line(`${ind}${shown}${tag}${hint}`));
+              } else body.push(line(muted(`${ind}${n}  ${label}`)));
+            });
+          }
+          const own = draft?.notes[i];
+          if (own) for (const l of paras(`${accent("✎")} ${own}`, inner - 4 - ind.length)) body.push(line(ind + l));
+          if (cur && card && at < parts.length - 1) questionEnd = body.length;
+        });
         if (open) {
-          const picked = this.choosing?.id === m.id && this.choosing.n === 0;
-          const shown = `${picked ? inverse(bold(yellow(" 0 "))) : muted(" 0 ")} ${picked ? bold("Dismiss this question") : muted("Dismiss this question")}`;
+          if (card) body.push(line(""));
+          const picked = !!draft?.dismiss;
+          const what = card ? "Dismiss these questions" : "Dismiss this question";
+          const shown = `${picked ? inverse(bold(yellow(" 0 "))) : muted(" 0 ")} ${picked ? bold(what) : muted(what)}`;
           bodyHits.push({ line: body.length, x0: 4, x1: 4 + visibleWidth(shown), act: () => this.choose(m, 0) });
           body.push(line(`${shown}${picked ? `  ${yellow("← Enter to dismiss, Esc to cancel")}` : ""}`));
-          questionEnd = body.length;
-        }
-        if (open) {
+          if (!card || at === parts.length - 1) questionEnd = body.length;
           body.push(line(""));
-          for (const l of paras(muted(m.options?.length ? `Press ${m.options.length === 1 ? "1" : `1–${m.options.length}`} to choose (0 to dismiss), then Enter. Or type a message to answer in your own words.` : "Type a message to answer, or press 0 then Enter to dismiss."), inner - 4)) body.push(line(l));
+          for (const l of paras(muted(this.questionHint(m, at)), inner - 4)) body.push(line(l));
         }
         t = this.pushExtras(m, body, bodyHits, w, t, line);
         body.push("");
@@ -2346,7 +2457,8 @@ export class App implements Component {
         ...row("⌥/⇧ Enter", "a new line in the message (Ctrl+J works too); pasted text keeps its lines"),
         ...row("⇧ arrows", "select in the message, by word with ⌥ too; or drag, double-click a word, Ctrl+A twice for all"),
         ...row("Ctrl+C Ctrl+X", "copy or cut what's selected in the message; typing replaces it; Ctrl+Z undoes"),
-        ...row("1–9", "answer the open question with that option"),
+        ...row("1–9, Enter", "pick options of the open question (several, unless it takes one), then answer"),
+        ...row("Tab ↑↓", "move between the questions on a card of several; Enter on the last sends them"),
         ...row("drag a file", "attach it to your next message"),
         ...row("Ctrl+L", "step through links and files; Enter opens one"),
         "",
@@ -2426,7 +2538,15 @@ export class App implements Component {
     const a = this.agent;
     if (!a) return "";
     const q = openQuestion(this.messages);
-    if (q?.options?.length) return this.choosing ? "Enter answers with the option you picked; Esc cancels" : `Press ${q.options.length === 1 ? "1" : `1–${q.options.length}`} to choose, or type a message`;
+    if (q?.questions?.length) {
+      const at = this.choosing?.id === q.id ? this.choosing.at : 0;
+      return `Answer question ${at + 1} of ${q.questions.length} in your own words${q.questions[at]?.options?.length ? ", or press its numbers" : ""}`;
+    }
+    if (q?.options?.length) {
+      const picks = this.choosing?.id === q.id ? this.choosing.picks[0] ?? [] : [];
+      if (picks.length) return `Enter answers with ${picks.length === 1 ? "the option" : "the options"} you picked; Esc cancels`;
+      return `Press ${q.options.length === 1 ? "1" : `1–${q.options.length}`} to ${q.single || q.options.length === 1 ? "choose" : "pick one or more"}, or type a message`;
+    }
     if (a.status === "new") return `Tell ${a.name} what it's for…`;
     if (a.status === "stopped") return `Message ${a.name} (stopped; it reads this when started)`;
     return `Message ${a.name}  ·  drag files here to attach`;
@@ -2502,8 +2622,14 @@ export class App implements Component {
     else if (this.onNewRow) hints = [keyHint("enter", "create"), keyHint("↑↓", "agents"), keyHint("?", "keys")];
     else if (this.input.selection()) hints = [keyHint("^C", "copy"), keyHint("^X", "cut"), keyHint("type", "replace"), keyHint("esc", "deselect")];
     else if (this.typing() || this.pending.length) hints = [keyHint("enter", "send"), keyHint("⌥/⇧ enter", "new line"), keyHint("esc", "clear")];
-    else if (this.choosing) hints = [keyHint("enter", "answer"), keyHint("1–9", "change"), keyHint("esc", "cancel")];
-    else hints = [q?.options?.length ? keyHint(`1–${q.options.length}`, "choose") : "", keyHint("↑↓", "agents"), keyHint("→", "settings"), keyHint("⇧↑↓", "scroll"), this.targets().length ? keyHint("^L", "links") : "", keyHint("?", "keys")].filter(Boolean);
+    else if (q?.questions?.length) {
+      // A card of several questions: the keys for the one you're on, and how to get to the others.
+      const at = this.choosing?.id === q.id ? this.choosing.at : 0;
+      const n = q.questions[at]?.options?.length ?? 0;
+      const last = at === q.questions.length - 1;
+      hints = [n ? keyHint(n === 1 ? "1" : `1–${n}`, q.questions[at].single ? "choose" : "pick") : "", keyHint("tab ↑↓", "question"), keyHint("enter", last ? "send answers" : "next"), this.choosing?.id === q.id ? keyHint("esc", "cancel") : keyHint("→", "settings"), keyHint("?", "keys")].filter(Boolean);
+    } else if (this.choosing) hints = [keyHint("enter", "answer"), keyHint(q?.options?.length ? `1–${q.options.length}` : "1–9", q?.single ? "change" : "pick more"), keyHint("esc", "cancel")];
+    else hints = [q?.options?.length ? keyHint(`1–${q.options.length}`, q.single || q.options.length === 1 ? "choose" : "pick") : "", keyHint("↑↓", "agents"), keyHint("→", "settings"), keyHint("⇧↑↓", "scroll"), this.targets().length ? keyHint("^L", "links") : "", keyHint("?", "keys")].filter(Boolean);
     const left = this.agent && !this.onNewRow ? muted(` ${this.agent.backend}${this.agent.model ? ` · ${this.agent.model}` : ""}`) : "";
     while (hints.length > 1 && visibleWidth(hints.join(sep)) + visibleWidth(left) + 3 > w) hints.pop();
     return spread(left, hints.join(sep) + " ", w);

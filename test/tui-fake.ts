@@ -161,7 +161,8 @@ export class FakeClient {
       }
       case "answer": {
         const q = (d.messages[params.name] ?? []).find((m: any) => m.id === params.questionId);
-        if (q) q.answer = { choice: params.choice, text: params.choice ? q.options[params.choice - 1] : params.text, t: new Date().toISOString() };
+        const picks: number[] = params.choices ?? (params.choice ? [params.choice] : []);
+        if (q) q.answer = { choice: picks[0], choices: params.choices, replies: params.replies, note: params.text, text: picks.length ? picks.map((n) => q.options[n - 1]).join("; ") : params.text ?? "", t: new Date().toISOString() };
         const a = d.agents.find((x: any) => x.name === params.name);
         if (a) a.waiting = 0;
         return { ok: true };

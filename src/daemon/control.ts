@@ -224,8 +224,11 @@ export class ControlServer {
       await this.rt.dismissQuestion(name, String(questionId));
       return { ok: true };
     },
-    answer: async ({ name, questionId, choice, text }) => {
-      await this.rt.answer(name, questionId || undefined, choice ? Number(choice) : undefined, text || undefined);
+    answer: async ({ name, questionId, choice, choices, replies, text }) => {
+      // choices: several options of one question; replies: one per question on a card of several.
+      const picks = Array.isArray(choices) ? choices.map(Number) : choice ? Number(choice) : undefined;
+      const each = Array.isArray(replies) ? replies.map((r: any) => ({ choices: Array.isArray(r?.choices) ? r.choices.map(Number) : undefined, note: r?.note ? String(r.note) : undefined })) : undefined;
+      await this.rt.answer(name, questionId || undefined, picks, text || undefined, each);
       return { ok: true };
     },
     settings: async ({ name }) => {

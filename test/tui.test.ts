@@ -214,7 +214,7 @@ describe("terminal app, with a scripted daemon", () => {
     await seen("Merge the dependency fix?");
     const s = await t.screen();
     expect(s).toContain("1  Merge it");
-    expect(s).toContain("Press 1–3 to choose, or type a message");
+    expect(s).toContain("Press 1–3 to pick one or more, or type a message");
     expect(s).toContain(" ● repo-keeper");
   });
 
@@ -800,6 +800,145 @@ describe("terminal app, with a scripted daemon", () => {
     expect(c.calls.some((k) => k.method === "answer")).toBe(false);
     t.press(KEY.enter);
     await until(async () => c.calls.some((k) => k.method === "answer" && k.params.choice === 2), 5_000, "answered with Enter");
+  });
+
+  it("lets you pick several options of a question with their number keys, ticked, then answers with Enter", async () => {
+    const { t, c, seen } = await open();
+    await seen("Merge the dependency fix?");
+    t.press("1");
+    t.press("3");
+    await seen("Close it ✓");
+    let s = await t.screen();
+    expect(s).toContain("Merge it ✓");
+    expect(s).not.toContain("Wait for 1.35 ✓");
+    // A number pressed again takes its option back off.
+    t.press("1");
+    await until(async () => !(await t.screen()).includes("Merge it ✓"), 5_000, "1 off again");
+    t.press("1");
+    await seen("Merge it ✓");
+    s = await t.screen();
+    expect(s).toContain("Enter to answer");
+    expect(c.calls.some((k) => k.method === "answer")).toBe(false);
+    t.press(KEY.enter);
+    await until(async () => c.calls.some((k) => k.method === "answer" && k.params.choices?.join() === "1,3"), 5_000, "answered with both");
+    await seen("Answered: Merge it, Close it");
+  });
+
+  it("takes one option where the question says so: a second number replaces the first", async () => {
+    const c = new FakeClient();
+    const q = c.data.messages["repo-keeper"].find((m: any) => m.id === "m5");
+    q.single = true;
+    const { t, seen } = await open(120, 36, c);
+    await seen("Press 1–3 to choose, or type a message");
+    t.press("1");
+    await seen("Merge it ✓");
+    t.press("2");
+    await seen("Wait for 1.35 ✓");
+    expect(await t.screen()).not.toContain("Merge it ✓");
+    t.press(KEY.enter);
+    await until(async () => c.calls.some((k) => k.method === "answer" && k.params.choice === 2 && !k.params.choices), 5_000, "answered with 2");
+  });
+
+  /** repo-keeper's open question as a card of three, the last without options. */
+  function cardClient() {
+    const c = new FakeClient();
+    const ms = c.data.messages["repo-keeper"];
+    const i = ms.findIndex((m: any) => m.id === "m5");
+    ms[i] = {
+      id: "card", t: ms[i].t, from: "agent", kind: "question", title: "Before I cut the 2.0 release", text: "1. Which platforms?\n2. Which version?\n3. Who to credit?",
+      questions: [
+        { text: "Which platforms should the release build for?", options: ["macOS (arm64 + x64)", "Linux x64", "Windows x64"], recommendation: "macOS (arm64 + x64)" },
+        { text: "Bump to 2.0.0 or ship as 1.9.0?", options: ["2.0.0: the config format changed", "1.9.0: keep it minor"], single: true },
+        { text: "Who should I credit in the release notes?", why: "Three outside contributors landed fixes this cycle." },
+      ],
+    };
+    return c;
+  }
+
+  it("shows several questions on one card and answers them in turn: Tab or ↑↓ to move, Enter on the last sends all", async () => {
+    const c = cardClient();
+    const { t, seen } = await open(110, 40, c);
+    await seen("Before I cut the 2.0 release");
+    let s = await t.screen();
+    expect(s).toContain("▸ Q1  Which platforms should the release build for?");
+    expect(s).toMatch(/ {2}Q2 {2}Bump to 2\.0\.0 or ship as 1\.9\.0\?/);
+    expect(s).toContain("Q3  Who should I credit in the release notes?");
+    expect(s).toContain("Dismiss these questions");
+    expect(s).toContain("Question 1 of 3");
+    t.press("1");
+    t.press("3");
+    await seen("Windows x64 ✓");
+    // Tab goes to the next question here, not to settings.
+    t.press(KEY.tab);
+    await seen("▸ Q2");
+    expect(await t.screen()).not.toContain("Backend");
+    t.press("2");
+    t.press("1"); // takes one: 1 replaces 2
+    await seen("2.0.0: the config format changed ✓");
+    expect(await t.screen()).not.toContain("keep it minor ✓");
+    // ↑↓ move between the questions while you answer, not between agents.
+    t.press(KEY.up);
+    await seen("▸ Q1");
+    expect(await t.screen()).toContain("repo-keeper  ●");
+    t.press(KEY.down);
+    await seen("▸ Q2");
+    // Enter before the last question goes on to the next one.
+    t.press(KEY.enter);
+    await seen("▸ Q3");
+    s = await t.screen();
+    expect(s).toContain("Enter sends your answers");
+    expect(c.calls.some((k) => k.method === "answer")).toBe(false);
+    t.type("Ana and Bo");
+    t.press(KEY.enter);
+    await until(async () => c.calls.some((k) => k.method === "answer"), 5_000, "answered");
+    expect(c.calls.find((k) => k.method === "answer")!.params).toEqual({ name: "repo-keeper", questionId: "card", replies: [{ choices: [1, 3] }, { choices: [1] }, { note: "Ana and Bo" }] });
+    await seen("Answered all 3 questions.");
+  });
+
+  it("sends only the questions you answered on a card, and says the rest stay unanswered", async () => {
+    const c = cardClient();
+    const { t, seen } = await open(110, 40, c);
+    await seen("Before I cut the 2.0 release");
+    t.press(KEY.tab);
+    t.press(KEY.tab);
+    await seen("▸ Q3");
+    // Nothing picked yet: Enter on the last sends nothing.
+    t.press(KEY.enter);
+    await seen("Nothing answered yet");
+    t.press(KEY.up);
+    await seen("▸ Q2");
+    t.press("2");
+    t.press(KEY.tab);
+    await seen("▸ Q3");
+    t.press(KEY.enter);
+    await until(async () => c.calls.some((k) => k.method === "answer"), 5_000, "answered");
+    expect(c.calls.find((k) => k.method === "answer")!.params.replies).toEqual([{}, { choices: [2] }, {}]);
+    await seen("Answered 1 of 3 questions; the rest stay unanswered.");
+  });
+
+  it("dismisses a whole card with 0 then Enter", async () => {
+    const c = cardClient();
+    const { t, seen } = await open(110, 40, c);
+    await seen("Before I cut the 2.0 release");
+    t.press("0");
+    await seen("Enter to dismiss");
+    t.press(KEY.enter);
+    await until(async () => c.calls.some((k) => k.method === "dismiss" && k.params.questionId === "card"), 5_000, "dismissed");
+  });
+
+  it("shows an answered card with each question's picks ticked, the rest muted, and the ones you left", async () => {
+    const c = cardClient();
+    const q = c.data.messages["repo-keeper"].find((m: any) => m.id === "card");
+    q.answer = { replies: [{ choices: [1, 3] }, {}, { note: "Ana and Bo" }], text: "…", t: new Date().toISOString() };
+    const { t, seen } = await open(110, 50, c);
+    await seen("Q3  Who should I credit");
+    const s = await t.screen();
+    expect(s).toContain("✓ 1  macOS (arm64 + x64)  · your answer");
+    expect(s).toContain("    2  Linux x64");
+    expect(s).toContain("✓ 3  Windows x64  · your answer");
+    expect(s).toContain("(left unanswered)");
+    expect(s).toContain("✓ You answered: Ana and Bo");
+    expect(s).not.toContain("Dismiss these questions");
   });
 
   it("keeps the options and Dismiss in view when it opens on a question taller than the screen", async () => {

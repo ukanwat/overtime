@@ -2,7 +2,7 @@ import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import { ensureDaemon, type DaemonClient } from "../daemon/client.js";
 import type { AgentSummary } from "../daemon/control.js";
-import type { Message } from "../store/types.js";
+import { questionParts, type Message } from "../store/types.js";
 import { join } from "node:path";
 import { home } from "../paths.js";
 import { readJson, writeJson } from "../fsutil.js";
@@ -156,10 +156,15 @@ export async function runAcpServer(): Promise<void> {
 }
 
 function render(m: Message): string {
+  // A card of several questions: each with its own why, recommendation and options.
+  if (m.kind === "question" && m.questions?.length) {
+    const qs = questionParts(m).map((q, i) => [`Q${i + 1}. ${q.text}`, q.why ? `Why it matters: ${q.why}` : "", q.recommendation ? `I'd recommend: ${q.recommendation}` : "", (q.options ?? []).map((o, k) => `${k + 1}. ${o}`).join("\n")].filter(Boolean).join("\n"));
+    return [m.title || `${qs.length} questions`, ...qs, m.answer ? `(Answered: ${m.answer.text})` : "(Reply with your choices.)"].join("\n\n");
+  }
   const parts = [m.kind === "agent-message" ? `${m.fromAgent} → ${m.toAgent} (between agents): ${m.text}` : m.title && m.title !== m.text.split("\n")[0] ? `${m.title}\n\n${m.text}` : m.text];
   if (m.why) parts.push(`Why it matters: ${m.why}`);
   if (m.recommendation) parts.push(`I'd recommend: ${m.recommendation}`);
-  if (m.options?.length) parts.push(m.options.map((o, i) => `${i + 1}. ${o}`).join("\n") + (m.answer ? `\n(Answered: ${m.answer.text})` : "\n(Reply with your choice.)"));
+  if (m.options?.length) parts.push(m.options.map((o, i) => `${i + 1}. ${o}`).join("\n") + (m.answer ? `\n(Answered: ${m.answer.text})` : `\n(Reply with your ${m.single ? "choice" : "choices"}.)`));
   if (m.attachments?.length) parts.push(m.attachments.map((a) => `📎 ${a.path}`).join("\n"));
   return parts.join("\n\n");
 }

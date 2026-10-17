@@ -134,21 +134,42 @@ Messages, answers and finished helpers always wake you early.`,
       "ask",
       {
         description:
-          "Ask the person something without stopping. It shows in your conversation with them as a question they answer when they can; the answer reaches you later. Only for what is genuinely theirs to decide or genuinely unsafe. Give your recommendation and short options so they can answer with one key.",
+          "Ask the person something without stopping. It shows in your conversation with them as a question they answer when they can; the answer reaches you later. Only for what is genuinely theirs to decide or genuinely unsafe. Give your recommendation and short options so they can answer with one key. They may pick several options unless you set single. Batch related questions into one ask (questions) rather than asking them one after another: they answer them together.",
         inputSchema: {
-          question: z.string(),
+          question: z.string().optional().describe("The question. With questions: an optional heading for the card."),
           why: z.string().optional(),
           recommendation: z.string().optional(),
           options: z.array(z.string()).max(9).optional().describe("Short choices in your own words, without numbers: Overtime numbers them 1, 2, 3 for the person."),
+          single: z.boolean().optional().describe("Only when the options exclude each other: the person picks exactly one. Otherwise they may pick several."),
+          questions: z
+            .array(
+              z.object({
+                question: z.string(),
+                why: z.string().optional(),
+                recommendation: z.string().optional(),
+                options: z.array(z.string()).max(9).optional(),
+                single: z.boolean().optional(),
+              }),
+            )
+            .max(8)
+            .optional()
+            .describe("Several related questions on one card, each with its own options, recommendation and single. The answers come back to you together."),
           category: z.string().optional().describe('Short label for this kind of decision, e.g. "dependency-update".'),
           urgent: z.boolean().optional().describe("Only if it needs them soon: sends a notification."),
         },
       },
-      safe(async ({ question, why, recommendation, options, category, urgent }) => {
+      safe(async ({ question, why, recommendation, options, single, questions, category, urgent }) => {
+        // One question given as a list of one is just that question.
+        const one = questions?.length === 1 && !question && !options?.length ? questions[0] : undefined;
+        if (one) ({ question, why, recommendation, options, single } = one);
+        const several = !one && questions?.length ? questions.map((q) => ({ text: q.question, why: q.why, recommendation: q.recommendation, options: q.options, single: q.single || undefined })) : undefined;
+        if (!question && !several) return fail("Give a question, or questions.");
         ctx.sent = true;
-        const m = await store.addMessage({ from: "agent", kind: "question", text: question, why, recommendation, options, urgent, category, baseDir: dir });
-        // A question always needs you, so it always notifies.
-        host.notify(`${ctx.agent} has a question`, question);
+        const m = several
+          ? await store.addMessage({ from: "agent", kind: "question", title: question, text: several.map((q, i) => `${i + 1}. ${q.text}`).join("\n"), questions: several, urgent, category, baseDir: dir })
+          : await store.addMessage({ from: "agent", kind: "question", text: question!, why, recommendation, options, single: single || undefined, urgent, category, baseDir: dir });
+        // A question always needs you, so it always notifies: once for the whole card.
+        host.notify(several ? `${ctx.agent} has ${several.length} questions` : `${ctx.agent} has a question`, several ? question || several[0].text : question!);
         host.changed(ctx.agent, "messages");
         return ok(`Asked (${m.id}). Carry on with anything that doesn't depend on the answer. If it stops applying (you decided, or asked something else instead), withdraw it with cancel ${m.id} so it doesn't keep waiting on the person.`);
       }),
