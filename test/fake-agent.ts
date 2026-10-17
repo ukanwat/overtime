@@ -154,6 +154,12 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
       writeFileSync(join(s.cwd, "memory", "reflected.md"), `---\ntype: feedback\nsource: observed\ndate: 2026-10-17\nlast-verified: 2026-10-17\nruns: [${run}]\n---\n\nCheck the render before sending.\n`);
       const idx = join(s.cwd, "memory", "MEMORY.md");
       writeFileSync(idx, `${existsSync(idx) ? readFileSync(idx, "utf8") : ""}- [Check renders](reflected.md) — watch the whole render before sending it\n`);
+      // REFLECT_INFER: also infer two patterns, one with enough support and one without.
+      if (/REFLECT_INFER/.test(text)) {
+        writeFileSync(join(s.cwd, "memory", "pattern-good.md"), `---\ntype: person\nsource: inferred\nruns: [${run}, main_b, main_c]\n---\n\nKeeps rejecting tall layouts.\n`);
+        writeFileSync(join(s.cwd, "memory", "pattern-thin.md"), `---\ntype: person\nsource: inferred\nruns: [${run}]\n---\n\nLikes purple.\n`);
+        writeFileSync(idx, `${readFileSync(idx, "utf8")}- [Tall layouts](pattern-good.md) — avoid designs that use vertical space\n- [Purple](pattern-thin.md) — prefers purple\n`);
+      }
       if (/REFLECT_TAMPER/.test(text)) {
         // Reported as its file tools report a write, the way a backend that doesn't ask first would.
         const edit = (status: string) => cx.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: status === "pending" ? "tool_call" : "tool_call_update", toolCallId: "t1", title: "Write AGENT.md", kind: "edit", status, locations: [{ path: join(s.cwd, "AGENT.md") }] } as any });

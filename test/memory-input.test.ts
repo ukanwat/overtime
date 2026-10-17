@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fakeHome } from "./helpers.js";
@@ -246,5 +246,58 @@ describe("helpers' Claude memories", () => {
     expect(existsSync(join(agentDir, "memory", "helper-82e407-dup.md"))).toBe(false);
     expect(readFileSync(join(agentDir, "memory", "MEMORY.md"), "utf8")).toBe("- [Mine](mine.md) — mine\n- [Python](helper-82e407-python.md) — use /usr/bin/python3\n- [batch](helper-82e407-batch.md)\n");
     expect((await mem.importHelperClaudeMemory(agentDir)).files).toBe(0);
+  });
+});
+
+describe("ageing and patterns", () => {
+  const md = (data: Record<string, unknown>, body = "x") => `---\n${Object.entries(data).map(([k, v]) => `${k}: ${Array.isArray(v) ? `[${v.join(", ")}]` : v}`).join("\n")}\n---\n\n${body}\n`;
+  const day = (n: number) => new Date(Date.parse("2026-10-17T12:00:00Z") - n * 86400_000).toISOString().slice(0, 10);
+  const now = new Date("2026-10-17T12:00:00Z");
+
+  it("marks facts that can change and haven't been checked for long as possibly stale, never durable rules, and unmarks them once checked", async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "overtime-age-")));
+    mkdirSync(join(dir, "memory"));
+    const w = (f: string, data: Record<string, unknown>) => writeFileSync(join(dir, "memory", f), md(data));
+    w("version.md", { type: "project", "can-change": true, "last-verified": day(31) });
+    w("price.md", { type: "reference", "can-change": true, "last-verified": day(59) });
+    w("role.md", { type: "person", "can-change": true, date: day(90) });
+    w("pnpm.md", { type: "feedback", source: "person", "last-verified": day(400) });
+    writeFileSync(join(dir, "memory", "MEMORY.md"), "# Memory\n\n- [Version](version.md) — 0.7.0 is current\n- [Price](price.md) — $20 a month\n- [Role](role.md) — Sam runs QA\n- [pnpm](pnpm.md) — use pnpm\n");
+    expect(await mem.markStale(dir, now)).toBe(2);
+    expect(readFileSync(join(dir, "memory", "MEMORY.md"), "utf8")).toBe(
+      `# Memory\n\n- [Version](version.md) — 0.7.0 is current (possibly stale: last verified ${day(31)})\n- [Price](price.md) — $20 a month\n- [Role](role.md) — Sam runs QA (possibly stale: last verified ${day(90)})\n- [pnpm](pnpm.md) — use pnpm\n`,
+    );
+    expect(await mem.markStale(dir, now)).toBe(0);
+    // Checked again: the mark goes.
+    w("version.md", { type: "project", "can-change": true, "last-verified": day(0) });
+    expect(await mem.markStale(dir, now)).toBe(1);
+    expect(readFileSync(join(dir, "memory", "MEMORY.md"), "utf8")).toContain("- [Version](version.md) — 0.7.0 is current\n");
+  });
+
+  it("holds inferred patterns to at least 3 supports and 2 new per pass, and marks every one unconfirmed", async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "overtime-pat-")));
+    mkdirSync(join(dir, "memory"));
+    const w = (f: string, data: Record<string, unknown>) => writeFileSync(join(dir, "memory", f), md(data));
+    w("old-pattern.md", { type: "person", source: "inferred", runs: ["main_1"] });
+    w("vertical.md", { type: "person", source: "person" });
+    const before = new Set(readdirSync(join(dir, "memory")));
+    w("a-thin.md", { type: "person", source: "inferred", runs: ["main_1", "main_2"] });
+    w("b-space.md", { type: "person", source: "inferred", runs: ["main_1", "main_2"], from: ["vertical.md"] });
+    await new Promise((r) => setTimeout(r, 20));
+    w("c-short.md", { type: "feedback", source: "inferred", runs: ["main_3", "main_4", "main_5"], unconfirmed: true });
+    await new Promise((r) => setTimeout(r, 20));
+    w("d-late.md", { type: "feedback", source: "inferred", runs: ["main_6", "main_7", "main_8"] });
+    writeFileSync(join(dir, "memory", "MEMORY.md"), ["old-pattern", "vertical", "a-thin", "b-space", "c-short (unconfirmed)", "d-late"].map((n) => `- [${n}](${n.split(" ")[0]}.md) — rule${n.includes(" ") ? " (unconfirmed)" : ""}`).join("\n") + "\n");
+    const removed = await mem.boundInferred(dir, before);
+    expect(removed).toEqual([
+      { file: "a-thin.md", why: "only 2 supporting memories and runs" },
+      { file: "d-late.md", why: "more than 2 new patterns in one pass" },
+    ]);
+    expect(readdirSync(join(dir, "memory")).sort()).toEqual(["MEMORY.md", "b-space.md", "c-short.md", "old-pattern.md", "vertical.md"]);
+    expect(readFileSync(join(dir, "memory", "b-space.md"), "utf8")).toContain("unconfirmed: true");
+    expect(readFileSync(join(dir, "memory", "old-pattern.md"), "utf8")).toContain("unconfirmed: true");
+    expect(readFileSync(join(dir, "memory", "MEMORY.md"), "utf8")).toBe(
+      "- [old-pattern](old-pattern.md) — rule (unconfirmed)\n- [vertical](vertical.md) — rule\n- [b-space](b-space.md) — rule (unconfirmed)\n- [c-short (unconfirmed)](c-short.md) — rule (unconfirmed)\n",
+    );
   });
 });

@@ -21,7 +21,7 @@ import { AcpSession } from "../acp/session.js";
 import { promptWasSent, runTurn, sessionPreamble, TurnIncompleteError, UsageLimitError, type TurnResult } from "../runtime/turn.js";
 import { blockedUntil, gotThroughAt, limitInfo, LIMIT_RECHECK_MS, rejectedLimits, usageToday, type TurnUsage } from "../runtime/usage.js";
 import { reflectInstructions, workingInstructions } from "../runtime/instructions.js";
-import { importClaudeMemory, importHelperClaudeMemory, memoryFingerprint, memoryOverCap, memoryText } from "../agent/memory.js";
+import { boundInferred, importClaudeMemory, importHelperClaudeMemory, markStale, memoryFingerprint, memoryOverCap, memoryText } from "../agent/memory.js";
 import { recentTurns, runIds, runTime, unreadChunk, unreadVolume } from "../agent/runlog.js";
 import { StepBoundary } from "../runtime/boundary.js";
 import { MonitorRunner, reapStaleMonitors } from "./monitors.js";
@@ -624,6 +624,9 @@ export class Runtime extends EventEmitter implements ToolHost {
         agent = await loadAgent(agentName);
       }
     }
+    // Facts that can change and haven't been checked for long are marked in the index (and unmarked once
+    // checked), so this turn sees which to check before relying on them.
+    if ((await markStale(agent.dir).catch(() => 0)) > 0) agent = await loadAgent(agentName);
     // And once, what Claude kept in its helpers' folders (an agent imported before this came in gets it too).
     if (!agent.state.helperMemoryImportedAt) {
       const r = await importHelperClaudeMemory(agent.dir).catch((e) => (this.log(`[${agentName}] importing its helpers' Claude memories: ${e?.message ?? e}`), null));
@@ -866,6 +869,7 @@ export class Runtime extends EventEmitter implements ToolHost {
     const { ctx, mcp } = this.tools.open({ agent: agentName, kind: "reflect", depth: 0 });
     const runId = newId("reflect");
     const before = await memoryFingerprint(agent.dir);
+    const filesBefore = new Set(await readdir(memDir).catch(() => [] as string[]));
     let reply = "";
     let ok = false;
     let transient = false;
@@ -905,6 +909,9 @@ export class Runtime extends EventEmitter implements ToolHost {
       this.tools.close(ctx.token);
     }
     if (this.stopping) return;
+    // Patterns it inferred are held to their bounds, whether the pass finished or not.
+    for (const r of await boundInferred(agent.dir, filesBefore).catch(() => [])) this.log(`[${agentName}] reflect pass inferred a pattern in ${r.file} with ${r.why}; removed it`);
+    await markStale(agent.dir).catch(() => 0);
     const now = new Date().toISOString();
     const st = (await loadAgent(agentName)).state;
     if (!ok) {

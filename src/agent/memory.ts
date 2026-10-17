@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseFrontMatter, stringifyFrontMatter } from "./frontmatter.js";
@@ -160,6 +160,90 @@ async function importFrom(agentDir: string, sources: { dir: string; prefix: stri
     if (add.length) await writeFile(memoryIndexPath(agentDir), `${ours.trimEnd()}${ours.trim() ? "\n" : ""}${add.join("\n")}\n`);
   }
   return { files, from };
+}
+
+// ---------- ageing and patterns ----------
+
+/**
+ * How long a fact that can change (can-change: true) holds without being checked again, by its type.
+ * Rules and preferences don't age: only memories marked can-change do.
+ */
+export const STALE_DAYS: Record<string, number> = { project: 30, reference: 60, person: 60, feedback: 60 };
+const STALE_MARK = /\s*\(possibly stale: last verified [^)]*\)/g;
+
+const listOf = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : typeof v === "string" && v.trim() ? v.split(",").map((x) => x.trim()).filter(Boolean) : []);
+const yes = (v: unknown) => v === true || /^(true|yes)$/i.test(String(v ?? ""));
+
+/**
+ * Mark in MEMORY.md each fact that can change and hasn't been checked for too long ("(possibly stale:
+ * last verified …)"), and unmark one that has been checked since, so the agent checks before relying on
+ * it. Only that mark is ever touched; the rest of the index is as the agent wrote it. Returns how many
+ * lines changed.
+ */
+export async function markStale(agentDir: string, now = new Date()): Promise<number> {
+  const index = await readMemoryIndex(agentDir);
+  if (!index.trim()) return 0;
+  let changed = 0;
+  const lines = await Promise.all(
+    index.split("\n").map(async (line) => {
+      const link = linkOf(line);
+      if (!link) return line;
+      const { data } = parseFrontMatter(await readFile(join(agentDir, MEMORY_DIR, link), "utf8").catch(() => ""));
+      const checked = String(data["last-verified"] ?? data.date ?? "");
+      const days = STALE_DAYS[String(data.type ?? "")] ?? 60;
+      const stale = yes(data["can-change"]) && !!checked && now.getTime() - Date.parse(checked) > days * 86400_000;
+      const bare = line.replace(STALE_MARK, "");
+      const next = stale ? `${bare.trimEnd()} (possibly stale: last verified ${checked.slice(0, 10)})` : bare;
+      if (next !== line) changed++;
+      return next;
+    }),
+  );
+  if (changed) await writeFile(memoryIndexPath(agentDir), lines.join("\n"));
+  return changed;
+}
+
+/** At most this many patterns a reflect pass may infer at once, each from at least INFERRED_MIN_SUPPORT memories or runs. */
+export const INFERRED_PER_PASS = 2;
+export const INFERRED_MIN_SUPPORT = 3;
+
+/**
+ * Hold a reflect pass's inferred patterns (source: inferred) to their bounds: new ones need at least
+ * INFERRED_MIN_SUPPORT supporting memories and runs, and only the first INFERRED_PER_PASS stay; every
+ * inferred memory is marked unconfirmed, in its file and its index line. `before`: the memory files
+ * there were before the pass. Returns the files it removed, and why.
+ */
+export async function boundInferred(agentDir: string, before: Set<string>): Promise<{ file: string; why: string }[]> {
+  const dir = join(agentDir, MEMORY_DIR);
+  const names = (await readdir(dir).catch(() => [] as string[])).filter((n) => n.endsWith(".md") && n !== MEMORY_INDEX);
+  const removed: { file: string; why: string }[] = [];
+  const fresh: { name: string; mtime: number }[] = [];
+  const marked = new Set<string>();
+  for (const n of names) {
+    const text = await readFile(join(dir, n), "utf8").catch(() => "");
+    const { data, body } = parseFrontMatter(text);
+    if (String(data.source ?? "") !== "inferred") continue;
+    marked.add(n);
+    if (!yes(data.unconfirmed)) await writeFile(join(dir, n), stringifyFrontMatter({ ...data, unconfirmed: true }, body));
+    if (before.has(n)) continue;
+    const support = new Set([...listOf(data.runs), ...listOf(data.from)]).size;
+    if (support < INFERRED_MIN_SUPPORT) removed.push({ file: n, why: `only ${support} supporting memories and runs` });
+    else fresh.push({ name: n, mtime: (await stat(join(dir, n))).mtimeMs });
+  }
+  for (const f of fresh.sort((a, b) => a.mtime - b.mtime).slice(INFERRED_PER_PASS)) removed.push({ file: f.name, why: `more than ${INFERRED_PER_PASS} new patterns in one pass` });
+  for (const r of removed) {
+    await rm(join(dir, r.file), { force: true });
+    marked.delete(r.file);
+  }
+  // The index: no line for a removed pattern, and "(unconfirmed)" on every inferred one.
+  const index = await readMemoryIndex(agentDir);
+  const gone = new Set(removed.map((r) => r.file));
+  const next = index
+    .split("\n")
+    .filter((l) => !gone.has(linkOf(l) ?? ""))
+    .map((l) => (marked.has(linkOf(l) ?? "") && !/\(unconfirmed\)/.test(l) ? `${l.trimEnd()} (unconfirmed)` : l))
+    .join("\n");
+  if (next !== index) await writeFile(memoryIndexPath(agentDir), next);
+  return removed;
 }
 
 /** A fingerprint of everything in memory/ (names and contents), to tell whether a session changed it. */

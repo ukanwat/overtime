@@ -159,8 +159,13 @@ they type `/`). Load that skill and follow it for that message.
   under about 150 lines (past that you're told, after the turn's request, to consolidate). It's in every
   fresh session's opening, and sent again whenever it changes. Each memory is its own small file with
   front matter: `type` (person, feedback, project or reference), `source` (person, observed,
-  other-agent or web), `date`, `last-verified` (the last day it was checked and still held). Update or
+  other-agent, web or inferred), `date`, `last-verified` (the last day it was checked and still held). Update or
   delete a wrong memory; don't add a contradiction. How-tos are skills.
+- A fact that can change (`can-change: true`: a status, version, price, someone's role) ages: unchecked
+  for 30 days (project) or 60 (other types), its index line gets "(possibly stale: last verified …)";
+  check it, then set `last-verified` and the mark goes. Rules and preferences don't age.
+- The reflect pass may also infer a pattern from at least 3 memories or runs (at most 2 a pass), as
+  `source: inferred`, always unconfirmed until the person bears it out; it never overrides a rule from them.
 - Backends' own memory is off (Claude's auto-memory, Codex's memories; Gemini's `save_memory` and Auto
   Memory through `.gemini/settings.json` in your folder). OpenCode has none of its own; only plugins in
   the person's own config would add one. Claude's old memories for your folder (and your helpers'
