@@ -110,6 +110,22 @@ describe("the message box edits like a text box", () => {
     expect(value()).toBe("one two! three");
   });
 
+  it("selects by word with Option+Shift+← as macOS Terminal sends it with Option as Meta, split in two by the terminal library", async () => {
+    const { t, value, selected } = await open();
+    t.type("one two three");
+    // The library hands "ESC ESC [1;2D" over as Escape, then Shift+←, at once.
+    t.press("\x1b");
+    t.press(K.shiftLeft);
+    await until(async () => selected() === "three", 5_000, "the word selected");
+    t.press("\x1b");
+    t.press(K.shiftLeft);
+    await until(async () => selected() === "two three", 5_000, "the next word selected");
+    // Not Escape: the message is still there, and stays.
+    await sleep(100);
+    expect(selected()).toBe("two three");
+    expect(value()).toBe("one two three");
+  });
+
   it("selects to the line's start and end with Shift+Home / Shift+End (and Cmd+Shift+← where it arrives)", async () => {
     const { t, selected, keys } = await open();
     t.type("abc def");
