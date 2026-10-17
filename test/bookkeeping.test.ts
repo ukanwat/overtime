@@ -61,6 +61,14 @@ describe("bookkeeping files", () => {
     expect(await readJsonl(f)).toEqual([{ a: 1 }, { b: 2 }]);
   });
 
+  it("records appended without waiting for each other land in the order they were made", async () => {
+    const { appendJsonl, readJsonl } = await import("../src/fsutil.js");
+    const f = join(home, "runs", "ordered.jsonl");
+    // As a run's log gets them: one per streamed update, nobody waiting for the last to be written.
+    await Promise.all(Array.from({ length: 300 }, (_, i) => appendJsonl(f, { i, text: "x".repeat(i % 7 ? 10 : 5000) })));
+    expect((await readJsonl<{ i: number }>(f)).map((r) => r.i)).toEqual(Array.from({ length: 300 }, (_, i) => i));
+  });
+
   it("opening the conversation marks read only what it showed", async () => {
     const store = new Store("reader");
     mkdirSync(join(home, "agents", "reader"), { recursive: true });

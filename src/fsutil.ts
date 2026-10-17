@@ -37,10 +37,31 @@ export async function writeJson(path: string, value: unknown): Promise<void> {
   await writeAtomic(path, JSON.stringify(value, null, 2) + "\n");
 }
 
-export async function appendJsonl(path: string, value: unknown): Promise<void> {
+/** Per file, the append still being written: the next one waits for it. */
+const appending = new Map<string, Promise<void>>();
+
+/**
+ * Add one record to a JSON-lines file. Records land in the order this is called, even when callers don't
+ * wait for each other (a run's log gets a record per streamed update): each append to a file waits for
+ * the one before it, since every append has its own steps (folder, torn-line check, write) that would
+ * otherwise interleave with the next one's.
+ */
+export function appendJsonl(path: string, value: unknown): Promise<void> {
+  const line = JSON.stringify(value) + "\n";
+  const prev = appending.get(path) ?? Promise.resolve();
+  const run = prev.then(() => appendNow(path, line));
+  const tail = run.catch(() => {});
+  appending.set(path, tail);
+  void tail.then(() => {
+    if (appending.get(path) === tail) appending.delete(path);
+  });
+  return run;
+}
+
+async function appendNow(path: string, line: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   // A torn last line (a crash, a full disk) is closed off first, so this record doesn't join it and get lost too.
-  await appendFile(path, ((await endsTorn(path)) ? "\n" : "") + JSON.stringify(value) + "\n");
+  await appendFile(path, ((await endsTorn(path)) ? "\n" : "") + line);
 }
 
 /** Whether a file's last byte isn't a newline (a line was cut off). Missing or empty: no. */
