@@ -304,7 +304,7 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
       if (/WATCH_REPEAT/.test(text)) await t.call("wake", { watch: "cat watched.txt 2>/dev/null || echo none", every: "10s", reason: "repeat test", cooldown: "1s" });
       if (/Message from the person[^\n]*\n[^\n]*\bASK\b/.test(text)) await t.call("ask", { question: "Bridge or ferry?", why: "test", recommendation: "Bridge", options: ["Bridge", "Ferry"], category: "test-choice" });
       if (/LOOP/.test(text)) await t.call("wake", { every: "1m", reason: "loop task" });
-      await t.call("send", { status: "fake is working" });
+      if (!/KEEPSTATUS/.test(text)) await t.call("send", { status: "fake is working" });
       if (/NOTIFY/.test(text)) await t.call("send", { title: "Fake update", text: "Did a fake thing." });
       if (!/NOSLEEP/.test(text)) await t.call("wake", { in: "30m", reason: "fake rest" });
       await say("main turn done");

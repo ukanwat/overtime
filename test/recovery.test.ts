@@ -211,6 +211,7 @@ describe("provider trouble (a 502, overloaded)", () => {
     const a = await loadAgent("patient");
     expect(a.state.failures ?? 0).toBe(0);
     expect(a.state.activity).toMatch(/waiting: fake is having trouble/);
+    expect(a.state.ownStatus).toBe("fake is working"); // its own line, from the turn before, is kept
     expect(a.state.mainSessionId).toBe(before);
     expect((await rt.store("patient").inbox()).some((i) => i.text.includes("OVERLOADED_TURN"))).toBe(true); // kept for the retry
     expect((await rt.store("patient").messages()).some((m) => m.kind === "alert")).toBe(false); // no alarm for a blip
@@ -231,8 +232,10 @@ describe("what an agent is doing, shown the same on every backend", () => {
     await employ("statusy");
     await rt.setActivity("statusy", "waiting: for the API key");
     const a = await loadAgent("statusy");
-    expect(a.state.activityByAgent).toBe(true);
-    expect(a.state.activity).toBe("waiting: for the API key");
+    expect(a.state.ownStatus).toBe("waiting: for the API key");
+    // Overtime's own line (stopped, paused, trouble) never takes its place.
+    await rt.stopAgent("statusy");
+    expect((await loadAgent("statusy")).state.ownStatus).toBe("waiting: for the API key");
   });
 });
 
