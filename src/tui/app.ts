@@ -68,7 +68,7 @@ import {
   when,
   yellow,
 } from "./style.js";
-import { headed, humanBytes, openQuestion, optionLabel, recommendedOption, type AgentSettingsView, type LiveState, type Message } from "./types.js";
+import { closedLine, headed, humanBytes, openQuestion, optionLabel, recommendedOption, type AgentSettingsView, type LiveState, type Message } from "./types.js";
 
 export { clean, cleanDeep, openPlan } from "./style.js";
 export type { LiveState, Message } from "./types.js";
@@ -2030,7 +2030,8 @@ export class App implements Component {
           }
           if (m.answer.closed) {
             if (m.options?.length) body.push(line(""));
-            body.push(line(muted(m.answer.closed === "dismissed" ? "✕ You dismissed this question" : `✕ ${a.name} withdrew this question`)));
+            // Muted like the rest of the closed card, never red: a withdrawal isn't a denial.
+            for (const l of paras(closedLine(m.answer, a.name), inner - 4)) body.push(line(muted(l)));
           } else if (!choice) {
             if (m.options?.length) body.push(line(""));
             for (const l of paras(`${accent("✓")} You answered: ${said}`, inner - 4)) body.push(line(l));

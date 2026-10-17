@@ -101,10 +101,17 @@ Messages, answers and finished helpers always wake you early.`,
 
     reg(
       "cancel",
-      { description: "Stop a repeating wake-up, a watch or a running helper, or withdraw a question you asked that no longer applies, by its id.", inputSchema: { id: z.string() } },
-      safe(async ({ id }) => {
+      {
+        description:
+          "Stop a repeating wake-up, a watch or a running helper, or withdraw a question you asked that no longer applies, by its id. When withdrawing a question, give a short why (e.g. \"you gave me full access\"): the person sees it on the question, so they know it was dropped as moot and not refused.",
+        inputSchema: {
+          id: z.string(),
+          why: z.string().optional().describe("For a question: in a few words, why it no longer needs an answer. Shown to the person."),
+        },
+      },
+      safe(async ({ id, why }) => {
         if (id.startsWith("m_")) {
-          return (await host.withdrawQuestion(ctx.agent, id)) ? ok(`Withdrew question ${id}; it no longer waits on the person.`) : fail(`No open question ${id}.`);
+          return (await host.withdrawQuestion(ctx.agent, id, why?.trim() || undefined)) ? ok(`Withdrew question ${id}; it no longer waits on the person.`) : fail(`No open question ${id}.`);
         }
         if (id.startsWith("helper_")) {
           return (await host.cancelHelper(ctx.agent, id)) ? ok(`Cancelling ${id}. Its result (what it got done) will come to you.`) : fail(`No running helper ${id}.`);

@@ -1190,13 +1190,13 @@ export class Runtime extends EventEmitter implements ToolHost {
     this.changed(agentName, "messages");
   }
 
-  /** The agent withdrew a question it no longer needs answered. */
-  async withdrawQuestion(agentName: string, questionId: string): Promise<boolean> {
+  /** The agent withdrew a question it no longer needs answered; its why, if given, rides along as the note. */
+  async withdrawQuestion(agentName: string, questionId: string, why?: string): Promise<boolean> {
     const agent = await loadAgent(agentName);
     const store = this.store(agentName);
     const q = await store.message(questionId);
     if (!q || q.kind !== "question" || q.answer) return false;
-    await store.addMessage({ from: "agent", kind: "message", text: "Withdrawn", replyTo: q.id, closes: "withdrawn", baseDir: agent.dir });
+    await store.addMessage({ from: "agent", kind: "message", text: "Withdrawn", ...(why ? { note: why } : {}), replyTo: q.id, closes: "withdrawn", baseDir: agent.dir });
     this.changed(agentName, "messages");
     return true;
   }
@@ -2063,7 +2063,7 @@ function recentConversation(all: Message[]): string {
   const who = (m: Message) => (m.kind === "agent-message" ? `Between agents, ${m.fromAgent} → ${m.toAgent}` : m.from === "you" ? "Person" : m.from === "agent" ? "You" : "Overtime");
   const lines = shown.map((m) => {
     const kind = m.kind === "question" ? " [your question]" : m.kind === "report" ? " [report]" : m.kind === "alert" ? " [alert]" : "";
-    const answer = m.kind === "question" && m.answer ? `\n  (${m.answer.closed ? `${m.answer.closed}` : `answered: ${m.answer.text}`})` : m.kind === "question" ? "\n  (not answered yet)" : "";
+    const answer = m.kind === "question" && m.answer ? `\n  (${m.answer.closed ? `${m.answer.closed}${m.answer.note ? `: ${m.answer.note}` : ""}` : `answered: ${m.answer.text}`})` : m.kind === "question" ? "\n  (not answered yet)" : "";
     return `${who(m)} (${m.t})${kind}: ${withFiles(m.text, m.attachments)}${answer}`;
   });
   let text = lines.join("\n\n");
