@@ -64,6 +64,8 @@ describe("a backend that isn't signed in", () => {
     await until(async () => (await loadAgent("blip")).state.signedOut, 30_000, "sign-in failure noted");
     rmSync(join(dir("blip"), "signed-out"));
     await until(() => handled("blip", "BLIP_ONE"), 60_000, "carried on by itself");
+    // Its inbox is marked delivered a moment before the turn's state is saved: wait for that, not for time.
+    await until(async () => (await loadAgent("blip")).state.status === "asleep" && !(await loadAgent("blip")).state.signedOut, 30_000, "state saved");
     const a = await loadAgent("blip");
     expect(a.state.signedOut ?? null).toBe(null);
     expect(a.state.lastError).toBe(null);
@@ -93,6 +95,8 @@ describe("a backend that isn't signed in", () => {
     // Signed in: it carries on by itself, nobody wakes it.
     rmSync(join(dir("signedout"), "signed-out"));
     await until(() => handled("signedout", "LASTING"), 60_000, "carried on by itself");
+    // Its inbox is marked delivered a moment before the turn's state is saved: wait for that, not for time.
+    await until(async () => (await loadAgent("signedout")).state.status === "asleep" && !(await loadAgent("signedout")).state.signedOut, 30_000, "state saved");
     const b = await loadAgent("signedout");
     expect(b.state.signedOut ?? null).toBe(null);
     expect(b.state.lastError).toBe(null);
