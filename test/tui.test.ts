@@ -100,7 +100,7 @@ describe("terminal app, against a real daemon", () => {
     t.type("PASS ASK");
     t.press(KEY.enter);
     await seen("Bridge or ferry?", 40_000);
-    await seen("Press 1–2 to choose");
+    await seen("Press 1–2 to pick one or more");
     t.press("1");
     await seen("Enter to answer, Esc to cancel"); // one key alone never answers
     t.press(KEY.enter);
@@ -318,7 +318,7 @@ describe("terminal app, with a scripted daemon", () => {
     t.press(KEY.down);
     await seen("◌ paused · budget used");
     for (let i = 0; i < 3; i++) t.press(KEY.down);
-    await seen("⊘ retrying at");
+    await seen("⊘ retrying"); // "at 6:53" today, a weekday once the retry falls after midnight
     t.press(KEY.down);
     await seen("○ asleep");
   });
