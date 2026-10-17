@@ -15,12 +15,12 @@
 </p>
 
 <p align="center">
-  <img src="docs/demos/team.gif" alt="Seven agents in the Overtime app: pm, backend, frontend, qa, reviewer, on-call and release. One message to pm asks for dark mode and a billing export by tonight. pm plans and messages the others, who start working with helpers; qa catches a failing test and frontend fixes it; on-call is woken by an error spike on the canary, rolls it back and reports; release asks whether to ship to 100% or a 10% canary first, and the answer is 2; it ships, pm reports 7 PRs merged, 1 incident handled and 41 tests added, and everyone goes back to sleep." width="100%">
+  <img src="docs/demos/team.gif" alt="Seven agents in the Overtime app: pm, backend, frontend, qa, reviewer, on-call and release. One message to pm asks for dark mode and a billing export by tonight. pm plans and messages the others, who start working with helpers; qa catches a failing test and frontend fixes it; on-call is woken by an error spike on the canary, rolls it back and reports; the person asks qa how dark mode looks and gets an answer; on-call is woken by an error spike on the canary, rolls it back and reports with a chart and a postmortem, which are opened; release asks whether to ship to 100% or a 10% canary first, and the answer is 2; it ships, pm reports 7 PRs merged, 1 incident handled and 41 tests added, and everyone goes back to sleep. macOS notifications pop in the corner for the reports and the question." width="100%">
 </p>
 
 <p align="center">
-  <sub>A scripted demo of a team of agents working together: the real app, with made-up agents and messages.
-  The recordings further down are real runs.</sub>
+  <sub>A scripted demo of a team of agents working together: the real app, with made-up agents, messages and files;
+  the notifications are drawn on where Overtime sends them. The recordings further down are real runs.</sub>
 </p>
 
 <p align="center">
@@ -56,6 +56,33 @@ and gets to work.
 
 Quitting the app changes nothing. A small background process keeps your agents running, and on first
 run Overtime asks whether to start it when you log in.
+
+## What people use it for
+
+Each of these is one agent you brief once, in plain words. It works on its own schedule, on what you
+give it access to, and asks before anything that's yours to decide.
+
+**For your work**
+
+- **repo-keeper**: watches CI and dependency PRs, fixes what breaks, and asks before merging anything that ships.
+- **on-call**: a watch on your logs or metrics wakes it within seconds; it finds the cause, rolls back or fixes, and writes the postmortem.
+- **reviewer**: reviews each PR as it opens, big ones split across helpers, and leaves its findings worst first.
+- **release**: cuts the release, writes the changelog and notes, canaries it, and asks before it reaches everyone.
+- **research**: reads papers, docs or competitors on a schedule, and reports with sources only when something is worth knowing.
+
+**For your life and career**
+
+<img src="docs/demos/life.gif" alt="Sam's agents in the Overtime app: job-scout, interview-coach, visa-planner, grad-school, money, side-project and learning. At 9:38 PM Sam asks job-scout if anything is worth applying to; it checks the start date with visa-planner, tailors Sam's CV (opened: a one-page CV) and asks whether to apply to a Stripe Staff role; Sam presses 1. Sam says good night. Overnight interview-coach writes an onsite prep plan (opened), side-project fixes a crash from two 1-star reviews, money closes October with a budget chart (opened). At 7 AM job-scout sends a morning summary of the night. macOS notifications pop in the corner as the reports arrive." width="100%">
+
+<sub>Scripted, like the one at the top: the real app with a made-up person, agents and files.</sub>
+
+- **Job hunt**: finds roles that fit, tailors your CV for each one, tracks every application, and asks before it applies.
+- **Interview coach**: builds a prep plan from the company's recent interviews, writes mock questions, and grades your practice answers.
+- **Visa and immigration**: keeps the timeline and deadlines, prepares and checks the documents, and tells your other agents which dates matter.
+- **Grad school**: drafts and tightens a statement of purpose per program, and keeps every deadline.
+- **Money**: closes each month from the statements you export: spending against your budget, and subscriptions you no longer use.
+- **Side project**: ships your weekend app, watches its reviews and crash reports, and fixes and resubmits while you sleep.
+- **A creative project**: for a short film, turns the script into a shot list and schedule, tracks locations and gear, and keeps the edit notes.
 
 ## What it's like
 
