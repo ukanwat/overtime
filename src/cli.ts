@@ -49,7 +49,7 @@ function HELP(): string {
     [
       "Agents",
       [
-        ["overtime new <name>", "create an agent; it starts with no job"],
+        ["overtime new <name> [key=value…]", "create an agent; it starts with no job (settings as for set)"],
         ["overtime ls", "list your agents"],
         ['overtime send <name> "<message>"', "message an agent  (--attach <file>, repeatable)"],
         ["overtime messages <name>", "read your messages with an agent"],
@@ -295,10 +295,12 @@ async function main() {
   try {
     switch (cmd) {
       case "new": {
-        const name = need(rest[0], "overtime new <name>");
+        const name = need(rest[0], "overtime new <name> [backend=…] [model=…] [budget=…]");
         const err = validateName(name);
         if (err) fail(err);
-        const r = await call("new", { name });
+        // Settings chosen up front, with the same keys as `overtime set`.
+        const settings = rest.length > 1 ? parseSettings(rest.slice(1)) : {};
+        const r = await call("new", { name, ...settings }, 120_000); // checking a model name may start the backend
         ok(`Created ${bold(r.name)}. It has no job yet; tell it what it's for:`);
         print(`  ${cmdText(`overtime send ${r.name} "…"`)}  ${gray("or open the app:")} ${cmdText("overtime")}`);
         break;

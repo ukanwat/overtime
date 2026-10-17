@@ -80,6 +80,9 @@ const COPY_MAX_BYTES = 200 * 1024 * 1024;
 
 export type ChangeEvent = { agent: string; what: "messages" | "state" | "schedule" | "monitors" | "helpers" | "agents" };
 
+/** A change to an agent's settings, as the person makes it from the app or the CLI. */
+export type SettingsPatch = { backend?: string; model?: string | null; dailyBudgetUsd?: number; dailyTokenBudget?: number | null; workspace?: string | null; protect?: string[] | null; visibility?: string };
+
 /** Why an agent can't spend right now (usage limit or daily budget), or null if it can. */
 type Blocked = { kind: "limit"; until: Date; resetsAt: Date | null; backend: string } | { kind: "budget"; until: Date; text: string };
 
@@ -1599,8 +1602,57 @@ export class Runtime extends EventEmitter implements ToolHost {
     }
   }
 
+  /**
+   * The person created an agent with its settings chosen up front (the app's settings step, or
+   * `overtime new <name> key=value…`). Everything is checked as `set` checks it before anything is made,
+   * so a missing backend or a bad folder never leaves a half-made agent behind.
+   */
+  async newAgent(name: string, patch: SettingsPatch = {}): Promise<Agent> {
+    const { validateName } = await import("../agent/agent.js");
+    const bad = validateName(name);
+    if (bad) throw new Error(bad);
+    if (existsSync(paths.agent(name))) throw new Error(`An agent called "${name}" already exists.`);
+    const backend = patch.backend || (await loadSettings()).backend;
+    await this.checkSettings(patch, async () => backend);
+    // The default backend too: an agent that can't start is no use to the person who made it.
+    if (!patch.backend) {
+      const { backendMissing } = await import("../acp/backends.js");
+      const missing = await backendMissing(backend);
+      if (missing) throw new Error(missing);
+    }
+    const { backend: b, model, ...rest } = patch;
+    const a = await this.create(name, { backend: b || undefined, model: model === "default" ? null : model });
+    if (Object.values(rest).some((v) => v !== undefined)) await this.setAgentSettings(name, rest);
+    return loadAgent(a.name);
+  }
+
   /** The person changed an agent's settings. Takes effect from its next turn. */
-  async setAgentSettings(name: string, patch: { backend?: string; model?: string | null; dailyBudgetUsd?: number; dailyTokenBudget?: number | null; workspace?: string | null; protect?: string[] | null; visibility?: string }): Promise<void> {
+  async setAgentSettings(name: string, patch: SettingsPatch): Promise<void> {
+    await this.checkSettings(patch, async () => patch.backend ?? (await effectiveSettings(await loadAgent(name))).backend);
+    const { setSettings } = await import("../agent/agent.js");
+    // A new backend means the old model name may not exist there: clear it unless one was given.
+    // Public is the default, so only private is written down.
+    const visibility = patch.visibility === undefined ? undefined : patch.visibility === "private" ? "private" : null;
+    await setSettings(name, { ...patch, visibility, model: patch.backend && patch.model === undefined ? null : patch.model });
+    this.log(`[${name}] settings changed: ${JSON.stringify(patch)}`);
+    // Watches run under the protection they started with: restart them so a change applies to them too.
+    if (patch.protect !== undefined || patch.workspace !== undefined) {
+      this.monitors.stopAgent(name);
+      if ((await loadAgent(name)).state.status !== "stopped") await this.monitors.startAll(name);
+    }
+    // Whether its folder is hidden from the others is part of their watches' rules.
+    if (patch.visibility !== undefined) {
+      for (const a of await listAgents()) {
+        if (a.name === name || a.state.status === "stopped") continue;
+        this.monitors.stopAgent(a.name);
+        await this.monitors.startAll(a.name);
+      }
+    }
+    this.changed(name, "state");
+  }
+
+  /** Checks a settings change and puts it in the form it's stored in (full paths, the model's own id); throws on anything wrong. */
+  private async checkSettings(patch: SettingsPatch, backendFor: () => Promise<string>): Promise<void> {
     if (patch.visibility !== undefined && patch.visibility !== "public" && patch.visibility !== "private") throw new Error('Visibility is "public" or "private".');
     if (patch.dailyTokenBudget !== undefined && patch.dailyTokenBudget !== null && !(Number.isFinite(patch.dailyTokenBudget) && patch.dailyTokenBudget > 0)) throw new Error("The token budget must be a positive number of tokens, or empty for none.");
     if (typeof patch.workspace === "string" && patch.workspace.trim()) {
@@ -1612,7 +1664,7 @@ export class Runtime extends EventEmitter implements ToolHost {
     }
     if (typeof patch.model === "string" && patch.model.trim() && patch.model !== "default") {
       // Check the name against what the backend offers, so a typo can't quietly run on its default model.
-      const backend = patch.backend ?? (await effectiveSettings(await loadAgent(name))).backend;
+      const backend = await backendFor();
       let offered: { id: string; name: string }[] | null = null;
       try {
         offered = await this.models(backend);
@@ -1640,26 +1692,6 @@ export class Runtime extends EventEmitter implements ToolHost {
       if (missing) throw new Error(missing);
     }
     if (patch.dailyBudgetUsd !== undefined && !(typeof patch.dailyBudgetUsd === "number" && patch.dailyBudgetUsd >= 0)) throw new Error("The daily budget must be a number of dollars, 0 or more.");
-    const { setSettings } = await import("../agent/agent.js");
-    // A new backend means the old model name may not exist there: clear it unless one was given.
-    // Public is the default, so only private is written down.
-    const visibility = patch.visibility === undefined ? undefined : patch.visibility === "private" ? "private" : null;
-    await setSettings(name, { ...patch, visibility, model: patch.backend && patch.model === undefined ? null : patch.model });
-    this.log(`[${name}] settings changed: ${JSON.stringify(patch)}`);
-    // Watches run under the protection they started with: restart them so a change applies to them too.
-    if (patch.protect !== undefined || patch.workspace !== undefined) {
-      this.monitors.stopAgent(name);
-      if ((await loadAgent(name)).state.status !== "stopped") await this.monitors.startAll(name);
-    }
-    // Whether its folder is hidden from the others is part of their watches' rules.
-    if (patch.visibility !== undefined) {
-      for (const a of await listAgents()) {
-        if (a.name === name || a.state.status === "stopped") continue;
-        this.monitors.stopAgent(a.name);
-        await this.monitors.startAll(a.name);
-      }
-    }
-    this.changed(name, "state");
   }
 
   /** Stop an agent and move its folder to the archive. Nothing is deleted. */
