@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fakeHome, until } from "./helpers.js";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { FakeClient, TestTerminal } from "./tui-fake.js";
+import { FakeClient, TestTerminal, fakeData } from "./tui-fake.js";
 
 fakeHome();
 const { Runtime } = await import("../src/daemon/runtime.js");
@@ -71,7 +71,7 @@ describe("terminal app, against a real daemon", () => {
     const { loadAgent } = await import("../src/agent/agent.js");
     expect((await loadAgent("alpha")).settings).toEqual({}); // nothing chosen: it follows the defaults
     const s = await t.screen();
-    expect(s).toContain("◇ new");
+    expect(s).toContain("◦ new");
     expect(s).toContain("Tell alpha what it's for");
   });
 
@@ -171,7 +171,7 @@ describe("terminal app, against a real daemon", () => {
   it("stops and starts an agent", async () => {
     t.press(KEY.ctrlS);
     await seen("Stopped alpha");
-    await seen("■ stopped");
+    await seen("⊖ stopped");
     t.press(KEY.ctrlS);
     await seen("Started alpha");
   });
@@ -215,7 +215,7 @@ describe("terminal app, with a scripted daemon", () => {
     const s = await t.screen();
     expect(s).toContain("1  Merge it");
     expect(s).toContain("Press 1–3 to choose, or type a message");
-    expect(s).toContain("▌ repo-keeper");
+    expect(s).toContain(" ● repo-keeper");
   });
 
   it("scrolls back through the conversation with PgUp and forward with PgDn", async () => {
@@ -236,9 +236,202 @@ describe("terminal app, with a scripted daemon", () => {
     await seen("Merge the dependency fix?");
     t.press(KEY.down);
     await seen("Harbour blockout done");
-    expect(await t.screen()).toContain("▌ game-builder");
+    expect(await t.screen()).toContain("game-builder  ◐ working");
     for (let i = 0; i < 4; i++) t.press(KEY.down);
     await seen("Name the new agent");
+  });
+
+  const longStatus = "lighting the harbour district, then the docks along the eastern seawall and the lighthouse";
+  /** The fake agents, with game-builder's status long, and two more: one retrying, one simply asleep. */
+  function mixed() {
+    const c = new FakeClient();
+    const g = c.data.agents.find((a: any) => a.name === "game-builder");
+    g.activity = g.ownStatus = longStatus;
+    const r = c.data.agents[0];
+    c.data.agents.push({ ...r, name: "docs-writer", waiting: 0, unread: 0, lastError: "claude exited", ownStatus: "rewriting the install guide" });
+    c.data.agents.push({ ...r, name: "news-digest", waiting: 0, unread: 0, ownStatus: "sent this morning's digest" });
+    return c;
+  }
+  const sidebar = async (t: TestTerminal) => (await t.screen()).split("\n").map((l) => l.slice(0, l.indexOf("│")));
+
+  it("shows each agent's state as a circle and a word either side of its name, and its own status under it", async () => {
+    const { t, seen } = await open(120, 40, mixed());
+    await seen("Merge the dependency fix?");
+    const lines = await sidebar(t);
+    const under = (name: string) => {
+      const y = lines.findIndex((l) => l.includes(` ${name}`));
+      return { name: lines[y], status: lines[y + 1], gap: lines[y + 2] };
+    };
+    const expected: [string, string, RegExp, string][] = [
+      ["repo-keeper", " ● repo-keeper", /needs you $/, "CI green; watching the dep"],
+      ["game-builder", " ◐ game-builder", /working $/, "lighting the harbour"],
+      ["inbox-triage", " ◌ inbox-triage", /paused $/, "budget used, back"],
+      ["scout", " ◦ scout", /new $/, "waiting for its job"],
+      ["old-bot", " ⊖ old-bot", /stopped $/, ""],
+      ["docs-writer", " ⊘ docs-writer", /retrying $/, "last turn failed: claude e"],
+      ["news-digest", " ○ news-digest", /(\d+:\d\d[ap]m|\w{3}) $/, "sent this morning's digest"],
+    ];
+    for (const [name, first, word, status] of expected) {
+      const r = under(name);
+      // No bar column: one space, the circle, the name; the state's word on the right.
+      expect(r.name.startsWith(first)).toBe(true);
+      expect(r.name).toMatch(word);
+      // The status starts under the name, says no state word of its own, and the row after it is the gap.
+      expect(r.status.startsWith("   " + status)).toBe(true);
+      expect(r.status).not.toMatch(/working|asleep/);
+      expect(r.gap.trim()).toBe("");
+    }
+    // A long one uses the whole line (31 columns less the 3 before it and 1 after), cut with an ellipsis.
+    const g = under("game-builder").status;
+    expect(g.trimEnd().length).toBe(30);
+    expect(g.trimEnd().endsWith("…")).toBe(true);
+    expect(longStatus.startsWith(g.slice(3, -1).trimEnd().slice(0, -1))).toBe(true);
+  });
+
+  it("shows the same circle in the conversation's header, before the state and what it's doing", async () => {
+    const { t, seen } = await open(120, 36, mixed());
+    // The circle and the word always agree: an asleep agent with a question for you needs you.
+    await seen("● needs you · wakes");
+    t.press(KEY.down);
+    await seen("◐ working");
+    t.press(KEY.down);
+    await seen("◌ paused · budget used");
+    for (let i = 0; i < 3; i++) t.press(KEY.down);
+    await seen("⊘ retrying at");
+    t.press(KEY.down);
+    await seen("○ asleep");
+  });
+
+  it("shows as many agents at 110×24 as before", async () => {
+    const { t, seen } = await open(110, 24, mixed());
+    await seen("Merge the dependency fix?");
+    const s = (await sidebar(t)).join("\n");
+    for (const name of ["repo-keeper", "game-builder", "inbox-triage", "scout", "old-bot"]) expect(s).toContain(name);
+    expect(s).toContain("1 of 8");
+  });
+
+  it("selects an agent with a click on its name or its status, not on the gap between agents", async () => {
+    const { t, seen } = await open(120, 36, mixed());
+    await seen("Merge the dependency fix?");
+    const lines = await sidebar(t);
+    const y = lines.findIndex((l) => l.includes(" game-builder"));
+    click(t, 8, y + 1);
+    await seen("game-builder  ◐ working");
+    click(t, 8, y + 2);
+    await sleep(200);
+    expect(await t.screen()).toContain("game-builder  ◐ working");
+    click(t, 4, lines.findIndex((l) => l.includes(" inbox-triage")));
+    await seen("inbox-triage  ◌ paused");
+    click(t, 10, lines.findIndex((l) => l.includes("waiting for its job")));
+    await seen("scout  ◦ new");
+  });
+
+  it("shows the selected agent as one seamless tinted block: both rows edge to edge, a bold name, not the gap after it", async () => {
+    style.applyTerminalColors({ background: { r: 12, g: 12, b: 12 }, foreground: { r: 224, g: 224, b: 224 } }, true);
+    const { t, seen } = await open(120, 36, mixed());
+    await seen("Merge the dependency fix?");
+    t.press(KEY.down);
+    await seen("Harbour blockout done");
+    const lines = await sidebar(t);
+    const y = lines.findIndex((l) => l.includes(" ◐ game-builder"));
+    const bg = (await t.cell(20, y)).bg;
+    expect((await t.cell(20, y)).bgMode).not.toBe(0);
+    // Every cell of both rows, from the first column to the last, on the same tint: no seam, no bar.
+    for (const row of [y, y + 1]) for (let x = 0; x < 31; x++) expect((await t.cell(x, row)).bg).toBe(bg);
+    expect((await t.cell(3, y)).bold).toBe(true);
+    for (let x = 0; x < 31; x++) expect((await t.cell(x, y + 2)).bgMode).toBe(0);
+    // Another agent's rows aren't tinted.
+    const other = lines.findIndex((l) => l.includes(" ◌ inbox-triage"));
+    expect((await t.cell(20, other)).bgMode).toBe(0);
+  });
+
+  it("lines up the left rule of every kind of message in one column, unbroken down each message", async () => {
+    const c = new FakeClient();
+    const msgs = c.data.messages["repo-keeper"];
+    // One of each kind: yours, the agent's, a report, a question, between agents, an alert (the fake has most).
+    msgs.splice(4, 0, { id: "x1", t: msgs[3].t, from: "agent", kind: "agent-message", fromAgent: "repo-keeper", toAgent: "game-builder", text: "The harbour PR touches CI; I'll hold the dependency merge until it lands, so the two don't collide." });
+    const { t, seen } = await open(120, 90, c);
+    await seen("Merge the dependency fix?");
+    const lines = (await t.screen()).split("\n");
+    const sep = lines[1].indexOf("│");
+    const top = lines.findIndex((l) => /^─{20}/.test(l.slice(sep + 1)));
+    const end = lines.findIndex((l, i) => i > top && l.startsWith("╭"));
+    // Where each row's rule is, in the conversation (after the agent list).
+    const rule = (l: string) => /[┃│]/.exec(l.slice(sep + 1))?.index ?? -1;
+    const rows = lines.slice(top + 1, end).filter((l) => rule(l) >= 0);
+    expect(new Set(rows.map(rule))).toEqual(new Set([2]));
+    // Every kind is there, on a row with the rule.
+    for (const text of ["Your job: keep", "Got it. I'll watch CI", "The flaky tui test", "The harbour PR touches CI", "Merge the dependency fix?", "Something keeps failing"]) {
+      const row = lines.find((l) => l.includes(text));
+      expect(row, text).toBeTruthy();
+      expect(rule(row!), text).toBe(2);
+    }
+    // Unbroken: from the question's first row to its last, every row carries the rule, wrapped lines included.
+    const q0 = lines.findIndex((l) => l.includes("Merge the dependency fix?"));
+    const q1 = lines.findIndex((l) => l.includes("then Enter. Or type a message"));
+    for (let i = q0; i <= q1 + 1; i++) expect(rule(lines[i]), lines[i]).toBe(2);
+    // Your message's rule is the same heavy bar as a question's and an alert's; the agent's own words a light one.
+    const glyph = (text: string) => { const l = lines.find((x) => x.includes(text))!; return l.slice(sep + 1)[2]; };
+    expect(glyph("Your job: keep")).toBe("┃");
+    expect(glyph("Merge the dependency fix?")).toBe("┃");
+    expect(glyph("Something keeps failing")).toBe("┃");
+    expect(glyph("Got it. I'll watch CI")).toBe("│");
+  });
+
+  it("keeps the selected agent in view in a short window, with a counter, and clicks still land", async () => {
+    const c = mixed();
+    for (let i = 0; i < 8; i++) c.data.agents.push({ ...c.data.agents[1], name: `extra-${i}`, waiting: 0 });
+    const { t, seen } = await open(120, 22, c);
+    await seen("Merge the dependency fix?");
+    for (let i = 0; i < 14; i++) t.press(KEY.down);
+    await seen("extra-7  ◐ working");
+    let s = (await sidebar(t)).join("\n");
+    expect(s).toContain("15 of 16");
+    expect(s).not.toContain("repo-keeper");
+    const lines = await sidebar(t);
+    click(t, 8, lines.findIndex((l) => l.includes(" extra-5")) + 1);
+    await seen("extra-5  ◐ working");
+    s = (await sidebar(t)).join("\n");
+    expect(s).toContain("13 of 16");
+  });
+
+  it("draws frames only as often as what's on screen moves, and not at all when nothing does", async () => {
+    const still = process.env.OVERTIME_STILL;
+    delete process.env.OVERTIME_STILL;
+    style.applyTerminalColors({ background: { r: 12, g: 12, b: 12 }, foreground: { r: 224, g: 224, b: 224 } }, true);
+    try {
+      const frameMs = async (agents: any[], cols = 120) => {
+        const c = new FakeClient();
+        c.data.agents = agents;
+        const { app, seen } = await open(cols, 30, c);
+        await seen("overtime");
+        await sleep(100);
+        return app.frameMs();
+      };
+      const base = fakeData().agents[0];
+      const quiet = { ...base, waiting: 0, unread: 0 };
+      // Asleep breathes slowly; an open question pulses; work spins.
+      expect(await frameMs([quiet])).toBe(200);
+      expect(await frameMs([quiet, { ...base, name: "b" }])).toBe(100);
+      expect(await frameMs([quiet, { ...quiet, name: "b", status: "working" }])).toBe(100);
+      // Nothing moving: no frames.
+      expect(await frameMs([{ ...quiet, status: "stopped" }, { ...quiet, name: "b", status: "new" }])).toBe(null);
+      // Narrow, the list is hidden: only the agent in view counts.
+      expect(await frameMs([{ ...quiet, status: "stopped" }, { ...quiet, name: "b" }], 70)).toBe(null);
+    } finally {
+      process.env.OVERTIME_STILL = still;
+    }
+  });
+
+  it("never draws a line wider than the terminal, and the agent list grows on wide ones", async () => {
+    for (const cols of [80, 120, 160]) {
+      const { t, seen } = await open(cols, 30, mixed());
+      await seen("Merge the dependency fix?");
+      const lines = (await t.screen()).split("\n");
+      for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(cols);
+      const divider = lines[3].indexOf("│");
+      expect(divider).toBe(cols === 160 ? 41 : cols === 120 ? 31 : 26);
+    }
   });
 
   it("shows a new agent's settings before making it, and makes it with the backend, model and budget chosen there", async () => {
@@ -404,7 +597,7 @@ describe("terminal app, with a scripted daemon", () => {
     await new Promise((r) => setTimeout(r, 300));
     const up = await t.screen();
     expect(up).not.toEqual(before);
-    expect(up).toContain("▌ repo-keeper"); // still on the same agent
+    expect(up).toContain(" ● repo-keeper"); // still on the same agent
     t.press("\x1b[1;2B"); // Shift+↓
     await new Promise((r) => setTimeout(r, 300));
     expect(await t.screen()).toEqual(before);
@@ -545,7 +738,7 @@ describe("terminal app, with a scripted daemon", () => {
     const { t, tui, seen } = await open();
     await seen("Merge the dependency fix?");
     const lines = (await t.screen()).split("\n");
-    const y = lines.findIndex((l) => l.includes("  scout"));
+    const y = lines.findIndex((l) => l.includes("◦ scout"));
     t.press(`\x1b[<0;2;${y + 1}M`);
     t.press(`\x1b[<32;100;${y + 2}M`);
     await sleep(100);
@@ -665,7 +858,7 @@ describe("terminal app, with a scripted daemon", () => {
       style.resetPalette();
       if (tint) style.applyTerminalColors({ background: { r: 12, g: 12, b: 12 }, foreground: { r: 224, g: 224, b: 224 } }, true);
       const { t, seen } = await open(120, rows);
-      await seen("▌ repo-keeper");
+      await seen(" ● repo-keeper");
       for (let i = 1; i <= 15; i++) {
         if (i > 1) t.press("\n");
         t.type(`line ${i}`);
@@ -797,7 +990,7 @@ describe("terminal app, with a scripted daemon", () => {
     await seen("two");
     t.press(KEY.up); // moves within the message, not to another agent
     await new Promise((r) => setTimeout(r, 200));
-    expect(await t.screen()).toContain("▌ repo-keeper");
+    expect(await t.screen()).toContain(" ● repo-keeper");
     t.press(KEY.enter);
     await new Promise((r) => setTimeout(r, 300));
     expect(c.calls.find((x) => x.method === "send" || x.method === "answer")?.params.text).toBe("one\ntwo");

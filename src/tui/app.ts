@@ -48,7 +48,6 @@ import {
   hasTints,
   inverse,
   box,
-  shimmer,
   cut,
   italic,
   link,
@@ -57,9 +56,13 @@ import {
   openTarget,
   panel,
   red,
+  picked,
   selected,
   spread,
+  SPINNER,
   stamp,
+  stateGlyph,
+  stateWord,
   statusParts,
   underline,
   when,
@@ -72,8 +75,8 @@ export type { LiveState, Message } from "./types.js";
 
 // ---------- layout ----------
 
-const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const spinner = () => SPINNER[Math.floor(Date.now() / 90) % SPINNER.length];
+// On the same 100 ms beat as the agents' state glyphs, so the frame timer never lands between two frames.
+const spinner = () => SPINNER[Math.floor(Date.now() / 100) % SPINNER.length];
 /** Below this width the agent list is hidden; ↑↓ still switch agents. */
 const NARROW = 80;
 const PAGE = 10;
@@ -598,6 +601,8 @@ export class App implements Component {
   /** Lines scrolled up past the top while older messages load, applied once they're in. */
   private pendingUp = 0;
   private leftW = 0;
+  /** How soon (ms) something drawn in the last frame changes by itself: a state glyph. Infinity if nothing does. */
+  private motion = Infinity;
   private loadedFor = "";
   private started = false;
   /** The selected agent's name (null: the "+ New agent" row). */
@@ -1753,13 +1758,15 @@ export class App implements Component {
   render(width: number): string[] {
     this.hits = [];
     this.textCols.clear();
+    this.motion = Infinity;
     const rows = Math.max(8, this.term.rows);
     const chipsH = this.pending.length && !this.onNewRow ? 1 : 0;
     const composer = this.renderComposer(width, rows >= 16);
     const composerH = composer.length;
     const bodyH = Math.max(1, rows - TOP - chipsH - composerH - 1);
     const narrow = width < NARROW;
-    const leftW = narrow ? 0 : Math.min(34, Math.max(26, Math.floor(width * 0.26)));
+    // The agent list grows a little on wide terminals, so their status lines have room to be read.
+    const leftW = narrow ? 0 : Math.min(width >= 150 ? 42 : 34, Math.max(26, Math.floor(width * 0.26)));
     const rightW = narrow ? width : width - leftW - 1;
     this.leftW = leftW;
     this.paneRows = TOP + bodyH;
@@ -1793,6 +1800,14 @@ export class App implements Component {
     return out;
   }
 
+  /** How often to draw the next frame, in ms: as often as what's on screen moves; null when nothing does. */
+  frameMs(): number | null {
+    // The loading spinners and live steps turn while anything is live.
+    const live = this.live.size || this.agents.some((a) => a.status === "working" || a.helpersRunning) ? 100 : Infinity;
+    const ms = Math.min(this.motion, live);
+    return ms === Infinity ? null : ms;
+  }
+
   /** The first row of the agent list: the name of the app, and what needs you across all agents. */
   private renderBrand(w: number): string {
     const title = ` ${accent("◆")} ${bold("overtime")}`;
@@ -1804,14 +1819,7 @@ export class App implements Component {
     return spread(title, right + " ", w);
   }
 
-  private agentDetail(a: AgentSummary): string {
-    const p = statusParts(a);
-    if (p.word === "waiting") return p.detail;
-    if (a.status === "working") return this.mainLive(a.name)?.step || a.activity || p.detail;
-    // Waiting on its helpers: its own status line says what they're doing, if it set one.
-    if (a.helpersRunning && a.status === "asleep") return a.ownStatus || p.detail;
-    return p.detail;
-  }
+
 
   private renderAgents(w: number, h: number): string[] {
     const lines: string[] = [this.renderBrand(w), ""];
@@ -1827,28 +1835,46 @@ export class App implements Component {
         this.select(idx);
       };
       this.hits.push({ row, x0: 0, x1: w, act: pick }, { row: row + 1, x0: 0, x1: w, act: pick });
-      const bar = on ? accent("▌") : " ";
       if (idx === this.agents.length) {
-        lines.push(this.selRow(`${bar} ${accent(on ? bold("+ New agent") : "+ New agent")}`, w, on), this.selRow(`${bar}   ${muted("create one")}`, w, on), "");
+        lines.push(this.selRow(` ${accent("+")} ${accent(on ? bold("New agent") : "New agent")}`, w, on), this.selRow(`   ${muted("create one")}`, w, on), "");
         continue;
       }
       const a = this.agents[idx];
-      const badge = a.waiting ? yellow(bold(`${a.waiting}`)) : a.unread ? accent(`${a.unread}`) : "";
-      const p = statusParts(a);
-      const detail = this.agentDetail(a);
-      const l1 = bar + " " + spread(on ? bold(a.name) : a.name, badge + " ", w - 2);
-      // Only the word "working" shines (enough to see it's busy at a glance); the rest stays quiet.
-      const word = p.word === "working" ? shimmer(p.word) : muted(p.word);
-      const l2 = bar + "   " + fit(`${p.color(p.dot)} ${word}${detail ? muted(` · ${cut(detail, Math.max(1, w - 9 - p.word.length))}`) : ""}`, w - 4);
+      // Line one: its state as a circle and a word, either side of its name. Line two: what it says it's
+      // doing (that changes rarely; the step it's on now is in the conversation), or why it isn't.
+      const unread = a.unread && !a.waiting ? " " + accent(`${a.unread}`) : "";
+      const name = on ? (hasTints() ? bold(a.name) : accent(bold(a.name))) : a.name;
+      const l1 = " " + this.glyph(a) + " " + spread(name + unread, stateWord(a) + " ", w - 3);
+      const l2 = "   " + this.agentStatus(a, w - 4);
       lines.push(this.selRow(l1, w, on), this.selRow(l2, w, on), "");
     }
     if (count > visible) lines.push(muted(`   ${Math.min(this.sel + 1, count)} of ${count}`));
     return lines;
   }
 
-  /** The selected row: the accent bar always; a soft tint too when the terminal's colours are known. */
+  /** An agent's state glyph, noting how soon it next changes so the frame timer keeps up with it. */
+  private glyph(a: AgentSummary): string {
+    const g = stateGlyph(a);
+    if (g.period) this.motion = Math.min(this.motion, g.period);
+    return g.glyph;
+  }
+
+  /** The agent list's second line: what it says it's doing, or why it isn't doing anything. */
+  private agentStatus(a: AgentSummary, w: number): string {
+    const p = statusParts(a);
+    if (p.kind === "trouble") return red(cut(a.lastError ? `last turn failed: ${a.lastError}` : p.word, w));
+    if (p.kind === "paused" || p.kind === "new") return muted(cut(p.detail, w));
+    // A stopped agent's last status line would read as if it were still at it.
+    return muted(cut(p.kind === "stopped" ? "" : a.ownStatus, w));
+  }
+
+  /**
+   * The selected agent: its rows on a tint leaning to the accent, edge to edge, so the two rows read as one
+   * block with no seam (a bar of block glyphs shows a gap between rows in some terminals). Without tints, its
+   * name is in the accent instead.
+   */
   private selRow(line: string, w: number, on: boolean): string {
-    return on && hasTints() ? selected(line, w) : line;
+    return on && hasTints() ? picked(line, w) : line;
   }
 
   private renderRight(w: number, h: number, x: number, narrow: boolean): Line[] {
@@ -1893,8 +1919,9 @@ export class App implements Component {
     // Each thing once: line one is its state and, while working, the step it's on right now; line two
     // is its own status line. (The list on the left has the short version for scanning.)
     const own = a.status !== "new" ? a.ownStatus : "";
-    const now = p.word === "working" ? this.mainLive(a.name)?.step ?? (a.helpersRunning ? `${a.helpersRunning} helper${a.helpersRunning === 1 ? "" : "s"}` : "") : own ? "" : p.detail;
-    const state = `${p.color(`${p.dot} ${p.word}`)}${now ? muted(` · ${now}`) : p.word === "asleep" && p.detail ? muted(` · ${p.detail}`) : ""}`;
+    // When it wakes stays next to "asleep" and "needs you" even with a status line of its own under it.
+    const now = p.kind === "working" ? this.mainLive(a.name)?.step ?? p.detail : own && p.kind !== "asleep" && p.kind !== "needs" ? "" : p.detail;
+    const state = `${this.glyph(a)} ${p.color(p.word)}${now ? muted(` · ${now}`) : ""}`;
     const open = this.overlay?.kind === "settings";
     const btn = open ? inverse(" Settings ") : `${muted("⚙")} Settings ${muted("→")}`;
     const btnW = visibleWidth(btn) + 1;
@@ -1944,12 +1971,14 @@ export class App implements Component {
       const regroup = !prev || prev.from !== m.from || prev.kind !== "message" || m.kind !== "message" || new Date(m.t).getTime() - new Date(prev.t).getTime() > REGROUP_MIN * 60_000;
 
       if (m.from === "you") {
-        // Yours: a tinted panel behind an accent bar, like Grok CLI's prompt blocks.
-        const row = (s: string) => accent("┃") + (hasTints() ? panel(" " + s, w - 2) : " " + s);
+        // Yours: a tinted panel behind an accent bar, like Grok CLI's prompt blocks. The bar is in the same
+        // column as every other message's rule (two in), so the left edges of the conversation line up.
+        const row = (s: string) => "  " + accent("┃") + (hasTints() ? panel(" " + s, w - 4) : " " + s);
         if (prev && body.at(-1) !== "") body.push("");
-        body.push(row(spread(m.replyTo ? muted("answered") : "", muted(stamp(m.t)) + " ", w - 3)));
-        if (m.text) for (const l of paras(m.text, w - 6)) body.push(row(" " + l));
-        t = this.pushExtras(m, body, bodyHits, w, t, (s) => row(" " + s));
+        body.push(row(spread(m.replyTo ? muted("answered") : "", muted(stamp(m.t)) + " ", w - 5)));
+        // The words one space past the bar, as in every other kind of message.
+        if (m.text) for (const l of paras(m.text, w - 7)) body.push(row(l));
+        t = this.pushExtras(m, body, bodyHits, w - 2, t, row);
         body.push(row(""), "");
       } else if (m.kind === "question") {
         const open = q?.id === m.id;
@@ -2131,7 +2160,7 @@ export class App implements Component {
     }
     // Where each row's words start, past the bar the message is drawn with, so a selection copies only the words.
     view.forEach((v, i) => {
-      const g = typeof v === "string" ? (/^(?:  [┃│] |┃ {1,2})/.exec(stripTerminalSequences(v))?.[0].length ?? 0) : 0;
+      const g = typeof v === "string" ? (/^  [┃│] /.exec(stripTerminalSequences(v))?.[0].length ?? 0) : 0;
       if (g) this.textCols.set(top + i, [x + g, x + w]);
     });
     return view;
@@ -2555,10 +2584,12 @@ export async function runApp(o: AppOptions = {}): Promise<{ app: App; tui: TuiAl
   kb.setUserBindings({ ...kb.getUserBindings(), ...Object.fromEntries(off), ...editing } as any);
   const tui = new TuiAltScreen(term, false, undefined, { openUrl: (url) => app.openLink(url), copyOnSelect: true, copySelection: async (text) => app.clipboard(text), mouse: o.mouse ?? !o.terminal });
   const timers: NodeJS.Timeout[] = [];
+  let frameTimer: NodeJS.Timeout | undefined;
   let quitting = false;
   const app = new App(c, tui, term, () => {
     quitting = true;
     for (const t of timers) clearInterval(t);
+    clearTimeout(frameTimer);
     (o.onQuit ?? (() => process.exit(0)))();
   }, opener);
   if (o.clipboard) app.clipboard = o.clipboard;
@@ -2605,8 +2636,17 @@ export async function runApp(o: AppOptions = {}): Promise<{ app: App; tui: TuiAl
     });
   };
   await attach(c);
-  // Spinners move while anything is live; relative times and counts stay current.
-  timers.push(setInterval(() => (app.live.size || app.agents.some((a) => a.status === "working" || a.helpersRunning)) && tui.requestRender(), 80));
+  // Spinners and state glyphs move on their own beat: each frame is drawn just after it begins, so none is
+  // held longer than the others. With nothing moving there is no fast timer, only a look once a second.
+  const frame = () => {
+    const ms = app.frameMs();
+    frameTimer = setTimeout(() => {
+      if (quitting) return;
+      if (ms) tui.requestRender();
+      frame();
+    }, ms ? ms - (Date.now() % ms) + 5 : 1000);
+  };
+  frame();
   timers.push(setInterval(() => void app.refresh(), 15_000));
   return { app, tui, stop: () => app.quit() };
 }
