@@ -383,3 +383,59 @@ describe("the / menu takes the mouse", () => {
     expect(await t.screen()).toContain("/alpha");
   });
 });
+
+describe("the mouse wheel never types into the message box", () => {
+  let stops: (() => void)[] = [];
+  afterEach(() => {
+    for (const s of stops) s();
+    stops = [];
+  });
+  // Wheel up and down over the conversation, as SGR mouse reports.
+  const up = "\x1b[<64;80;8M";
+  const down = "\x1b[<65;80;8M";
+
+  async function open() {
+    const t = new TestTerminal(120, 14);
+    const c = new FakeClient();
+    const r = await runApp({ terminal: t as any, client: c as any, onQuit: () => {}, opener: () => {}, clipboard: () => true });
+    stops.push(r.stop);
+    await until(async () => (await t.screen()).includes("lines above"), 30_000, "the app on screen");
+    const scroll = () => (r.app as any).scroll as number;
+    // Off the bottom, so the wheel can go both ways.
+    for (let i = 0; i < 4; i++) t.press(up);
+    expect(scroll()).toBeLessThan(Number.MAX_SAFE_INTEGER);
+    return { t, app: r.app, scroll, value: () => r.app.input.getValue() };
+  }
+
+  it("a wheel report split at any byte, between typed letters, scrolls and leaves only the letters", async () => {
+    const { t, scroll, value } = await open();
+    const typed = "after doing the thing";
+    let n = 0;
+    for (let i = 1; i < up.length; i++) {
+      for (const [seq, dir] of [[up, -1], [down, 1]] as const) {
+        t.type(typed[n++ % typed.length] ?? "");
+        const before = scroll();
+        t.press(seq.slice(0, i));
+        t.press(seq.slice(i));
+        expect(Math.sign(scroll() - before), `${JSON.stringify(seq)} split at ${i}`).toBe(dir);
+      }
+    }
+    expect(value()).toBe((typed + typed).slice(0, n));
+  });
+
+  it("a report whose start came alone, then the rest a byte at a time and typing straight after, as from macOS Terminal under load", async () => {
+    const { t, scroll, value } = await open();
+    t.type("af");
+    const before = scroll();
+    t.press("\x1b[");
+    t.type(`${up.slice(2)}ter`);
+    t.press("\x1b");
+    t.type(`${down.slice(1)} doing`);
+    expect(value()).toBe("after doing");
+    expect(scroll()).toBe(before);
+    t.press("\x1b[<65;8");
+    t.press("0;8Mx");
+    expect(value()).toBe("after doingx");
+    expect(scroll()).toBeGreaterThan(before);
+  });
+});
