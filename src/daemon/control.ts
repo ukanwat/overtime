@@ -63,8 +63,12 @@ type Handler = (params: any, sock: Socket) => Promise<unknown>;
  */
 const AGENT_CALLS = new Set(["ping", "agents", "agent", "messages", "settings", "skills", "mcpList", "limits", "live", "backends", "backendStatus", "models", "subscribe"]);
 
-/** Why an agent can't make a request that only the person may. */
-export function personOnly(what: string, caller: string, name?: unknown): string {
+/** Requests that put words in an agent's conversation: what an agent does for that is message it, or the person. */
+const MESSAGING = new Set(["send", "answer"]);
+
+/** Why an agent can't make a request (a CLI command or daemon method) that only the person may. */
+export function personOnly(what: string, request: string | undefined, caller: string, name?: unknown): string {
+  if (!MESSAGING.has(request ?? "")) return `${what} can only be done by the person. If it needs doing, ask them with your send tool.`;
   return name === caller
     ? `${what} can only be done by the person; ${caller} reaches the person with its own send tool.`
     : `${what} can only be done by the person. To reach another agent, use your message tool.`;
@@ -376,7 +380,7 @@ export class ControlServer {
     if (!h) return void reply({ error: `Unknown method ${msg.method}` });
     const params: any = msg.params ?? {};
     if (typeof params.caller === "string" && params.caller) {
-      if (!AGENT_CALLS.has(msg.method!)) return void reply({ error: personOnly(`"${msg.method}"`, params.caller, params.name) });
+      if (!AGENT_CALLS.has(msg.method!)) return void reply({ error: personOnly(`"${msg.method}"`, msg.method, params.caller, params.name) });
       // Reading isn't the person reading: their unread count stays as it was.
       params.markRead = false;
     }

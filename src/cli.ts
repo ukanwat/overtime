@@ -251,7 +251,7 @@ async function main() {
   const caller = process.env[AGENT_MARKER];
   if (caller && !AGENT_OK.includes(cmd ?? "")) {
     // Anything else would act as the person: a message sent this way would arrive as theirs.
-    fail(personOnly(`overtime ${cmd ?? ""}`.trim(), caller, rest[0]), "From inside an agent you can only read: overtime ls, messages, settings, models.");
+    fail(personOnly(`overtime ${cmd ?? ""}`.trim(), cmd, caller, rest[0]), "From inside an agent you can only read: overtime ls, messages, settings, models.");
   }
   if (!cmd) {
     await maybeAskAutostart();
@@ -369,6 +369,11 @@ async function main() {
         const n = Number(choice);
         // A number that can't be an option (0, -1, 1.5) is a typo, not an answer the agent should act on.
         if (/^[-+]?(\d+\.?\d*|\.\d+)$/.test(choice ?? "") && !(Number.isInteger(n) && n > 0)) fail(`There is no option ${choice}.`, 'Usage: overtime answer <name> <option-number> ["note"]');
+        if (Number.isInteger(n) && n > 0) {
+          // Past the last option: the same refusal, checked against the question it would answer.
+          const q = openQuestion((await call<{ messages: Message[] }>("messages", { name, limit: 50 }))?.messages ?? []);
+          if (q?.options?.length && n > q.options.length) fail(`There is no option ${n}. ${name}'s question has ${q.options.length}.`, 'Usage: overtime answer <name> <option-number> ["note"]');
+        }
         const params = Number.isInteger(n) && n > 0 ? { name, choice: n, text: words.join(" ") || undefined } : { name, text: [choice, ...words].join(" ") };
         await call("answer", params);
         ok("Answered.");
