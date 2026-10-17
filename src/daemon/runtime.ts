@@ -334,7 +334,7 @@ export class Runtime extends EventEmitter implements ToolHost {
   }
 
   async setActivity(agent: string, text: string): Promise<void> {
-    await updateState(agent, { activity: text.replace(/\s+/g, " ").trim().slice(0, 80), activityByAgent: true });
+    await updateState(agent, { ownStatus: text.replace(/\s+/g, " ").trim().slice(0, 80) });
     this.changed(agent, "state");
   }
 
@@ -497,7 +497,7 @@ export class Runtime extends EventEmitter implements ToolHost {
       // what other models report says nothing about this one's limits.
       const lifted = a.state.pauseReason === "budget" ? !(await this.blocked(a.name)) : a.state.pauseReason === "limit" ? await this.limitLifted(a) : false;
       if (!lifted && a.state.pausedUntil && new Date(a.state.pausedUntil) > now) return;
-      await updateState(a.name, { status: hasIdentity(a) ? "asleep" : "new", pausedUntil: null, pausedAt: null, pauseReason: null, ...(a.state.activityByAgent ? {} : { activity: hasIdentity(a) ? "resting" : "waiting for its job" }) });
+      await updateState(a.name, { status: hasIdentity(a) ? "asleep" : "new", pausedUntil: null, pausedAt: null, pauseReason: null, activity: hasIdentity(a) ? "resting" : "waiting for its job" });
       this.changed(a.name, "state");
       a = await loadAgent(a.name);
     }
@@ -577,7 +577,7 @@ export class Runtime extends EventEmitter implements ToolHost {
   private async pauseFor(agentName: string, b: Blocked): Promise<void> {
     const agent = await loadAgent(agentName);
     const already = agent.state.status === "paused" && agent.state.pausedUntil && new Date(agent.state.pausedUntil) >= b.until;
-    await updateState(agentName, { status: "paused", pausedUntil: b.until.toISOString(), pausedAt: new Date().toISOString(), activity: b.kind === "limit" ? `paused: ${b.backend} usage limit` : "paused: daily budget used", activityByAgent: false, pauseReason: b.kind === "limit" ? "limit" : "budget", limitResetsAt: b.kind === "limit" ? (b.resetsAt?.toISOString() ?? null) : null });
+    await updateState(agentName, { status: "paused", pausedUntil: b.until.toISOString(), pausedAt: new Date().toISOString(), activity: b.kind === "limit" ? `paused: ${b.backend} usage limit` : "paused: daily budget used", pauseReason: b.kind === "limit" ? "limit" : "budget", limitResetsAt: b.kind === "limit" ? (b.resetsAt?.toISOString() ?? null) : null });
     if (b.kind === "budget" && !already) {
       await this.store(agentName).addMessage({ from: "overtime", kind: "alert", title: "Daily budget used", text: b.text, baseDir: agent.dir });
       this.notify(`${agentName} paused`, "Its daily budget is used. Raise it in its settings to keep it going today.");
@@ -651,8 +651,9 @@ export class Runtime extends EventEmitter implements ToolHost {
     /** The session this turn ran in, once known. */
     let sessionId: string | undefined;
     try {
-      // The agent's own status line stays while it works; Overtime's placeholder becomes "working".
-      await updateState(agentName, firstJob ? { status: "working", activity: "learning its job", activityByAgent: false } : agent.state.activityByAgent && agent.state.activity ? { status: "working" } : { status: "working", activity: "working", activityByAgent: false });
+      // Overtime's line says what this turn is about, the same all turn (live steps there were too much
+      // churn to read); it shows when the agent has no status line of its own.
+      await updateState(agentName, { status: "working", activity: firstJob ? "learning its job" : await turnAbout(store, items) });
       this.changed(agentName, "state");
 
       // Continue the main session unless the backend or model changed, its context is getting full, or
@@ -707,9 +708,7 @@ export class Runtime extends EventEmitter implements ToolHost {
       agent = await loadAgent(agentName);
       if (result.modelIssue) await this.modelIssue(agentName, result.modelIssue);
       if (result.usage2 && result.usage2.turnCostUsd == null) await this.noCostNotice(agentName, result.backend);
-      const patch: Partial<AgentState> = { status: hasIdentity(agent) ? "asleep" : "new", failures: 0, transientFailures: 0, troubleSince: null, lastError: null, limitHits: [], mainSessionFiles: fileHashes(agent), mainSessionPrompt: promptVersion("main"), turnsSinceReflect: (agent.state.turnsSinceReflect ?? 0) + 1, ...(result.compacted ? { compactedSinceReflect: true } : {}) };
-      // Keep whatever status line the agent set itself; only replace Overtime's own placeholder.
-      if (!agent.state.activityByAgent) patch.activity = hasIdentity(agent) ? "resting" : "waiting for its job";
+      const patch: Partial<AgentState> = { status: hasIdentity(agent) ? "asleep" : "new", failures: 0, transientFailures: 0, troubleSince: null, lastError: null, limitHits: [], mainSessionFiles: fileHashes(agent), mainSessionPrompt: promptVersion("main"), turnsSinceReflect: (agent.state.turnsSinceReflect ?? 0) + 1, activity: hasIdentity(agent) ? "resting" : "waiting for its job", ...(result.compacted ? { compactedSinceReflect: true } : {}) };
       await updateState(agentName, patch);
       // A watch or repeating wake already brings it back; otherwise make sure it never goes quiet.
       const sched = await store.schedule();
@@ -745,7 +744,7 @@ export class Runtime extends EventEmitter implements ToolHost {
         const recheck = new Date(Date.now() + LIMIT_RECHECK_MS);
         const until = e.resetsAt && e.resetsAt < recheck ? e.resetsAt : recheck;
         const limitHits = [...(agent.state.limitHits ?? []), new Date().toISOString()].slice(-LIMIT_HOT_TURNS);
-        await updateState(agentName, { status: "paused", pausedUntil: until.toISOString(), pausedAt: new Date().toISOString(), limitHits, activity: `paused: ${eff.backend} usage limit`, activityByAgent: false, pauseReason: "limit", limitResetsAt: e.resetsAt?.toISOString() ?? null });
+        await updateState(agentName, { status: "paused", pausedUntil: until.toISOString(), pausedAt: new Date().toISOString(), limitHits, activity: `paused: ${eff.backend} usage limit`, pauseReason: "limit", limitResetsAt: e.resetsAt?.toISOString() ?? null });
         this.log(`[${agentName}] paused by the ${eff.backend} usage limit; trying again ${until.toISOString()}`);
         if (forced) {
           await store.addMessage({ from: "overtime", kind: "message", text: `${eff.backend} is still at its usage limit${e.resetsAt ? ` (it says it resets ${e.resetsAt.toLocaleString()})` : ""}. ${agentName} keeps your message and tries again by itself every 15 minutes, and as soon as you message or wake it.`, baseDir: agent.dir });
@@ -763,7 +762,7 @@ export class Runtime extends EventEmitter implements ToolHost {
         // and you only hear about it if it lasts.
         const n = (agent.state.transientFailures ?? 0) + 1;
         const since = agent.state.troubleSince ?? new Date().toISOString();
-        await updateState(agentName, { status: idle, transientFailures: n, troubleSince: since, activity: `waiting: ${eff.backend} is having trouble`, activityByAgent: false, lastError: null });
+        await updateState(agentName, { status: idle, transientFailures: n, troubleSince: since, activity: `waiting: ${eff.backend} is having trouble`, lastError: null });
         // Find out now whether it's this machine's connection, so the app can say so.
         void this.checkNetwork(await listAgents(), true).catch(() => {});
         await store.setWake(new Date(Date.now() + BACKOFF_MS[Math.min(BACKOFF_MS.length - 1, n - 1)]), `retry: ${eff.backend} was having trouble (${msg.slice(0, 120)})`);
@@ -1785,7 +1784,7 @@ export class Runtime extends EventEmitter implements ToolHost {
   }
 
   async stopAgent(name: string): Promise<void> {
-    await updateState(name, { status: "stopped", nextWake: null, activity: "stopped", activityByAgent: false });
+    await updateState(name, { status: "stopped", nextWake: null, activity: "stopped" });
     this.monitors.stopAgent(name);
     // Cancel whatever it's running now: its main turn and helpers, including helpers waiting to retry.
     // Its signal stays fired until it's started again (see signalFor).
@@ -1805,7 +1804,7 @@ export class Runtime extends EventEmitter implements ToolHost {
     const a = await loadAgent(name);
     if (a.state.status !== "stopped" && a.state.status !== "paused") return;
     const hadJob = hasIdentity(a);
-    await updateState(name, { status: hadJob ? "asleep" : "new", pausedUntil: null, pausedAt: null, pauseReason: null, failures: 0, activity: hadJob ? "resuming" : "waiting for its job", activityByAgent: false }, { allowStopped: true });
+    await updateState(name, { status: hadJob ? "asleep" : "new", pausedUntil: null, pausedAt: null, pauseReason: null, failures: 0, activity: hadJob ? "resuming" : "waiting for its job" }, { allowStopped: true });
     this.agentAborts.delete(name);
     await this.monitors.startAll(name);
     if (hadJob) this.wakeMain(name, "the person started you again");
@@ -1960,7 +1959,7 @@ export class Runtime extends EventEmitter implements ToolHost {
     const a = await loadAgent(name);
     if (a.state.status === "stopped") throw new Error(`${name} is stopped. Start it first.`);
     if (a.state.status === "new" && !(await this.store(name).inbox()).length) throw new Error(`${name} doesn't have a job yet. Send it a message saying what it's for.`);
-    if (a.state.status === "paused") await updateState(name, { status: hasIdentity(a) ? "asleep" : "new", pausedUntil: null, pausedAt: null, pauseReason: null, ...(a.state.activityByAgent ? {} : { activity: hasIdentity(a) ? "resting" : "waiting for its job" }) });
+    if (a.state.status === "paused") await updateState(name, { status: hasIdentity(a) ? "asleep" : "new", pausedUntil: null, pausedAt: null, pauseReason: null, activity: hasIdentity(a) ? "resting" : "waiting for its job" });
     await updateState(name, { failures: 0 });
     // Waking it means trying, whatever limit was recorded (a budget pause is the person's own setting).
     this.tryDespiteLimit.add(name);
@@ -1975,6 +1974,41 @@ function withFiles(text: string, files?: Attachment[]): string {
   if (!files?.length) return text;
   const list = files.map((f) => `- ${f.path} (${f.kind}${f.kind !== "folder" ? `, ${f.bytes < 1024 ? `${f.bytes} B` : f.bytes < 1048576 ? `${Math.round(f.bytes / 1024)} KB` : `${(f.bytes / 1048576).toFixed(1)} MB`}` : ""})`).join("\n");
   return `${text}${text ? "\n\n" : ""}Attached (copied into your folder; open them with your own tools if you need to, images included):\n${list}`;
+}
+
+/**
+ * What a turn is about, in a few words, for an agent working without a status line of its own: the
+ * person's message, another agent's, a monitor's or a wake's reason. Taken from the turn's inbox items
+ * (newest of the most important kind), else the wake that came due; "working" when there's nothing to say.
+ */
+export async function turnAbout(store: Store, items: InboxItem[]): Promise<string> {
+  const short = (t: string) => {
+    const one = t.replace(/\s+/g, " ").trim();
+    if (one.length <= 60) return one;
+    const cut = one.slice(0, 60);
+    return (cut.lastIndexOf(" ") > 30 ? cut.slice(0, cut.lastIndexOf(" ")) : cut).replace(/[\s,;:.-]+$/, "") + "…";
+  };
+  const last = (f: (i: InboxItem) => boolean) => [...items].reverse().find(f);
+  // The person's own words (from their message, not the inbox text, which can carry Overtime's notes).
+  const yours = last((i) => (i.type === "message" && !(i.data as any)?.fromChat) || (i.type === "answer" && !!i.messageId));
+  if (yours) {
+    const m = (await store.messages()).find((x) => x.id === yours.messageId);
+    const words = m ? m.text || (m.attachments ?? []).map((a) => a.name).join(", ") : yours.text;
+    if (words.trim()) return `on: ${short(words)}`;
+  }
+  const fromAgent = last((i) => i.type === "agent" && typeof (i.data as any)?.from === "string");
+  if (fromAgent) return `on: message from ${(fromAgent.data as any).from}`;
+  const monitorId = last((i) => (i.type === "monitor" || i.type === "system") && typeof (i.data as any)?.monitorId === "string")?.data as { monitorId: string } | undefined;
+  const monitor = monitorId && (await store.monitors()).find((m) => m.id === monitorId.monitorId);
+  if (monitor && monitor.why.trim()) return short(monitor.why);
+  const loop = last((i) => i.type === "loop");
+  if (loop && loop.text.trim()) return short(loop.text);
+  if (!items.length) {
+    // A wake it chose says why; Overtime's own (a check-in, a retry) is just a check-in.
+    const sched = await store.schedule();
+    if (sched.wakeAt && new Date(sched.wakeAt) <= new Date()) return sched.chosenInTurn && sched.wakeReason?.trim() ? short(sched.wakeReason) : "routine check-in";
+  }
+  return "working";
 }
 
 function describeInbox(items: InboxItem[]): string {

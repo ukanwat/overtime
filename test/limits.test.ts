@@ -64,6 +64,25 @@ describe("a usage limit that lifts before its reset (you upgraded, bought more, 
     expect(JSON.parse(readFileSync(join(home, "limits.json"), "utf8"))["fake/default"].windows.limit.status).toBe("allowed"); // cleared for every agent on its model
   });
 
+  it("keeps the agent's own status line through the pause: the state says paused, and its line is back after", async () => {
+    await employ("steady");
+    await rt.setActivity("steady", "watching the dependency PR");
+    limitOn();
+    rt.wakeMain("steady", "test");
+    await paused("steady");
+    let a = await loadAgent("steady");
+    expect(a.state.ownStatus).toBe("watching the dependency PR");
+    expect(a.state.activity).toBe("paused: fake usage limit");
+    limitOff();
+    await rt.send("steady", "KEEPSTATUS are you back?");
+    await until(async () => (await rt.store("steady").messages()).some((m) => m.from === "agent" && m.text.includes("are you back?")), 30_000, "answered");
+    a = await until(async () => {
+      const x = await loadAgent("steady");
+      return x.state.status === "asleep" ? x : null;
+    }, 30_000, "turn over");
+    expect(a.state.ownStatus).toBe("watching the dependency PR");
+  });
+
   it("still over: it says so, keeps your message, and stays paused", async () => {
     await employ("stillover");
     limitOn();

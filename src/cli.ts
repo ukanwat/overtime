@@ -3,7 +3,7 @@ import { DaemonClient, ensureDaemon } from "./daemon/client.js";
 import { personOnly, type AgentSummary } from "./daemon/control.js";
 import { AGENT_MARKER } from "./runtime/leftovers.js";
 import { validateName } from "./agent/agent.js";
-import { accent, ago, bold, clean, cleanDeep, fit, friendly, gray, green, money, red, stamp, statusLine, yellow } from "./tui/style.js";
+import { accent, ago, bold, clean, cleanDeep, fit, friendly, gray, green, italic, money, red, stamp, statusLine, yellow } from "./tui/style.js";
 import { headed, humanBytes, openQuestion, type AgentSettingsView, type Message } from "./tui/types.js";
 
 const [, , cmd, ...rest] = process.argv;
@@ -129,7 +129,9 @@ function agentRow(a: AgentSummary): string[] {
   const unread = a.unread && !a.waiting ? " " + accent(`${a.unread} new`) : "";
   const name = bold(a.name) + (a.waiting ? " " + yellow(`${a.waiting} need${a.waiting === 1 ? "s" : ""} you`) : unread);
   const state = statusLine(a);
-  const doing = a.ownStatus ?? "";
+  // Its own status line (not once stopped: it would read as if it were still at it), else, while it works,
+  // what the turn is about, grayed as Overtime's words.
+  const doing = (a.status !== "stopped" && a.ownStatus) || (a.turnAbout ? gray(italic(a.turnAbout)) : "");
   return [name, state, gray(money(a)), doing || gray("—")];
 }
 

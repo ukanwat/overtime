@@ -155,6 +155,7 @@ describe("an agent's life", () => {
     await until(async () => (await loadAgent("budget")).state.status === "asleep", 30_000, "first turn");
     rt.wakeMain("budget", "test");
     await until(async () => (await loadAgent("budget")).state.status === "paused", 30_000, "paused");
+    expect((await loadAgent("budget")).state.ownStatus).toBe("fake is working"); // its own line is kept
     rt.wakeMain("budget", "test again");
     await new Promise((r) => setTimeout(r, 1500));
     const alerts = (await rt.store("budget").messages()).filter((m) => m.kind === "alert");

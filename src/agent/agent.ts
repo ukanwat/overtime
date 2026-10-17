@@ -38,9 +38,14 @@ export type AgentStatus = "new" | "working" | "asleep" | "paused" | "stopped" | 
 export interface AgentState {
   formatVersion: number;
   status: AgentStatus;
-  /** One line on what it is doing right now, shown in the agent list. */
+  /** Overtime's one line on what it's doing (what this turn is about, resting, paused...). */
   activity: string;
-  /** Whether that line is the agent's own (set with send status), rather than one Overtime wrote. */
+  /**
+   * The agent's own status line (set with send status), shown in the agent list. Only the agent changes
+   * it: a pause, a limit or trouble shows in the state, and its line is there again once that clears.
+   */
+  ownStatus?: string;
+  /** Before ownStatus: whether activity was the agent's own line. Read once, into ownStatus. */
   activityByAgent?: boolean;
   /** Why it is paused: the daily budget is used, or the backend's usage limit was hit. */
   pauseReason?: "budget" | "limit" | null;
@@ -191,6 +196,11 @@ export async function loadAgent(name: string): Promise<Agent> {
     lastRunAt: null,
     lastError: null,
   });
+  // Saved before the agent's own line had a place of its own: it was activity, marked as the agent's.
+  if (state.ownStatus === undefined && "activityByAgent" in state) {
+    state.ownStatus = state.activityByAgent ? state.activity : "";
+    delete state.activityByAgent;
+  }
   return { name, dir, settings: snapshot ?? (data as AgentSettings), identity: body, index, memory, state };
 }
 

@@ -288,6 +288,27 @@ describe("terminal app, with a scripted daemon", () => {
     expect(longStatus.startsWith(g.slice(3, -1).trimEnd().slice(0, -1))).toBe(true);
   });
 
+  it("under a working agent with no status of its own, says in italics what the turn is about, never its steps", async () => {
+    const c = mixed();
+    const g = c.data.agents.find((a: any) => a.name === "game-builder");
+    g.ownStatus = "";
+    g.activity = g.turnAbout = "on: fix the harbour lights";
+    const { t, seen } = await open(120, 40, c);
+    await seen("Merge the dependency fix?");
+    const lines = await sidebar(t);
+    const y = lines.findIndex((l) => l.includes(" game-builder"));
+    expect(lines[y + 1].startsWith("   on: fix the harbour lights")).toBe(true);
+    // Italic: Overtime's words, set apart from the agent's own (which aren't).
+    expect(t.raw).toMatch(/\x1b\[3m(\x1b\[[\d;]*m)*on: fix the harbour lights/);
+    expect(t.raw).toContain("   \x1b[2mCI green; watching the dep");
+    // Its own status line, once it sets one, takes the place again.
+    g.ownStatus = g.activity = "lighting the docks";
+    g.turnAbout = "";
+    c.emit({ type: "changed", agent: "game-builder", what: "state" });
+    await seen("lighting the docks");
+    expect((await sidebar(t)).some((l) => l.includes("on: fix the harbour"))).toBe(false);
+  });
+
   it("shows the same circle in the conversation's header, before the state and what it's doing", async () => {
     const { t, seen } = await open(120, 36, mixed());
     // The circle and the word always agree: an asleep agent with a question for you needs you.

@@ -1874,7 +1874,10 @@ export class App implements Component {
     if (p.kind === "trouble") return red(cut(a.lastError ? `last turn failed: ${a.lastError}` : p.word, w));
     if (p.kind === "paused" || p.kind === "new") return muted(cut(p.detail, w));
     // A stopped agent's last status line would read as if it were still at it.
-    return muted(cut(p.kind === "stopped" ? "" : a.ownStatus, w));
+    if (p.kind === "stopped") return "";
+    // Working without a line of its own: what the turn is about, in italics as Overtime's words, not its.
+    if (!a.ownStatus && a.turnAbout) return italic(muted(cut(a.turnAbout, w)));
+    return muted(cut(a.ownStatus, w));
   }
 
   /**
@@ -1934,7 +1937,7 @@ export class App implements Component {
     const p = statusParts(a);
     // Each thing once: line one is its state and, while working, the step it's on right now; line two
     // is its own status line. (The list on the left has the short version for scanning.)
-    const own = a.status !== "new" ? a.ownStatus : "";
+    const own = a.status !== "new" && a.status !== "stopped" ? a.ownStatus : "";
     // When it wakes stays next to "asleep" and "needs you" even with a status line of its own under it.
     const now = p.kind === "working" ? this.mainLive(a.name)?.step ?? p.detail : own && p.kind !== "asleep" && p.kind !== "needs" ? "" : p.detail;
     const state = `${this.glyph(a)} ${p.color(p.word)}${now ? muted(` · ${now}`) : ""}`;

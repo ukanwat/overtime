@@ -71,7 +71,7 @@ const iso = (minAgo: number) => new Date(now - minAgo * 60000).toISOString();
 const home = "/Users/me/overtime/agents";
 
 export function fakeData() {
-  const summary = (name: string, o: any) => ({ name, status: "asleep", activity: "", ownStatus: "", pauseReason: null, trouble: null, offlineSince: null, nextWake: null, pausedUntil: null, waiting: 0, unread: 0, helpersRunning: 0, spentUsd: 0, costReported: true, tokensToday: 0, budgetUsd: 10, backend: "claude", model: null, lastError: null, dir: `${home}/${name}`, ...o });
+  const summary = (name: string, o: any) => ({ name, status: "asleep", activity: "", ownStatus: "", turnAbout: "", pauseReason: null, trouble: null, offlineSince: null, nextWake: null, pausedUntil: null, waiting: 0, unread: 0, helpersRunning: 0, spentUsd: 0, costReported: true, tokensToday: 0, budgetUsd: 10, backend: "claude", model: null, lastError: null, dir: `${home}/${name}`, ...o });
   const agents: any[] = [
     summary("repo-keeper", { status: "asleep", activity: "CI green; watching the dependency PR", ownStatus: "CI green; watching the dependency PR", nextWake: new Date(now + 95 * 60000).toISOString(), waiting: 1, unread: 1, spentUsd: 1.2 }),
     summary("game-builder", { status: "working", activity: "lighting the harbour district", ownStatus: "lighting the harbour district", spentUsd: 6.41, budgetUsd: 50, helpersRunning: 2, model: "opus" }),
@@ -181,7 +181,7 @@ export class FakeClient {
         const backend = params.backend ?? "claude";
         const model = params.model ?? null;
         const budgetUsd = params.dailyBudgetUsd ?? 10;
-        d.agents.push({ name: params.name, status: "new", activity: "waiting for its job", ownStatus: "", pauseReason: null, trouble: null, offlineSince: null, nextWake: null, pausedUntil: null, waiting: 0, unread: 1, helpersRunning: 0, spentUsd: 0, costReported: true, tokensToday: 0, budgetUsd, backend, model, lastError: null, dir: `${home}/${params.name}` });
+        d.agents.push({ name: params.name, status: "new", activity: "waiting for its job", ownStatus: "", turnAbout: "", pauseReason: null, trouble: null, offlineSince: null, nextWake: null, pausedUntil: null, waiting: 0, unread: 1, helpersRunning: 0, spentUsd: 0, costReported: true, tokensToday: 0, budgetUsd, backend, model, lastError: null, dir: `${home}/${params.name}` });
         d.messages[params.name] = [{ id: "n1", t: new Date().toISOString(), from: "agent", kind: "message", text: `Hi, I'm ${params.name}. I don't have a job yet.` }];
         d.settings[params.name] = { backend, model, dailyBudgetUsd: budgetUsd, dailyTokenBudget: null, workspace: params.workspace ?? `${home}/${params.name}`, workspaceIsDefault: !params.workspace, visibility: params.visibility ?? "public", spentUsd: 0, costReported: true, tokensToday: 0 };
         return { name: params.name };

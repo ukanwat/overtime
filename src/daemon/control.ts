@@ -14,8 +14,10 @@ export interface AgentSummary {
   name: string;
   status: string;
   activity: string;
-  /** The agent's own status line (set with send status), or "" when the line is one of Overtime's. */
+  /** The agent's own status line (set with send status), or "" when it hasn't set one. */
   ownStatus: string;
+  /** While it works: what the turn is about, in Overtime's words (shown when it has no status line of its own); else "". */
+  turnAbout: string;
   /** Why it's paused, when it is. */
   pauseReason: "budget" | "limit" | null;
   /** Paused by a usage limit: when the backend said it resets. */
@@ -304,7 +306,8 @@ export class ControlServer {
       name,
       status: a.state.status,
       activity: a.state.activity,
-      ownStatus: a.state.activityByAgent ? a.state.activity : "",
+      ownStatus: a.state.ownStatus ?? "",
+      turnAbout: a.state.status === "working" ? a.state.activity : "",
       trouble: await this.rt.trouble(name),
       offlineSince: this.rt.offlineSince,
       pauseReason: a.state.status === "paused" ? (a.state.pauseReason ?? null) : null,

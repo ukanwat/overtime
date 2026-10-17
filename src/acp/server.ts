@@ -61,7 +61,7 @@ export async function runAcpServer(): Promise<void> {
   const modes = async (current: string) => {
     const list = await agents();
     return {
-      availableModes: list.map((a) => ({ id: a.name, name: a.name, description: a.activity || a.status })),
+      availableModes: list.map((a) => ({ id: a.name, name: a.name, description: a.ownStatus || a.activity || a.status })),
       currentModeId: current,
     };
   };
