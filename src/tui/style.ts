@@ -214,7 +214,7 @@ export interface StatusLike {
   activity: string;
   pauseReason?: "budget" | "limit" | null;
   limitResetsAt?: string | null;
-  trouble?: { since: string; backend: string } | null;
+  trouble?: { since: string; backend: string; signIn?: boolean } | null;
   offlineSince?: string | null;
   nextWake: string | null;
   pausedUntil: string | null;
@@ -227,7 +227,7 @@ export interface StatusLike {
 /**
  * An agent's state, decided once for everything that shows it: the mark before its name and the word next to
  * the mark always agree, so each mark means one thing. In order, the first that holds:
- * - trouble (⊘): "retrying at …" after a failed turn, "can't reach …" or "no internet"
+ * - trouble (⊘): "retrying at …" after a failed turn, "can't reach …", "… isn't signed in" or "no internet"
  * - working (◐ turning): its turn or its helpers are running
  * - needs you (●): an open question, "· wakes …" if it also has a wake
  * - paused (◌), stopped (⊖), new (◦)
@@ -239,7 +239,7 @@ export function statusParts(a: StatusLike): { kind: StateKind; word: string; det
   // Can't reach its backend: it's waiting, not working, whatever is still running, and it says why.
   const busy = a.status === "working" || !!a.helpersRunning || !!a.trouble;
   if (a.status !== "stopped" && a.status !== "paused" && busy && (a.offlineSince || (a.trouble && a.status !== "working"))) {
-    return { kind: "trouble", word: a.offlineSince ? "no internet" : `can't reach ${a.trouble!.backend}`, detail: "", color: red };
+    return { kind: "trouble", word: a.offlineSince ? "no internet" : a.trouble!.signIn ? `${a.trouble!.backend} isn't signed in` : `can't reach ${a.trouble!.backend}`, detail: "", color: red };
   }
   // Not working, paused, stopped or new: its own session is resting ("asleep", or "error" between retries).
   const resting = !["working", "paused", "stopped", "new"].includes(a.status);
@@ -316,7 +316,7 @@ export function stateWord(a: StatusLike): string {
     case "needs":
       return yellow("needs you");
     case "trouble":
-      return red(a.lastError ? "retrying" : a.offlineSince ? "offline" : "can't reach");
+      return red(a.trouble?.signIn && !a.offlineSince && a.status !== "working" ? "not signed in" : a.lastError ? "retrying" : a.offlineSince ? "offline" : "can't reach");
     case "asleep":
       return muted(a.nextWake ? clock(a.nextWake) : "asleep");
     case "stopped":

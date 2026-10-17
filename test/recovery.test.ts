@@ -409,16 +409,18 @@ describe("common problems", () => {
   it("says exactly what to do when the backend isn't signed in, once", async () => {
     await rt.create("unsigned");
     await rt.send("unsigned", "NOT_SIGNED_IN");
-    const alert = await until(async () => (await rt.store("unsigned").messages()).find((m) => m.kind === "alert"), 30_000, "alert");
+    // Told once it has lasted a few tries (a moment's sign-in failure passes by itself).
+    const alert = await until(async () => (await rt.store("unsigned").messages()).find((m) => m.kind === "alert"), 60_000, "alert");
     expect(alert.text).toMatch(/isn't signed in/);
-    // It checks again in a few minutes (not every minute), so it carries on soon after you sign in.
+    // It keeps checking, every few minutes at most, so it carries on soon after you sign in.
     const s = await until(async () => {
       const x = await rt.store("unsigned").schedule();
       return x.wakeAt ? x : null;
     }, 20_000, "retry scheduled");
-    const wait = new Date(s.wakeAt!).getTime() - Date.now();
-    expect(wait).toBeGreaterThan(2 * 60_000);
-    expect(wait).toBeLessThanOrEqual(5 * 60_000);
+    expect(new Date(s.wakeAt!).getTime() - Date.now()).toBeLessThanOrEqual(5 * 60_000);
+    const tries = (await loadAgent("unsigned")).state.signedOut!.tries;
+    await until(async () => ((await loadAgent("unsigned")).state.signedOut?.tries ?? 0) > tries, 30_000, "checked again");
+    expect((await rt.store("unsigned").messages()).filter((m) => m.kind === "alert")).toHaveLength(1);
   });
 
   it("says so plainly when a backend isn't installed", async () => {
@@ -434,8 +436,9 @@ describe("common problems", () => {
     expect(classify(new BackendError("could not start", "gemini", "ENOENT", undefined, true))).toBe("install");
     expect(needsPerson(new BackendError("x", "gemini", "ENOENT", undefined, true), "gemini", "a")).toMatch(/isn't installed/);
     expect(classify(enoent)).toBe(null); // a missing file inside a turn is not a missing backend
-    // ACP's auth-required code, whatever the words.
+    // ACP's auth-required code, whatever the words; and never the words alone.
     expect(classify(new BackendError("anything", "x", -32000))).toBe("signin");
+    expect(classify(new BackendError("custom: Internal error: unauthorized", "custom", -32603))).toBe(null);
     // Claude: errorKind.
     expect(classify(new BackendError("x", "claude", -32603, { errorKind: "billing_error" }))).toBe("credit");
     expect(classify(new BackendError("x", "claude", -32603, { errorKind: "server_error", message: "boom" }))).toBe("transient");

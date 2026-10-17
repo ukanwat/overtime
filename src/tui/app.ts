@@ -1173,7 +1173,7 @@ export class App implements Component {
     // Delivered to the agent's inbox either way; say when it can't be answered yet, and why.
     const now = this.agents.find((x) => x.name === a.name);
     if (now?.offlineSince) this.say(`Sent. There's no internet right now: ${a.name} answers once it's back.`, "info");
-    else if (now?.trouble) this.say(`Sent. ${a.name} can't reach ${now.trouble.backend} right now: it answers once it can.`, "info");
+    else if (now?.trouble) this.say(now.trouble.signIn ? `Sent. ${now.trouble.backend} isn't signed in: ${a.name} answers by itself once it is.` : `Sent. ${a.name} can't reach ${now.trouble.backend} right now: it answers once it can.`, "info");
   }
 
   private async create(): Promise<void> {
@@ -1941,7 +1941,7 @@ export class App implements Component {
   /** The agent list's second line: what it says it's doing, or why it isn't doing anything. */
   private agentStatus(a: AgentSummary, w: number): string {
     const p = statusParts(a);
-    if (p.kind === "trouble") return red(cut(a.lastError ? `last turn failed: ${a.lastError}` : p.word, w));
+    if (p.kind === "trouble") return red(cut(a.lastError && !a.trouble?.signIn ? `last turn failed: ${a.lastError}` : p.word, w));
     if (p.kind === "paused" || p.kind === "new") return muted(cut(p.detail, w));
     // A stopped agent's last status line would read as if it were still at it.
     if (p.kind === "stopped") return "";
@@ -2019,7 +2019,8 @@ export class App implements Component {
     const lines = [spread(`  ${bold(a.name)}${where}  ${state}`, btn + " ", w)];
     const doing = own ? italic(muted(own)) : "";
     lines.push(spread(`  ${doing}`, muted(`${money(a)}  ·  ${a.backend}${a.model ? ` · ${a.model}` : ""}`) + " ", w));
-    if (a.lastError && a.status !== "working") lines.push(fit(`  ${red("Last turn failed:")} ${muted(a.lastError)}`, w));
+    if (a.trouble?.signIn && a.status !== "working") lines.push(fit(`  ${red("Not signed in:")} ${muted(`sign in to ${a.trouble.backend} in a terminal; ${a.name} carries on by itself once you have.`)}`, w));
+    else if (a.lastError && a.status !== "working") lines.push(fit(`  ${red("Last turn failed:")} ${muted(a.lastError)}`, w));
     lines.push(faint("─".repeat(w)));
     return lines;
   }

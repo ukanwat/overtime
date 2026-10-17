@@ -73,6 +73,10 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
   const s = sessions.get(sessionId)!;
   const say = (t: string) => cx.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: t } } });
   if (/NOT_SIGNED_IN/.test(text)) throw new acp.RequestError(-32000, "Authentication required");
+  // Signed out for as long as a `signed-out` file is in the session's folder (the test signs in by deleting it).
+  if (existsSync(join(s.cwd, "signed-out"))) throw new acp.RequestError(-32000, "Authentication required");
+  // A turn that fails on something a tool or website said ("401 Unauthorized"), with no sign-in code.
+  if (/TOOL_UNAUTHORIZED/.test(text)) throw new acp.RequestError(-32603, "Internal error", { message: "MCP server runpod: HTTP 401 Unauthorized. Authentication required to list pods; please log in" });
   if (/COSTLY_FAIL/.test(text)) {
     s.cost += 0.25;
     await cx.notify(acp.methods.client.session.update, { sessionId, update: { sessionUpdate: "usage_update", used: 1000, size: 100000, cost: { amount: s.cost, currency: "USD" } } as any });

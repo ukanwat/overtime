@@ -50,9 +50,15 @@ export function limitHold(hits: string[] | undefined, now = Date.now()): Date | 
   const until = last[last.length - 1] + LIMIT_RECHECK_MS;
   return until > now ? new Date(until) : null;
 }
+/**
+ * A backend that isn't signed in is checked again after these waits (the last one repeating). Often it's
+ * only for a moment (just after login, or a daemon restart, the keychain can still be locked), and otherwise
+ * it's back soon after the person signs in. A check costs nothing: the backend refuses before any model runs.
+ */
+const SIGNIN_RETRY_MS = process.env.OVERTIME_FAST_RETRY ? [500, 1_000, 2_000] : [30_000, 60_000, 2 * 60_000, 5 * 60_000];
+/** Sign-in failures in a row before the person is told (about a minute and a half): a moment's isn't worth an alarm. */
+const SIGNIN_ALERT_AFTER = 3;
 /** How long a helper waits before retrying after a passing provider problem (tests shorten it). */
-/** A backend that isn't signed in is checked again this often: it usually comes back once the person signs in. */
-const SIGNIN_RETRY_MS = 5 * 60_000;
 const HELPER_RETRY_MS = process.env.OVERTIME_FAST_RETRY ? [200, 400] : [60_000, 5 * 60_000];
 
 /** Wait, unless the signal fires first. Leaves nothing on the signal, which may live as long as the daemon. */
@@ -216,8 +222,10 @@ export class Runtime extends EventEmitter implements ToolHost {
   /** The last time any backend sent anything: proof the connection works, whatever the probe says. */
   private lastProgress = Date.now();
   private lastProbe = 0;
-  /** Helpers retrying after provider trouble, by helper id. */
-  private helperTrouble = new Map<string, { agent: string; since: string; backend: string }>();
+  /** Helpers retrying after provider trouble, or waiting for their backend to be signed in, by helper id. */
+  private helperTrouble = new Map<string, { agent: string; since: string; backend: string; signIn?: boolean }>();
+  /** When a turn on each backend last got through: proof it's signed in, so agents waiting for that try at once. */
+  private gotThrough = new Map<string, number>();
 
   constructor(private readonly log: (line: string) => void) {
     super();
@@ -275,6 +283,12 @@ export class Runtime extends EventEmitter implements ToolHost {
     }
     if (a.state.status !== "stopped") await this.monitors.startAll(a.name);
     else this.agentAborts.set(a.name, stoppedSignal());
+    // Waiting for its backend to be signed in: a fresh daemon (opening the app replaces one that lost the
+    // sign-in) tries at once, not at the next check.
+    if (a.state.signedOut && a.state.status !== "stopped") {
+      const sched = await store.schedule();
+      await store.setWake(new Date(), sched.wakeReason ?? `retry: ${a.state.signedOut.backend} wasn't signed in`);
+    }
     // A last message from the person that never reached the agent (an older version answered messages
     // in a separate session): hand it over now, so it's answered.
     if (a.state.status === "stopped") return;
@@ -439,7 +453,7 @@ export class Runtime extends EventEmitter implements ToolHost {
    * anything for 90 seconds. When it's back, everything that was waiting carries on at once.
    */
   private async checkNetwork(agents: Agent[], force = false): Promise<void> {
-    const troubled = agents.some((a) => a.state.troubleSince) || this.helperTrouble.size > 0;
+    const troubled = agents.some((a) => a.state.troubleSince) || [...this.helperTrouble.values()].some((t) => !t.signIn);
     const active = this.mainRunning.size > 0 || this.helperAborts.size > 0 || troubled || !!this.offlineSince;
     if (!active) return;
     const every = this.offlineSince ? 10_000 : 20_000;
@@ -469,10 +483,11 @@ export class Runtime extends EventEmitter implements ToolHost {
   }
 
   /** What the person should know about an agent's connection to its backend, if anything is wrong. */
-  async trouble(agentName: string): Promise<{ since: string; backend: string } | null> {
+  async trouble(agentName: string): Promise<{ since: string; backend: string; signIn?: boolean } | null> {
     const a = await loadAgent(agentName);
+    if (a.state.signedOut) return { since: a.state.signedOut.since, backend: a.state.signedOut.backend, signIn: true };
     if (a.state.troubleSince) return { since: a.state.troubleSince, backend: (await effectiveSettings(a)).backend };
-    for (const t of this.helperTrouble.values()) if (t.agent === agentName) return { since: t.since, backend: t.backend };
+    for (const t of this.helperTrouble.values()) if (t.agent === agentName) return { since: t.since, backend: t.backend, ...(t.signIn ? { signIn: true } : {}) };
     return null;
   }
 
@@ -501,10 +516,17 @@ export class Runtime extends EventEmitter implements ToolHost {
       this.changed(a.name, "state");
       a = await loadAgent(a.name);
     }
-    const sched = await store.schedule();
+    let sched = await store.schedule();
+    // Waiting for its backend to be signed in, and a turn on that backend got through since it last tried:
+    // it's signed in again, so it tries now rather than at its next check.
+    const signedOut = a.state.signedOut;
+    if (signedOut && sched.wakeAt && new Date(sched.wakeAt) > now && (this.gotThrough.get(signedOut.backend) ?? 0) > (this.lastAttempt.get(a.name) ?? 0)) {
+      await store.setWake(now, sched.wakeReason ?? `retry: ${signedOut.backend} wasn't signed in`);
+      sched = await store.schedule();
+    }
     // After a failed turn, wait out the back-off even if there's work waiting. Not with something new from
     // the person (it came after the last try): that's tried at once, once. If it fails too, the back-off goes on.
-    if (((a.state.failures ?? 0) > 0 || (a.state.transientFailures ?? 0) > 0) && sched.wakeAt && new Date(sched.wakeAt) > now) {
+    if (((a.state.failures ?? 0) > 0 || (a.state.transientFailures ?? 0) > 0 || signedOut) && sched.wakeAt && new Date(sched.wakeAt) > now) {
       const since = this.lastAttempt.get(a.name) ?? 0;
       const fromPerson = (await store.inbox()).some((i) => (i.type === "answer" || (i.type === "message" && !(i.data as any)?.fromChat)) && new Date(i.t).getTime() > since);
       if (!fromPerson) return;
@@ -708,7 +730,8 @@ export class Runtime extends EventEmitter implements ToolHost {
       agent = await loadAgent(agentName);
       if (result.modelIssue) await this.modelIssue(agentName, result.modelIssue);
       if (result.usage2 && result.usage2.turnCostUsd == null) await this.noCostNotice(agentName, result.backend);
-      const patch: Partial<AgentState> = { status: hasIdentity(agent) ? "asleep" : "new", failures: 0, transientFailures: 0, troubleSince: null, lastError: null, limitHits: [], mainSessionFiles: fileHashes(agent), mainSessionPrompt: promptVersion("main"), turnsSinceReflect: (agent.state.turnsSinceReflect ?? 0) + 1, activity: hasIdentity(agent) ? "resting" : "waiting for its job", ...(result.compacted ? { compactedSinceReflect: true } : {}) };
+      this.gotThrough.set(result.backend, Date.now());
+      const patch: Partial<AgentState> = { status: hasIdentity(agent) ? "asleep" : "new", failures: 0, transientFailures: 0, troubleSince: null, lastError: null, signedOut: null, limitHits: [], mainSessionFiles: fileHashes(agent), mainSessionPrompt: promptVersion("main"), turnsSinceReflect: (agent.state.turnsSinceReflect ?? 0) + 1, activity: hasIdentity(agent) ? "resting" : "waiting for its job", ...(result.compacted ? { compactedSinceReflect: true } : {}) };
       await updateState(agentName, patch);
       // A watch or repeating wake already brings it back; otherwise make sure it never goes quiet.
       const sched = await store.schedule();
@@ -744,7 +767,7 @@ export class Runtime extends EventEmitter implements ToolHost {
         const recheck = new Date(Date.now() + LIMIT_RECHECK_MS);
         const until = e.resetsAt && e.resetsAt < recheck ? e.resetsAt : recheck;
         const limitHits = [...(agent.state.limitHits ?? []), new Date().toISOString()].slice(-LIMIT_HOT_TURNS);
-        await updateState(agentName, { status: "paused", pausedUntil: until.toISOString(), pausedAt: new Date().toISOString(), limitHits, activity: `paused: ${eff.backend} usage limit`, pauseReason: "limit", limitResetsAt: e.resetsAt?.toISOString() ?? null });
+        await updateState(agentName, { status: "paused", pausedUntil: until.toISOString(), pausedAt: new Date().toISOString(), limitHits, activity: `paused: ${eff.backend} usage limit`, pauseReason: "limit", limitResetsAt: e.resetsAt?.toISOString() ?? null, signedOut: null });
         this.log(`[${agentName}] paused by the ${eff.backend} usage limit; trying again ${until.toISOString()}`);
         if (forced) {
           await store.addMessage({ from: "overtime", kind: "message", text: `${eff.backend} is still at its usage limit${e.resetsAt ? ` (it says it resets ${e.resetsAt.toLocaleString()})` : ""}. ${agentName} keeps your message and tries again by itself every 15 minutes, and as soon as you message or wake it.`, baseDir: agent.dir });
@@ -757,12 +780,24 @@ export class Runtime extends EventEmitter implements ToolHost {
         return true;
       }
       const msg = String(e?.message ?? e);
+      if (classify(e) === "signin") {
+        // Not the agent failing, so not counted as one (its session is kept whatever the count): its backend
+        // says it isn't signed in. Often only for a moment, so it's tried again soon and quietly; the person
+        // hears once it lasts, and it carries on by itself once signed in.
+        const same = agent.state.signedOut?.backend === eff.backend ? agent.state.signedOut : null;
+        const tries = (same?.tries ?? 0) + 1;
+        await updateState(agentName, { status: idle, signedOut: { backend: eff.backend, since: same?.since ?? new Date().toISOString(), tries }, lastError: msg.slice(0, 500), activity: `waiting: ${eff.backend} isn't signed in` });
+        await store.setWake(new Date(Date.now() + SIGNIN_RETRY_MS[Math.min(SIGNIN_RETRY_MS.length - 1, tries - 1)]), `retry: ${eff.backend} wasn't signed in`);
+        this.log(`[${agentName}] ${eff.backend} isn't signed in (${tries}), checking again soon: ${msg.slice(0, 200)}`);
+        if (tries === SIGNIN_ALERT_AFTER) await this.signInAlert(agentName, e, eff.backend);
+        return false;
+      }
       if (isTransient(e)) {
         // The provider is having trouble: wait it out and carry on, in the same session. Not a failure,
         // and you only hear about it if it lasts.
         const n = (agent.state.transientFailures ?? 0) + 1;
         const since = agent.state.troubleSince ?? new Date().toISOString();
-        await updateState(agentName, { status: idle, transientFailures: n, troubleSince: since, activity: `waiting: ${eff.backend} is having trouble`, lastError: null });
+        await updateState(agentName, { status: idle, transientFailures: n, troubleSince: since, activity: `waiting: ${eff.backend} is having trouble`, lastError: null, signedOut: null });
         // Find out now whether it's this machine's connection, so the app can say so.
         void this.checkNetwork(await listAgents(), true).catch(() => {});
         await store.setWake(new Date(Date.now() + BACKOFF_MS[Math.min(BACKOFF_MS.length - 1, n - 1)]), `retry: ${eff.backend} was having trouble (${msg.slice(0, 120)})`);
@@ -777,13 +812,13 @@ export class Runtime extends EventEmitter implements ToolHost {
       const failures = (agent.state.failures ?? 0) + 1;
       // Some failures only the person can fix: say exactly what to do, once, and retry slowly meanwhile.
       const hint = needsPerson(e, eff.backend, agentName);
-      const wait = hint ? (classify(e) === "signin" ? SIGNIN_RETRY_MS : BACKOFF_MS[BACKOFF_MS.length - 1]) : BACKOFF_MS[Math.min(BACKOFF_MS.length - 1, failures - 1)];
+      const wait = hint ? BACKOFF_MS[BACKOFF_MS.length - 1] : BACKOFF_MS[Math.min(BACKOFF_MS.length - 1, failures - 1)];
       if (hint && agent.state.lastError !== msg.slice(0, 500)) {
         await store.addMessage({ from: "overtime", kind: "alert", title: "Needs you to fix something", text: `${hint}\n\nThe error was: ${msg}`, urgent: true, baseDir: agent.dir });
         this.notify(`${agentName} needs you`, hint);
         this.changed(agentName, "messages");
       }
-      await updateState(agentName, { status: idle, failures, lastError: msg.slice(0, 500) });
+      await updateState(agentName, { status: idle, failures, lastError: msg.slice(0, 500), signedOut: null });
       await store.setWake(new Date(Date.now() + wait), `retry after an error: ${msg.slice(0, 200)}`);
       this.log(`[${agentName}] main turn failed (${failures}): ${e?.stack ?? e}`);
       if (failures === 3 && !hint) {
@@ -800,6 +835,15 @@ export class Runtime extends EventEmitter implements ToolHost {
       await this.refreshNextWake(agentName).catch(() => {});
       this.changed(agentName, "state");
     }
+  }
+
+  /** Tell the person a backend needs signing in (once it has lasted): what to do, and that the agent carries on by itself. */
+  private async signInAlert(agentName: string, e: unknown, backend: string): Promise<void> {
+    const agent = await loadAgent(agentName);
+    const hint = needsPerson(e, backend, agentName)!;
+    await this.store(agentName).addMessage({ from: "overtime", kind: "alert", title: "Needs you to sign in", text: `${hint}\n\nThe error was: ${String((e as any)?.message ?? e)}`, urgent: true, baseDir: agent.dir });
+    this.notify(`${agentName} needs you`, hint);
+    this.changed(agentName, "messages");
   }
 
   /** Where this agent's reflecting reads on from: its cursor, or for its first pass, the start of its last few days. */
@@ -899,10 +943,11 @@ export class Runtime extends EventEmitter implements ToolHost {
       });
       reply = r.reply;
       ok = true;
+      this.gotThrough.set(r.backend, Date.now());
     } catch (e: any) {
-      // Offline, a passing provider problem or a usage limit: nothing wrong with these turns, so it
+      // Offline, a passing provider problem, a usage limit or a backend not signed in: nothing wrong with these turns, so it
       // only waits, and never counts toward passing them over.
-      transient = e instanceof UsageLimitError || isTransient(e) || !!this.offlineSince;
+      transient = e instanceof UsageLimitError || isTransient(e) || classify(e) === "signin" || !!this.offlineSince;
       if (!(ctl.signal.aborted && !this.stopping)) this.log(`[${agentName}] reflect pass ${transient ? "couldn't run now (tried again later)" : "failed"}: ${String(e?.message ?? e).split("\n")[0]}`);
     } finally {
       this.tools.close(ctx.token);
@@ -1623,6 +1668,8 @@ export class Runtime extends EventEmitter implements ToolHost {
             signal: this.signalFor(agentName, signal),
             onUpdate: (u) => {
               this.boundaries.get(key)?.update(u);
+              // Going again after trouble: it isn't waiting any more.
+              if (this.helperTrouble.delete(rec.id)) this.changed(agentName, "helpers");
               const step = describeStep(u);
               if (step) this.helperSteps.set(key, step);
               this.emit("update", { agent: agentName, kind: "helper", helperId: rec.id, update: u });
@@ -1631,6 +1678,7 @@ export class Runtime extends EventEmitter implements ToolHost {
           });
           // It got through: a later limit gets its own day of waiting.
           limitedSince.t = 0;
+          this.gotThrough.set(r.backend, Date.now());
           return r;
         } catch (e: any) {
           const msg = String(e?.message ?? e);

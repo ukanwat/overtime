@@ -2,7 +2,8 @@
  * What kind of trouble an error is, read from what the backend says in structured form wherever it
  * says it: the ACP error code, the adapter's error data (Claude's `errorKind`, Codex's `codexErrorInfo`
  * and its HTTP status), and the operating system's error codes. Only an error that carries none of
- * these (a custom backend that sends plain text) is judged by its wording, as a last resort.
+ * these (a custom backend that sends plain text) is judged by its wording, as a last resort; never
+ * whether the backend is signed in, which only its own sign-in code says.
  */
 
 /** An error from a backend, with its structure kept: the JSON-RPC code and data, or the system's code. */
@@ -129,12 +130,13 @@ function fromStructure(e: any): Trouble | undefined {
 
 /**
  * The last resort, for a backend that gives nothing but text: the words providers commonly use. Never
- * consulted when the error has a structured kind.
+ * consulted when the error has a structured kind. Never for signing in: every backend speaks ACP, which
+ * has its own code for that (see fromStructure), while words like "unauthorized" or "please log in" in
+ * an error are as likely a tool's, an MCP server's, a website's or the model's own.
  */
 function fromWording(message: string): Trouble {
   const m = message.toLowerCase();
   const has = (...words: string[]) => words.some((w) => m.includes(w));
-  if (has("authentication required", "not logged in", "not signed in", "please log in", "please login", "invalid api key", "invalid x-api-key", "unauthorized", "unauthorised", "oauth token has expired", "login required")) return "signin";
   if (has("credit balance is too low", "insufficient credit", "insufficient_quota", "insufficient quota", "insufficient funds", "payment required", "exceeded your current quota")) return "credit";
   if (has("usage limit", "quota exceeded", "resource_exhausted", "resource exhausted", "hit your limit")) return "limit";
   if (has("overloaded", "rate limit", "rate_limit", "too many requests", "temporarily unavailable", "service unavailable", "bad gateway", "gateway timeout", "gateway time-out", "internal server error", "socket hang up", "fetch failed", "connection reset", "network error")) return "transient";
@@ -162,7 +164,7 @@ export function needsPerson(e: unknown, backend: string, agent: string): string 
     case "install":
       return `The ${backend} backend isn't installed on this machine, so ${agent} can't run. Install it, or switch ${agent} to another backend (Ctrl+T in the app, or \`overtime set ${agent} backend=claude\`).`;
     case "signin":
-      return `${backend} isn't signed in, so ${agent} can't run. ${signIn[backend] ?? `Sign in to ${backend}`}, then wake ${agent} (Ctrl+R in the app, or \`overtime wake ${agent}\`). If ${backend} already works in your terminal, open the app again: it restarts Overtime's background process, which may have lost your sign-in.`;
+      return `${backend} isn't signed in, so ${agent} can't run. ${signIn[backend] ?? `Sign in to ${backend}`}: ${agent} checks again every few minutes and carries on by itself once you have. If ${backend} already works in your terminal, open the app again: it restarts Overtime's background process, which may have lost your sign-in.`;
     case "credit":
       return `${backend} says the account is out of credit or quota, so ${agent} can't run. Top it up, then wake ${agent} (Ctrl+R).`;
     default:

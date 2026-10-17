@@ -82,6 +82,8 @@ export interface AgentState {
   transientFailures?: number;
   /** When the current run of provider problems began. */
   troubleSince?: string | null;
+  /** Its backend said (by its sign-in code) that it isn't signed in: which, since when, and turns tried since. Not counted as failures. */
+  signedOut?: { backend: string; since: string; tries: number } | null;
   /** When Claude's own memories for its folder were copied into memory/ (done once). */
   memoryImportedAt?: string;
   /** When the memories Claude kept in its helpers' folders were copied into memory/ (done once). */

@@ -76,6 +76,9 @@ describe("the agent's state circle", () => {
       [{ lastError: "boom" }, /^⊘ retrying$/, /^retrying$/],
       [{ lastError: "boom", waiting: 1 }, /^⊘ retrying$/, /^retrying$/],
       [{ trouble: { since: "", backend: "claude" }, helpersRunning: 1 }, /^⊘ can't reach claude$/, /^can't reach$/],
+      // Waiting for its backend to be signed in (it carries on by itself): said as that, not as a failed turn.
+      [{ trouble: { since: "", backend: "claude", signIn: true }, lastError: "claude: Authentication required", nextWake: wake }, /^⊘ claude isn't signed in$/, /^not signed in$/],
+      [{ trouble: { since: "", backend: "claude", signIn: true }, helpersRunning: 1 }, /^⊘ claude isn't signed in$/, /^not signed in$/],
       [{ offlineSince: "x", status: "working" }, /^⊘ no internet$/, /^offline$/],
       [{ nextWake: wake }, /^○ asleep · wakes /, /^(\d+:\d\d|\w{3})/],
       [{}, /^○ asleep$/, /^asleep$/],

@@ -7,7 +7,6 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { paths, home } from "../paths.js";
 import { listAgents } from "../agent/agent.js";
-import { classify } from "../runtime/errors.js";
 import { AGENT_MARKER } from "../runtime/leftovers.js";
 
 /** The daemon went away (or isn't running): the connection is lost, not a request failed. */
@@ -140,7 +139,7 @@ async function sameBuild(c: DaemonClient): Promise<{ keep: boolean; pid?: number
 const SIGNIN_RESTART_GAP_MS = 10 * 60_000;
 
 /**
- * Whether the daemon is stuck on sign-in: an agent's turns fail with "not signed in" and none is working.
+ * Whether the daemon is stuck on sign-in: an agent's backend says it isn't signed in and none is working.
  * A daemon left from an earlier login can lose the person's saved sign-ins (a locked keychain) for good,
  * while a fresh one started from here, in their current session, has them. Never from an agent's own
  * processes: they run inside that daemon, so a replacement started by them would be cut off the same way.
@@ -152,7 +151,8 @@ export async function stuckOnSignIn(): Promise<boolean> {
   if (Date.now() - last < SIGNIN_RESTART_GAP_MS) return false;
   const agents = await listAgents().catch(() => []);
   if (agents.some((a) => a.state.status === "working")) return false;
-  if (!agents.some((a) => a.state.lastError && classify(new Error(a.state.lastError)) === "signin")) return false;
+  // From what the backend itself said (its sign-in code), never from the words of an agent's last error.
+  if (!agents.some((a) => a.state.signedOut)) return false;
   await writeFile(marker, JSON.stringify({ at: Date.now() })).catch(() => {});
   return true;
 }

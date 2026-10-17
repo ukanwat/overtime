@@ -23,7 +23,8 @@ export interface AgentSummary {
   /** Paused by a usage limit: when the backend said it resets. */
   limitResetsAt?: string | null;
   /** It (or one of its helpers) can't reach its backend: since when, and which. */
-  trouble: { since: string; backend: string } | null;
+  /** Can't reach its backend, or (signIn) its backend isn't signed in. */
+  trouble: { since: string; backend: string; signIn?: boolean } | null;
   /** When this machine lost its internet connection, or null. */
   offlineSince: string | null;
   nextWake: string | null;

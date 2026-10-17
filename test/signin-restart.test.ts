@@ -12,10 +12,13 @@ describe("a daemon stuck on sign-in", () => {
     delete process.env.OVERTIME_AGENT;
   });
 
-  it("is replaced when an agent keeps failing on sign-in and none is working, at most once in a while", async () => {
+  it("is replaced when an agent's backend says it isn't signed in and none is working, at most once in a while", async () => {
     await createAgent("signedout");
     expect(await stuckOnSignIn()).toBe(false);
-    await updateState("signedout", { lastError: "claude: Authentication required" });
+    // An error that only mentions it (a tool's or a website's "401 Unauthorized") is no reason to restart.
+    await updateState("signedout", { lastError: "claude: Internal error: MCP server runpod: 401 Unauthorized. Authentication required" });
+    expect(await stuckOnSignIn()).toBe(false);
+    await updateState("signedout", { lastError: "claude: Authentication required", signedOut: { backend: "claude", since: new Date().toISOString(), tries: 3 } });
     expect(await stuckOnSignIn()).toBe(true);
     expect(await stuckOnSignIn()).toBe(false); // just restarted: not again right away
     rmSync(join(home, "signin-restart.json"));
@@ -25,7 +28,7 @@ describe("a daemon stuck on sign-in", () => {
   it("is left alone while an agent is working, and never replaced from an agent's own processes", async () => {
     await createAgent("busy");
     await createAgent("signedout");
-    await updateState("signedout", { lastError: "claude: Authentication required" });
+    await updateState("signedout", { lastError: "claude: Authentication required", signedOut: { backend: "claude", since: new Date().toISOString(), tries: 3 } });
     await updateState("busy", { status: "working" });
     expect(await stuckOnSignIn()).toBe(false);
     await updateState("busy", { status: "asleep" });
