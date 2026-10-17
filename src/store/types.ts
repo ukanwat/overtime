@@ -20,6 +20,32 @@ export interface Link {
   kind: "file" | "folder" | "url";
 }
 
+/** One question on a card of several. */
+export interface QuestionPart {
+  text: string;
+  why?: string;
+  recommendation?: string;
+  options?: string[];
+  single?: boolean;
+}
+
+/** Your reply to one question on a card: the options you picked (1-based) and/or your own words. */
+export interface Reply {
+  choices?: number[];
+  note?: string;
+}
+
+/** How a question was answered (or closed), as read back on the question. */
+export interface Answer {
+  choice?: number;
+  choices?: number[];
+  replies?: Reply[];
+  note?: string;
+  text: string;
+  t: string;
+  closed?: "withdrawn" | "dismissed";
+}
+
 /** One message in an agent's conversation with the person. Each agent has exactly one conversation. */
 export interface Message {
   id: string;
@@ -33,18 +59,29 @@ export interface Message {
   why?: string;
   recommendation?: string;
   options?: string[];
+  /** For questions: only one option may be picked (they exclude each other). Otherwise the person may pick several. */
+  single?: boolean;
+  /**
+   * A card of several questions asked together, each with its own options. Then text lists them all (for
+   * anything that reads only text) and title is the card's heading, if the agent gave one.
+   */
+  questions?: QuestionPart[];
   /** For questions: the kind of decision, for earned autonomy. */
   category?: string;
   urgent?: boolean;
   /** For your answer to a question: which question, and the option picked (1-based). */
   replyTo?: string;
   choice?: number;
+  /** For your answer: every option picked (1-based), in order; choice is the first, for older readers. */
+  choices?: number[];
+  /** For your answer to a card of several questions: one reply per question, in order (empty where you left one). */
+  replies?: Reply[];
   /** For your answer: what you wrote, on its own (text is the whole answer as the agent reads it). On a withdrawal: the agent's why. */
   note?: string;
   /** A reply that closes a question without answering it: the agent withdrew it, or the person dismissed it. Not shown as a message. */
   closes?: "withdrawn" | "dismissed";
   /** On a question once answered (derived from the answer message when read). */
-  answer?: { choice?: number; note?: string; text: string; t: string; closed?: "withdrawn" | "dismissed" };
+  answer?: Answer;
   attachments?: Attachment[];
   /** For a message between agents: who sent it and who it was for. */
   fromAgent?: string;
@@ -149,4 +186,17 @@ export interface HelperRecord {
   contextText?: string;
   /** What it reported while working (the latest last). */
   updates?: { t: string; text: string }[];
+}
+
+/** A question's parts: the questions on its card, or the one question it is. */
+export function questionParts(m: Pick<Message, "text" | "why" | "recommendation" | "options" | "single" | "questions">): QuestionPart[] {
+  return m.questions?.length ? m.questions : [{ text: m.text, why: m.why, recommendation: m.recommendation, options: m.options, single: m.single }];
+}
+
+/** The person's reply to question i of a card (0 for a lone question), from however the answer was saved. */
+export function replyTo(a: Pick<Answer, "choice" | "choices" | "replies" | "note"> | undefined, i: number): Reply {
+  if (!a) return {};
+  if (a.replies) return a.replies[i] ?? {};
+  if (i > 0) return {};
+  return { choices: a.choices ?? (a.choice ? [a.choice] : undefined), note: a.note };
 }

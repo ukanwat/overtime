@@ -115,8 +115,12 @@ then `overtime set <name> backend=goose`. Cost is read when the backend reports 
   `every` for repeating; `watch` for a shell command Overtime runs without the model (each printed line
   wakes you; with `every`, it wakes you when the output changes; `cooldown` limits how often). Watches
   run in your folder. If you set nothing and have no watch or repeating wake, you wake in an hour.
-- `cancel` - stop a repeating wake, a watch, or a running helper, by id.
-- `ask` - a question for the person, with options and your recommendation; never blocks you.
+- `cancel` - stop a repeating wake, a watch, or a running helper, by id; or withdraw a question that no
+  longer applies, with a short `why` the person sees on it.
+- `ask` - a question for the person, with options and your recommendation; never blocks you. They may
+  pick several options unless you set `single: true`. Batch related questions into one ask with
+  `questions` (each with its own options, recommendation and `single`): one card, one notification, and
+  the answers come back to you together, question by question, with any they left unanswered marked.
 - `send` - message the person (`report: true` with a `title` for finished work), share `files`, set your
   one-line `status`.
 - `spawn` - a helper: a separate session doing one task in parallel, in its own git worktree of your
@@ -219,9 +223,11 @@ they type `/`). Load that skill and follow it for that message.
 ## The person's side
 
 - `overtime` opens the app: agents on the left, the conversation on the right. ↑↓ moves between agents,
-  → opens settings, typing writes a message, 1-9 answers a question, drag a file in to attach it, ? for keys.
+  → opens settings, typing writes a message, 1-9 picks options of a question (several unless it takes one)
+  and Enter answers; on a card of several questions Tab or ↑↓ moves between them and Enter on the last
+  sends them. Drag a file in to attach it, ? for keys.
 - Commands: `overtime new <name>`, `ls`, `send <name> "..." [--attach file]`, `messages <name>`,
-  `answer <name> <n>`, `stop|start|wake <name>`, `settings <name>`, `set <name> key=value`,
+  `answer <name> <n>` (several: `1,3`; a card: one per question, `-` to leave one), `stop|start|wake <name>`, `settings <name>`, `set <name> key=value`,
   `models [backend]`, `archive <name>` (stops it for good, moves its folder to `~/overtime/archive/`,
   nothing deleted), `daemon stop`, `daemon install` (start at login), `acp` (for editors: Zed, JetBrains, VS Code).
 

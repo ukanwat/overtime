@@ -1,4 +1,6 @@
 /** Shapes the app and the command line read from the daemon. Everything in them is agent-written text, cleaned before display. */
+import type { Answer, QuestionPart } from "../store/types.js";
+export { questionParts, replyTo, type Answer, type QuestionPart, type Reply } from "../store/types.js";
 
 export interface Attachment {
   name: string;
@@ -27,11 +29,15 @@ export interface Message {
   why?: string;
   recommendation?: string;
   options?: string[];
+  /** On a question: only one option may be picked. */
+  single?: boolean;
+  /** On a card of several questions: each of them. */
+  questions?: QuestionPart[];
   urgent?: boolean;
   links?: Link[];
   attachments?: Attachment[];
   /** On a question, once answered. */
-  answer?: { choice?: number; note?: string; text: string; t: string; closed?: "withdrawn" | "dismissed" };
+  answer?: Answer;
   closes?: "withdrawn" | "dismissed";
   /** On your answer: the question it answers. */
   replyTo?: string;
@@ -116,7 +122,7 @@ export function headed(m: Message, fallback: string): { title: string; body: str
  * How a question closed without an answer reads, the same in the app and `overtime messages`. A withdrawal
  * says why (or that it's no longer needed), so it never reads as the person's question being refused.
  */
-export function closedLine(answer: NonNullable<Message["answer"]>, agent: string): string {
+export function closedLine(answer: Answer, agent: string): string {
   if (answer.closed === "dismissed") return "✕ You dismissed this question";
   const why = answer.note?.trim();
   return why ? `✕ ${agent} withdrew this: ${why}` : `✕ ${agent} withdrew this question (no longer needed)`;

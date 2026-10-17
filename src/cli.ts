@@ -4,7 +4,7 @@ import { personOnly, type AgentSummary } from "./daemon/control.js";
 import { AGENT_MARKER } from "./runtime/leftovers.js";
 import { validateName } from "./agent/agent.js";
 import { accent, ago, bold, clean, cleanDeep, fit, friendly, gray, green, italic, money, red, stamp, statusLine, yellow } from "./tui/style.js";
-import { closedLine, headed, humanBytes, openQuestion, type AgentSettingsView, type Message } from "./tui/types.js";
+import { closedLine, headed, humanBytes, openQuestion, questionParts, replyTo, type AgentSettingsView, type Message } from "./tui/types.js";
 
 const [, , cmd, ...rest] = process.argv;
 
@@ -53,7 +53,7 @@ function HELP(): string {
         ["overtime ls", "list your agents"],
         ['overtime send <name> "<message>"', "message an agent  (--attach <file>, repeatable)"],
         ["overtime messages <name>", "read your messages with an agent"],
-        ["overtime answer <name> <n> [note]", "answer its open question with option n"],
+        ["overtime answer <name> <n>[,<n>…] [note]", "answer its open question with option n (or several: 1,3)"],
         ["overtime stop|start|wake <name>", "stop it, start it again, or wake it now"],
         ["overtime settings <name>", "show its backend, model, budgets and workspace"],
         ["overtime set <name> key=value…", "backend=  model=  budget=  tokens=  workspace=  protect=~/a,~/b"],
@@ -136,6 +136,15 @@ function agentRow(a: AgentSummary): string[] {
 }
 
 /** One message as plain lines, in the same voice as the app: yours marked with a bar, questions as cards. */
+/** How to answer this question from the command line, in its own numbers. */
+function answerHint(name: string, q: Message): string {
+  const parts = questionParts(q);
+  if (parts.length > 1) return `Answer with: overtime answer ${name} ${parts.map((_, i) => `<Q${i + 1}>`).join(" ")} ["note"]  (each: option numbers like 1,3, or - to leave it)`;
+  const n = q.options?.length;
+  if (!n) return `Answer with: overtime answer ${name} "your answer"`;
+  return `Answer with: overtime answer ${name} <1-${n}>${q.single || n === 1 ? "" : " (or several, like 1,3)"} ["note"]`;
+}
+
 function printMessage(name: string, m: Message, open: boolean): void {
   const time = gray(stamp(m.t));
   if (m.from === "you") {
@@ -147,14 +156,28 @@ function printMessage(name: string, m: Message, open: boolean): void {
   }
   if (m.kind === "question") {
     const bar = open ? yellow("┃") : gray("┃");
+    const parts = questionParts(m);
+    const card = parts.length > 1;
     const h = headed(m, "A question");
-    print(`${bar} ${open ? yellow(bold("?")) : gray("?")} ${bold(h.title)}  ${time}`);
-    if (h.body) for (const l of h.body.split("\n")) print(`${bar} ${l}`);
-    if (m.why) print(`${bar} ${gray(`Why it matters: ${m.why}`)}`);
-    if (m.recommendation) print(`${bar} ${bold("Recommended:")} ${m.recommendation}`);
-    m.options?.forEach((o, i) => print(`${bar}  ${open ? accent(bold(String(i + 1))) : m.answer?.choice === i + 1 ? accent("✓") : gray(String(i + 1))}  ${m.answer && m.answer.choice !== i + 1 ? gray(o) : o}`));
+    print(`${bar} ${open ? yellow(bold("?")) : gray("?")} ${bold(card ? m.title || `${parts.length} questions` : h.title)}  ${time}`);
+    parts.forEach((p, i) => {
+      const r = m.answer && !m.answer.closed ? replyTo(m.answer, i) : {};
+      if (card) print(`${bar}${i ? "\n" + bar : ""} ${bold(`Q${i + 1}`)} ${p.text}`);
+      else if (h.body) for (const l of h.body.split("\n")) print(`${bar} ${l}`);
+      if (p.why) print(`${bar} ${gray(`Why it matters: ${p.why}`)}`);
+      if (p.recommendation) print(`${bar} ${bold("Recommended:")} ${p.recommendation}`);
+      if (open && p.options && p.options.length > 1) print(`${bar} ${gray(p.single ? "Pick one:" : "Pick any:")}`);
+      p.options?.forEach((o, k) => {
+        const chosen = r.choices?.includes(k + 1);
+        print(`${bar}  ${open ? accent(bold(String(k + 1))) : chosen ? accent("✓") : gray(String(k + 1))}  ${m.answer && !chosen ? gray(o) : o}`);
+      });
+      // Your own words: on the question they answer (older answers kept only the whole text).
+      if (r.note) print(`${bar} ${gray(`You: ${r.note}`)}`);
+      else if (!card && m.answer && !m.answer.closed && !r.choices?.length) print(`${bar} ${gray(`You: ${m.answer.text}`)}`);
+      else if (card && m.answer && !m.answer.closed && !r.choices?.length) print(`${bar} ${gray("(left unanswered)")}`);
+    });
+    if (card && m.answer?.note && !m.answer.closed) print(`${bar} ${gray(`You: ${m.answer.note}`)}`);
     if (m.answer?.closed) print(`${bar} ${gray(closedLine(m.answer, name))}`);
-    else if (m.answer && !m.answer.choice) print(`${bar} ${gray(`You: ${m.answer.text}`)}`);
     for (const l of m.links ?? []) print(`${bar} ${accent("↗")} ${l.target}`);
     print();
     return;
@@ -369,21 +392,48 @@ async function main() {
         const q = openQuestion(ms);
         // A question's withdrawal or dismissal shows on the question itself, as in the app.
         for (const m of ms) if (!m.closes) printMessage(name, m, m === q);
-        if (q?.options?.length) print(gray(`Answer with: overtime answer ${name} <1-${q.options.length}> ["note"]`));
+        if (q) print(gray(answerHint(name, q)));
         break;
       }
       case "answer": {
-        const [name, choice, ...words] = rest;
-        if (!name || (!choice && !words.length)) fail("Missing an argument.", 'Usage: overtime answer <name> <option-number> ["note"]');
-        const n = Number(choice);
+        const [name, ...args] = rest;
+        const usage = 'Usage: overtime answer <name> <option-number>[,<option-number>…] ["note"]';
+        if (!name || !args.length) fail("Missing an argument.", usage);
+        const num = /^[-+]?(\d+\.?\d*|\.\d+)$/;
+        const looksLikePicks = (a: string) => a.split(",").every((x) => num.test(x.trim()));
         // A number that can't be an option (0, -1, 1.5) is a typo, not an answer the agent should act on.
-        if (/^[-+]?(\d+\.?\d*|\.\d+)$/.test(choice ?? "") && !(Number.isInteger(n) && n > 0)) fail(`There is no option ${choice}.`, 'Usage: overtime answer <name> <option-number> ["note"]');
-        if (Number.isInteger(n) && n > 0) {
-          // Past the last option: the same refusal, checked against the question it would answer.
-          const q = openQuestion((await call<{ messages: Message[] }>("messages", { name, limit: 50 }))?.messages ?? []);
-          if (q?.options?.length && n > q.options.length) fail(`There is no option ${n}. ${name}'s question has ${q.options.length}.`, 'Usage: overtime answer <name> <option-number> ["note"]');
+        for (const x of looksLikePicks(args[0]) ? args[0].split(",") : []) {
+          const n = Number(x);
+          if (!(Number.isInteger(n) && n > 0)) fail(`There is no option ${x.trim()}.`, usage);
         }
-        const params = Number.isInteger(n) && n > 0 ? { name, choice: n, text: words.join(" ") || undefined } : { name, text: [choice, ...words].join(" ") };
+        const q = looksLikePicks(args[0]) || args[0] === "-" ? openQuestion((await call<{ messages: Message[] }>("messages", { name, limit: 50 }))?.messages ?? []) : undefined;
+        const parts = q ? questionParts(q) : [];
+        // Leading option numbers answer the questions in order (1,3 picks two); "-" leaves one on a card unanswered.
+        const picks: number[][] = [];
+        while (picks.length < Math.max(1, parts.length) && picks.length < args.length) {
+          const a = args[picks.length];
+          if (a === "-" && parts.length > 1) {
+            picks.push([]);
+            continue;
+          }
+          if (!looksLikePicks(a)) break;
+          const ns = [...new Set(a.split(",").map(Number))];
+          const p = parts[picks.length];
+          const where = parts.length > 1 ? `Question ${picks.length + 1} of ${name}'s card` : `${name}'s question`;
+          for (const n of ns) if (!(Number.isInteger(n) && n > 0)) fail(`There is no option ${n}.`, usage);
+          // Past the last option: the same refusal, checked against the question it would answer.
+          const over = ns.find((n) => p?.options?.length && n > p.options.length);
+          if (over) fail(`There is no option ${over}. ${where} has ${p!.options!.length}.`, usage);
+          if (p?.single && ns.length > 1) fail(`${where} takes one option.`, usage);
+          picks.push(ns);
+        }
+        const text = args.slice(picks.length).join(" ") || undefined;
+        const params =
+          parts.length > 1
+            ? { name, questionId: q!.id, replies: picks.map((c) => ({ choices: c })), text }
+            : picks.length
+              ? { name, ...(q ? { questionId: q.id } : {}), ...(picks[0].length > 1 ? { choices: picks[0] } : { choice: picks[0][0] }), text }
+              : { name, text };
         await call("answer", params);
         ok("Answered.");
         break;
