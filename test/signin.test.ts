@@ -121,4 +121,18 @@ describe("a backend that isn't signed in", () => {
     await rt.start();
     await until(async () => (await loadAgent("restarted")).state.signedOut == null && (await rt.store("restarted").inbox()).length === 0, 60_000, "retried at once");
   });
+
+  it("a helper waits for sign-in and carries on, instead of failing", async () => {
+    await employ("helpee");
+    const mark = join(home, "helper-signed-out");
+    writeFileSync(mark, "");
+    await rt.send("helpee", "PASS SPAWN_SIGNIN");
+    const h = await until(async () => (await rt.store("helpee").helpers())[0], 30_000, "helper started");
+    await until(async () => (await rt.trouble("helpee"))?.signIn, 30_000, "waiting on sign-in");
+    expect((await rt.store("helpee").helpers())[0].status).toBe("running");
+    rmSync(mark);
+    const done = await until(async () => (await rt.store("helpee").helpers()).find((x) => x.id === h.id && x.status !== "running"), 60_000, "helper over");
+    expect(done.status, done.result).toBe("done");
+    expect(existsSync(join(done.workdir, "result.txt"))).toBe(true);
+  });
 });

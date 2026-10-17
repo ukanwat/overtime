@@ -193,6 +193,8 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
       await done(t, `handled note: ${note}${/This is a new session/.test(text) ? " (new session)" : ""}`, text);
       await say("note handled");
     } else if (existsSync(helperMark)) {
+      // HELPER_SIGNIN_WAIT: signed out while `helper-signed-out` is in Overtime's home.
+      if (/HELPER_SIGNIN_WAIT/.test(text) && process.env.OVERTIME_HOME && existsSync(join(process.env.OVERTIME_HOME, "helper-signed-out"))) throw new acp.RequestError(-32000, "Authentication required");
       // FLAKY: the provider fails once with a 502, then works (the retry continues from the folder).
       if (/FLAKY/.test(text)) {
         const mark = join(s.cwd, ".flaky-once");
@@ -291,6 +293,7 @@ async function turn(sessionId: string, text: string, cx: any): Promise<acp.Promp
       else if (/SPAWN_MEMREAD/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "READ_PARENT_MEMORY write result.txt" });
       else if (/SPAWN_DONE_ONCE/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "DONE_ONCE write result.txt" });
       else if (/SPAWN_FLAKY/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "FLAKY write result.txt" });
+      else if (/SPAWN_SIGNIN/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "HELPER_SIGNIN_WAIT write result.txt" });
       else if (/SPAWN_SLOW/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "SLOW write result.txt" });
       else if (/SPAWN_TOOLWAIT/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "TOOLWAIT write result.txt" });
       else if (/SPAWN/.test(text) && names.includes("spawn")) await t.call("spawn", { task: "write result.txt" });

@@ -1641,6 +1641,8 @@ export class Runtime extends EventEmitter implements ToolHost {
       // for the limit to lift (up to a day), then carries on the same way.
       let attempt = 0;
       const limitedSince = { t: 0 };
+      /** When its backend first said it isn't signed in (0: it is), and the checks since. */
+      const signedOutSince = { t: 0, tries: 0 };
       const cutOff = "(An earlier attempt was cut off by a problem at the provider. Check what's already in your folder, and carry on from there.)";
       const run = async (text: (fresh: boolean) => string, signal: AbortSignal): Promise<TurnResult> => {
         // Each attempt starts with nothing in flight; a stop still waiting carries over.
@@ -1668,7 +1670,7 @@ export class Runtime extends EventEmitter implements ToolHost {
             signal: this.signalFor(agentName, signal),
             onUpdate: (u) => {
               this.boundaries.get(key)?.update(u);
-              // Going again after trouble: it isn't waiting any more.
+              // Going again after trouble or a sign-in wait: it isn't waiting any more.
               if (this.helperTrouble.delete(rec.id)) this.changed(agentName, "helpers");
               const step = describeStep(u);
               if (step) this.helperSteps.set(key, step);
@@ -1676,8 +1678,9 @@ export class Runtime extends EventEmitter implements ToolHost {
             },
             log: this.log,
           });
-          // It got through: a later limit gets its own day of waiting.
+          // It got through: a later limit or sign-in wait gets its own day of waiting.
           limitedSince.t = 0;
+          signedOutSince.t = signedOutSince.tries = 0;
           this.gotThrough.set(r.backend, Date.now());
           return r;
         } catch (e: any) {
@@ -1703,6 +1706,28 @@ export class Runtime extends EventEmitter implements ToolHost {
               }
               if (over() || waiting.aborted) throw e;
               attempt = Math.max(attempt, 1);
+              return run(text, signal);
+            }
+          }
+          if (classify(e) === "signin" && !over()) {
+            // Its backend isn't signed in: not the helper failing. It waits for that (up to a day), checking
+            // every few minutes and at once when another turn on that backend gets through, then carries on.
+            const backend = rec.backend ?? (await effectiveSettings(await loadAgent(agentName))).backend;
+            signedOutSince.t ||= Date.now();
+            if (Date.now() - signedOutSince.t < 24 * 3600_000) {
+              const tries = ++signedOutSince.tries;
+              this.helperTrouble.set(rec.id, { agent: agentName, since: new Date(signedOutSince.t).toISOString(), backend, signIn: true });
+              this.changed(agentName, "helpers");
+              if (tries === 1) this.log(`[${agentName}] helper ${rec.id}: ${backend} isn't signed in, waiting for it (${msg.slice(0, 120)})`);
+              // The agent's own turns tell the person; if they run on another backend, the helper does.
+              if (tries === SIGNIN_ALERT_AFTER && (await loadAgent(agentName)).state.signedOut?.backend !== backend) await this.signInAlert(agentName, e, backend);
+              const from = Date.now();
+              const end = from + SIGNIN_RETRY_MS[Math.min(SIGNIN_RETRY_MS.length - 1, tries - 1)];
+              while (Date.now() < end && !over() && !waiting.aborted) {
+                await sleep(Math.min(5_000, end - Date.now()), waiting);
+                if ((this.gotThrough.get(backend) ?? 0) > from) break;
+              }
+              if (over() || waiting.aborted) throw e;
               return run(text, signal);
             }
           }

@@ -241,5 +241,9 @@ they type `/`). Load that skill and follow it for that message.
 - A usage limit (e.g. Claude's 5-hour or weekly window) pauses agents on that backend and model until it
   lifts (tried again every 15 minutes, or at the reset).
 - Any other failed turn is retried with growing gaps (1, 5, 15, 60 minutes); after 3 the person gets an alert.
-- A backend that isn't installed or signed in fails with a plain message; tell the person what to install
-  or run.
+- A backend that isn't installed fails with a plain message; tell the person what to install.
+- A backend that says it isn't signed in (its own sign-in code, never words like "unauthorized" in an
+  error) isn't a failure either: the agent, or a helper, checks again after 30 seconds, 1, 2, then every
+  5 minutes, in the same session, and at once when another turn on that backend gets through or the app
+  restarts the background process. The person is told after about a minute and a half (what to run to
+  sign in); once signed in, everything carries on by itself, with no need to wake anyone.
